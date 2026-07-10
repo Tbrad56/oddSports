@@ -34,7 +34,13 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
       console.error(`Upstream ${upstream.status} for ${upstreamPath}`);
       return res.status(502).json({ error: 'Odds service unavailable' });
     }
-    const body = await upstream.json();
+    let body;
+    try {
+      body = await upstream.json();
+    } catch (e) {
+      console.error(`Upstream returned unparseable JSON for ${upstreamPath}`);
+      return res.status(502).json({ error: 'Odds service unavailable' });
+    }
     const remaining = upstream.headers.get('x-requests-remaining');
     cache.set(upstreamPath, { body, remaining, cachedAt: now(), expires: now() + cacheTtlMs });
     if (remaining) res.set('x-requests-remaining', remaining);

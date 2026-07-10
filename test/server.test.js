@@ -93,3 +93,16 @@ test('upstream network failure maps to 502', async () => {
   assert.equal(res.status, 502);
   assert.equal(res.body.error, 'Odds service unavailable');
 });
+
+test('upstream malformed JSON maps to 502, not a crash', async () => {
+  const f = fakeFetch(() => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    json: async () => { throw new SyntaxError('Unexpected token < in JSON'); }
+  }));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/odds/basketball_nba');
+  assert.equal(res.status, 502);
+  assert.equal(res.body.error, 'Odds service unavailable');
+});
