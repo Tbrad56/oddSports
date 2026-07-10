@@ -9,6 +9,17 @@ const SPORTS = new Set([
   'americanfootball_ncaaf', 'basketball_ncaab', 'soccer_epl', 'mma_mixed_martial_arts'
 ]);
 
+// Server-controlled prop markets per sport (quota protection: clients
+// cannot request arbitrary markets). Copied from the prototype.
+const PROP_MARKETS = {
+  americanfootball_nfl: ['player_pass_yds', 'player_pass_tds', 'player_rush_yds', 'player_receptions', 'player_reception_yds', 'player_anytime_td'],
+  americanfootball_ncaaf: ['player_pass_yds', 'player_pass_tds', 'player_rush_yds', 'player_receptions', 'player_reception_yds', 'player_anytime_td'],
+  basketball_nba: ['player_points', 'player_rebounds', 'player_assists', 'player_threes', 'player_points_rebounds_assists'],
+  basketball_ncaab: ['player_points', 'player_rebounds', 'player_assists', 'player_threes'],
+  baseball_mlb: ['batter_hits', 'batter_home_runs', 'batter_total_bases', 'batter_rbis', 'pitcher_strikeouts'],
+  icehockey_nhl: ['player_points', 'player_assists', 'player_shots_on_goal', 'player_goal_scorer_anytime']
+};
+
 function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now = Date.now } = {}) {
   const app = express();
   const cache = new Map(); // upstreamPath -> {body, remaining, cachedAt, expires}
@@ -52,6 +63,14 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     const { sport } = req.params;
     if (!SPORTS.has(sport)) return res.status(400).json({ error: 'Unknown sport' });
     proxy(`/v4/sports/${sport}/odds/?regions=us,us2&markets=h2h&oddsFormat=american`, res);
+  });
+
+  app.get('/api/props/:sport/:eventId', (req, res) => {
+    const { sport, eventId } = req.params;
+    const markets = PROP_MARKETS[sport];
+    if (!markets) return res.status(400).json({ error: 'Props not supported for this sport' });
+    if (!/^[a-z0-9]{1,64}$/i.test(eventId)) return res.status(400).json({ error: 'Bad event id' });
+    proxy(`/v4/sports/${sport}/events/${eventId}/odds/?regions=us,us2&markets=${markets.join(',')}&oddsFormat=american`, res);
   });
 
   app.use(express.static(path.join(__dirname, 'public')));

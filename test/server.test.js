@@ -106,3 +106,30 @@ test('upstream malformed JSON maps to 502, not a crash', async () => {
   assert.equal(res.status, 502);
   assert.equal(res.body.error, 'Odds service unavailable');
 });
+
+test('props: 400 for sport without prop markets, upstream not called', async () => {
+  const f = fakeFetch(() => okResponse({}));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/props/soccer_epl/abc123');
+  assert.equal(res.status, 400);
+  assert.equal(f.calls.length, 0);
+});
+
+test('props: 400 for malformed event id', async () => {
+  const f = fakeFetch(() => okResponse({}));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  // dots are outside [a-z0-9], single path segment so it still hits the route
+  const res = await request(app).get('/api/props/basketball_nba/bad..id');
+  assert.equal(res.status, 400);
+  assert.equal(f.calls.length, 0);
+});
+
+test('props: proxies valid request with server-side market list', async () => {
+  const payload = { id: 'e1', bookmakers: [] };
+  const f = fakeFetch(() => okResponse(payload));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/props/basketball_nba/0a1b2c3d4e5f');
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, payload);
+  assert.match(f.calls[0], /\/v4\/sports\/basketball_nba\/events\/0a1b2c3d4e5f\/odds\/\?regions=us,us2&markets=player_points,player_rebounds,player_assists,player_threes,player_points_rebounds_assists&oddsFormat=american&apiKey=k$/);
+});
