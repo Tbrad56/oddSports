@@ -112,6 +112,7 @@
       renderPage();
     }catch(e){
       showError("Couldn't load props right now.");
+      renderPage();
     }
   }
 

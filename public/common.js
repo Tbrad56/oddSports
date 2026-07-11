@@ -173,7 +173,7 @@ const SLIP_KEY = 'lw_slip';
 function getSlip(){
   try{
     const v = JSON.parse(localStorage.getItem(SLIP_KEY));
-    return Array.isArray(v) ? v : [];
+    return Array.isArray(v) ? v.filter(l => l && Array.isArray(l.rows) && l.rows.length) : [];
   }catch(e){ return []; }
 }
 function saveSlip(slip){
@@ -193,7 +193,8 @@ function removeLegFromSlip(id){
 // ---------- sport persistence ----------
 const SPORT_KEY = 'lw_sport';
 function getSport(){
-  const v = localStorage.getItem(SPORT_KEY);
+  let v = null;
+  try{ v = localStorage.getItem(SPORT_KEY); }catch(e){}
   return SPORTS.some(([k])=>k===v) ? v : SPORTS[0][0];
 }
 function setSport(key){
