@@ -133,3 +133,99 @@ test('props: proxies valid request with server-side market list', async () => {
   assert.deepEqual(res.body, payload);
   assert.match(f.calls[0], /\/v4\/sports\/basketball_nba\/events\/0a1b2c3d4e5f\/odds\/\?regions=us,us2&markets=player_points,player_rebounds,player_assists,player_threes,player_points_rebounds_assists&oddsFormat=american&apiKey=k$/);
 });
+
+// ---------- /api/analyze/mlb ----------
+function routedFetch(routes){
+  const fn = async (url) => {
+    fn.calls.push(url);
+    for (const [substr, resp] of routes) {
+      if (url.includes(substr)) return typeof resp === 'function' ? resp(url) : resp;
+    }
+    throw new Error('unrouted url: ' + url);
+  };
+  fn.calls = [];
+  return fn;
+}
+
+const ANALYZE_PROPS_BODY = {
+  id: 'ev1',
+  bookmakers: [{
+    key: 'fanduel', title: 'FanDuel',
+    markets: [{
+      key: 'pitcher_strikeouts',
+      outcomes: [
+        { name: 'Over',  description: 'Test Pitcher', point: 5.5, price: -110 },
+        { name: 'Under', description: 'Test Pitcher', point: 5.5, price: -110 },
+        { name: 'Over',  description: 'Unknown Guy',  point: 4.5, price: -110 },
+        { name: 'Under', description: 'Unknown Guy',  point: 4.5, price: -110 }
+      ]
+    }]
+  }]
+};
+const PLAYERS_BODY = { people: [{ id: 660271, fullName: 'Test Pitcher' }] };
+const GAMELOG_BODY = { stats: [{ splits: Array(10).fill(0).map(() => ({ stat: { strikeOuts: 8, gamesStarted: 1 } })) }] };
+
+function analyzeApp(overrides = {}){
+  const f = routedFetch([
+    ['api.the-odds-api.com', okResponse(ANALYZE_PROPS_BODY)],
+    ['/api/v1/sports/1/players', okResponse(PLAYERS_BODY)],
+    ['/api/v1/people/', okResponse(GAMELOG_BODY)],
+    ...(overrides.routes || [])
+  ]);
+  if (overrides.prepend) f.prepend = true;
+  const app = createApp({ apiKey: 'k', fetchFn: f, ...(overrides.opts || {}) });
+  return { app, f };
+}
+
+test('analyze: bad event id -> 400, nothing fetched', async () => {
+  const { app, f } = analyzeApp();
+  const res = await request(app).get('/api/analyze/mlb/bad..id');
+  assert.equal(res.status, 400);
+  assert.equal(f.calls.length, 0);
+});
+
+test('analyze: returns ranked picks and skips unknown players', async () => {
+  const { app } = analyzeApp();
+  const res = await request(app).get('/api/analyze/mlb/ev1');
+  assert.equal(res.status, 200);
+  assert.ok(Array.isArray(res.body.picks));
+  assert.equal(res.body.picks.length, 1); // 8 K/start vs 5.5 line -> big Over edge
+  const pick = res.body.picks[0];
+  assert.equal(pick.player, 'Test Pitcher');
+  assert.equal(pick.market, 'pitcher_strikeouts');
+  assert.equal(pick.side, 'Over');
+  assert.ok(pick.edge > 0.03);
+  assert.ok(pick.modelP > 0 && pick.modelP < 1);
+  assert.ok(Math.abs(pick.edge - (pick.modelP - pick.impliedP)) < 1e-9);
+  assert.equal(pick.analysis.windowSize, 10);
+  assert.deepEqual(res.body.skipped, ['Unknown Guy']);
+  assert.ok(res.body.generatedAt);
+});
+
+test('analyze: second call within TTL served from cache (no new fetches)', async () => {
+  const { app, f } = analyzeApp();
+  await request(app).get('/api/analyze/mlb/ev1');
+  const n = f.calls.length;
+  const res2 = await request(app).get('/api/analyze/mlb/ev1');
+  assert.equal(res2.status, 200);
+  assert.equal(f.calls.length, n);
+});
+
+test('analyze: StatsAPI failure -> 502 Stats service unavailable', async () => {
+  const f = routedFetch([
+    ['api.the-odds-api.com', okResponse(ANALYZE_PROPS_BODY)],
+    ['/api/v1/sports/1/players', errResponse(500)],
+  ]);
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/analyze/mlb/ev1');
+  assert.equal(res.status, 502);
+  assert.equal(res.body.error, 'Stats service unavailable');
+});
+
+test('analyze: odds quota exhausted maps to 429 quota message', async () => {
+  const f = routedFetch([['api.the-odds-api.com', errResponse(429)]]);
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/analyze/mlb/ev1');
+  assert.equal(res.status, 429);
+  assert.equal(res.body.error, 'Monthly odds quota exhausted — resets on the 1st');
+});
