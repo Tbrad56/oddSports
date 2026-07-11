@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LineWatch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Teko:wght@500;600;700&family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="app-header">
+  <div class="header-top">
+    <div class="brand">
+      <h1>Line<span>Watch</span></h1>
+      <div class="tag">Your Odds Copilot</div>
+    </div>
+    <div class="header-controls"></div>
+  </div>
+  <div class="ticker-wrap">
+    <div class="ticker-track" id="tickerTrack">
+      <span>Pick a sport and pull odds to populate this ticker →</span>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+  <nav class="nav-rail" id="navRail"></nav>
+
+  <main>
+    <div class="hero-line">Find your next line</div>
+    <div class="hero-sub">Compare odds across books, spot value, and build your slip.</div>
+    <div class="chip-row" id="sportChips"></div>
+    <div class="status-row">
+      <div class="dot" id="statusDot"></div>
+      <span id="statusText">Loading value spots…</span>
+    </div>
+    <div id="errorArea"></div>
+
+    <div class="cta-row">
+      <a class="cta-card" href="/board.html">
+        <h3>Odds Board</h3>
+        <p>Moneylines across every tracked book, ranked best → worst per side, best price and value plays flagged.</p>
+        <span class="go">Open Board →</span>
+      </a>
+      <a class="cta-card" href="/props.html">
+        <h3>Player Props</h3>
+        <p>Per-game player prop lines with line-shop chips per book. Loaded on demand to protect API quota.</p>
+        <span class="go">Open Props →</span>
+      </a>
+    </div>
+
+    <div class="panel" id="cheatPanel">
+      <h2>Cheatsheet <span class="count" id="cheatCount"></span></h2>
+      <div id="cheatBody" style="color:var(--text-faint); font-size:12.5px;">Loading the best value spots…</div>
+    </div>
+  </main>
+
+  <aside class="sidebar">
+    <div class="panel" id="aboutPanel">
+      <h2>About</h2>
+      <div class="settings-hint">
+        Books tracked: FanDuel, DraftKings, BetMGM, Caesars, ESPN BET, Bet365, Fanatics, BetRivers — whichever The Odds API returns for the selected sport. Availability varies by sport and market; not every book covers every game.
+      </div>
+      <div class="settings-hint" style="margin-top:10px;">
+        Odds are cached for up to 10 minutes to conserve API quota — always confirm the live price on the sportsbook before betting.
+      </div>
+      <div class="settings-hint" style="margin-top:10px;">
+        <strong style="color:var(--text-dim);">Player props</strong> load per game (they're expensive on quota) — use the Props page.
+      </div>
+    </div>
+  </aside>
+</div>
+
+<footer class="disclaimer">
+  <strong>Informational tool only.</strong> LineWatch pulls publicly available odds data and does not place bets, hold funds, or connect to any sportsbook account.
+  Combined "parlay" figures are for comparison only — always confirm the exact price on the sportsbook itself before betting, as odds move quickly.
+  Must be 21+ and located in a state where sports betting is legal. If gambling stops being fun or feels out of control, Ohio's problem gambling helpline is
+  1-800-589-9966, or text 4HOPE to 741741. National Problem Gambling Helpline: 1-800-522-4700.
+</footer>
+
+<script src="common.js"></script>
+<script src="home.js"></script>
+</body>
+</html>
