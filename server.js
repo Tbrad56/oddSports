@@ -261,7 +261,7 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     const body = {
       picks: rankPicks(picks),
       skipped: [...skipped],
-      filtered: [...filteredMap.values()],
+      filtered: [...new Map([...filteredMap.values()].map(f => [f.player + '|' + f.reason, f])).values()],
       lineupStatus,
       propCount,
       generatedAt: new Date(now()).toISOString()

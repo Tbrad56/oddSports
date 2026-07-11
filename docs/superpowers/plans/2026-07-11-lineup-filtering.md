@@ -14,6 +14,7 @@
 
 - Filtering is an enhancement, never a blocker: any schedule failure or unmatched game → analysis proceeds unfiltered with `lineupStatus: 'unavailable'`.
 - Schedule call exact: `/api/v1/schedule?sportId=1&date=<YYYY-MM-DD UTC>&hydrate=probablePitcher,lineups`, TTL `15*60*1000`, via existing `fetchStats`.
+- AMENDED during execution (review findings): date is the America/New_York game day via toLocaleDateString('en-CA'), not UTC; filteredMap is keyed player+market with {player, reason} values, deduped by player+reason on emit.
 - Verified StatsAPI shapes: probables at `game.teams.{home,away}.probablePitcher.id`; lineups at `game.lineups.homePlayers[]/awayPlayers[]` with `{id}`; arrays absent/empty until posted.
 - `lineupStatus` values exact: `'confirmed'` (lineups posted), `'pending'` (game matched, lineups not posted), `'unavailable'` (schedule failed / game unmatched).
 - Filter reasons exact: `'not_probable_starter'` (pitching market, probables known, player not among them), `'not_in_lineup'` (hitting market, lineups posted, player absent).

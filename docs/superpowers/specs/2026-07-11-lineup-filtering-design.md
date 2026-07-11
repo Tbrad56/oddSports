@@ -28,7 +28,7 @@ decision should not block this stateless improvement.
 
 ## Server changes (`server.js`, inside `handleAnalyze`)
 
-1. Fetch today's schedule (date from `new Date(now())`, UTC date string;
+1. Fetch today's schedule (date from `new Date(now())` as the US Eastern (America/New_York) game day — amended from UTC after review: UTC rolls to tomorrow at ~8pm ET and misses evening games;
    cache TTL 15 min = `15*60*1000`, reusing `fetchStats`).
 2. Match the analyzed event to a schedule game by comparing BOTH team names:
    normalize odds-event `home_team`/`away_team` and schedule

@@ -340,3 +340,21 @@ test('schedule date uses US Eastern game day, not UTC', async () => {
   const schedCall = f.calls.find(u => u.includes('/api/v1/schedule'));
   assert.ok(schedCall.includes('date=2026-07-11'), 'expected ET game day 2026-07-11, got: ' + schedCall);
 });
+
+test('filtered list dedupes a batter benched across multiple markets', async () => {
+  const body = JSON.parse(JSON.stringify(LINEUP_PROPS_BODY));
+  body.bookmakers[0].markets.push({ key: 'batter_total_bases', outcomes: [
+    { name: 'Over',  description: 'Bench Batter', point: 1.5, price: -110 },
+    { name: 'Under', description: 'Bench Batter', point: 1.5, price: -110 }
+  ]});
+  const f = routedFetch([
+    ['api.the-odds-api.com', okResponse(body)],
+    ['/api/v1/schedule', okResponse(scheduleBody(true))],
+    ['/api/v1/sports/1/players', okResponse(LINEUP_PLAYERS_BODY)],
+    ['/api/v1/people/', okResponse(COMBO_GAMELOG_BODY)]
+  ]);
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/analyze/mlb/ev2');
+  const benchEntries = res.body.filtered.filter(x => x.player === 'Bench Batter');
+  assert.equal(benchEntries.length, 1);
+});
