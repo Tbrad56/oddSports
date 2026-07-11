@@ -200,7 +200,7 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     const lineupIds = new Set();
     let lineupsPosted = false;
     try {
-      const dateStr = new Date(now()).toISOString().slice(0, 10);
+      const dateStr = new Date(now()).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
       const sched = await fetchStats(`/api/v1/schedule?sportId=1&date=${dateStr}&hydrate=probablePitcher,lineups`, 15 * 60 * 1000);
       const home = normName(props.body.home_team || '');
       const away = normName(props.body.away_team || '');
@@ -234,11 +234,11 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
         const pid = await mlbPlayerId(prop.player, season);
         if (!pid) { skipped.add(prop.player); continue; }
         if (cfg.group === 'pitching' && probablePitcherIds.size && !probablePitcherIds.has(pid)) {
-          filteredMap.set(prop.player, 'not_probable_starter');
+          filteredMap.set(prop.player + '|' + prop.market, { player: prop.player, reason: 'not_probable_starter' });
           continue;
         }
         if (cfg.group === 'hitting' && lineupsPosted && !lineupIds.has(pid)) {
-          filteredMap.set(prop.player, 'not_in_lineup');
+          filteredMap.set(prop.player + '|' + prop.market, { player: prop.player, reason: 'not_in_lineup' });
           continue;
         }
         let games = await mlbGameValues(pid, cfg.group, cfg.stat, season);
@@ -261,7 +261,7 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     const body = {
       picks: rankPicks(picks),
       skipped: [...skipped],
-      filtered: [...filteredMap].map(([player, reason]) => ({ player, reason })),
+      filtered: [...filteredMap.values()],
       lineupStatus,
       propCount,
       generatedAt: new Date(now()).toISOString()

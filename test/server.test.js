@@ -324,3 +324,19 @@ test('unmatched team names: same as unavailable', async () => {
   assert.equal(res.body.filtered.length, 0);
   assert.equal(res.body.picks.length, 4);
 });
+
+test('schedule date uses US Eastern game day, not UTC', async () => {
+  // 2026-07-12T01:00:00Z is 9pm ET on 2026-07-11 — the MLB game day is still the 11th
+  const { app, f } = (function(){
+    const f2 = routedFetch([
+      ['api.the-odds-api.com', okResponse(LINEUP_PROPS_BODY)],
+      ['/api/v1/schedule', okResponse(scheduleBody(true))],
+      ['/api/v1/sports/1/players', okResponse(LINEUP_PLAYERS_BODY)],
+      ['/api/v1/people/', okResponse(COMBO_GAMELOG_BODY)]
+    ]);
+    return { app: createApp({ apiKey: 'k', fetchFn: f2, now: () => Date.parse('2026-07-12T01:00:00Z') }), f: f2 };
+  })();
+  await request(app).get('/api/analyze/mlb/ev2');
+  const schedCall = f.calls.find(u => u.includes('/api/v1/schedule'));
+  assert.ok(schedCall.includes('date=2026-07-11'), 'expected ET game day 2026-07-11, got: ' + schedCall);
+});
