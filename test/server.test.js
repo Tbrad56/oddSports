@@ -229,3 +229,98 @@ test('analyze: odds quota exhausted maps to 429 quota message', async () => {
   assert.equal(res.status, 429);
   assert.equal(res.body.error, 'Monthly odds quota exhausted — resets on the 1st');
 });
+
+// ---------- lineup filtering ----------
+const LINEUP_PROPS_BODY = {
+  id: 'ev2', home_team: 'Home Nine', away_team: 'Away Nine',
+  bookmakers: [{
+    key: 'fanduel', title: 'FanDuel',
+    markets: [
+      { key: 'pitcher_strikeouts', outcomes: [
+        { name: 'Over',  description: 'Test Pitcher',  point: 5.5, price: -110 },
+        { name: 'Under', description: 'Test Pitcher',  point: 5.5, price: -110 },
+        { name: 'Over',  description: 'Bench Pitcher', point: 4.5, price: -110 },
+        { name: 'Under', description: 'Bench Pitcher', point: 4.5, price: -110 }
+      ]},
+      { key: 'batter_hits', outcomes: [
+        { name: 'Over',  description: 'Lineup Batter', point: 0.5, price: -110 },
+        { name: 'Under', description: 'Lineup Batter', point: 0.5, price: -110 },
+        { name: 'Over',  description: 'Bench Batter',  point: 0.5, price: -110 },
+        { name: 'Under', description: 'Bench Batter',  point: 0.5, price: -110 }
+      ]}
+    ]
+  }]
+};
+const LINEUP_PLAYERS_BODY = { people: [
+  { id: 660271, fullName: 'Test Pitcher' },
+  { id: 999,    fullName: 'Bench Pitcher' },
+  { id: 111,    fullName: 'Lineup Batter' },
+  { id: 333,    fullName: 'Bench Batter' }
+]};
+const COMBO_GAMELOG_BODY = { stats: [{ splits: Array(10).fill(0).map(() => ({
+  stat: { strikeOuts: 8, gamesStarted: 1, hits: 2, totalBases: 3, rbi: 1, homeRuns: 0 }
+})) }] };
+function scheduleBody(lineupsPosted, homeName = 'Home Nine', awayName = 'Away Nine'){
+  return { dates: [{ games: [{
+    teams: {
+      home: { team: { name: homeName }, probablePitcher: { id: 660271, fullName: 'Test Pitcher' } },
+      away: { team: { name: awayName } }
+    },
+    lineups: lineupsPosted
+      ? { homePlayers: [{ id: 111 }, { id: 112 }], awayPlayers: [{ id: 222 }] }
+      : {}
+  }] }] };
+}
+function lineupApp(scheduleResp){
+  const f = routedFetch([
+    ['api.the-odds-api.com', okResponse(LINEUP_PROPS_BODY)],
+    ['/api/v1/schedule', scheduleResp],
+    ['/api/v1/sports/1/players', okResponse(LINEUP_PLAYERS_BODY)],
+    ['/api/v1/people/', okResponse(COMBO_GAMELOG_BODY)]
+  ]);
+  return { app: createApp({ apiKey: 'k', fetchFn: f }), f };
+}
+
+test('lineups posted: bench pitcher and bench batter filtered with reasons', async () => {
+  const { app } = lineupApp(okResponse(scheduleBody(true)));
+  const res = await request(app).get('/api/analyze/mlb/ev2');
+  assert.equal(res.status, 200);
+  assert.equal(res.body.lineupStatus, 'confirmed');
+  assert.equal(res.body.propCount, 4);
+  const pickNames = res.body.picks.map(p => p.player).sort();
+  assert.deepEqual(pickNames, ['Lineup Batter', 'Test Pitcher']);
+  const reasons = Object.fromEntries(res.body.filtered.map(f => [f.player, f.reason]));
+  assert.equal(reasons['Bench Pitcher'], 'not_probable_starter');
+  assert.equal(reasons['Bench Batter'], 'not_in_lineup');
+  res.body.picks.forEach(p => assert.ok(!p.analysis.flags.includes('lineup_unconfirmed')));
+});
+
+test('lineups pending: batters analyzed with lineup_unconfirmed flag, bench pitcher still filtered', async () => {
+  const { app } = lineupApp(okResponse(scheduleBody(false)));
+  const res = await request(app).get('/api/analyze/mlb/ev2');
+  assert.equal(res.body.lineupStatus, 'pending');
+  const byName = Object.fromEntries(res.body.picks.map(p => [p.player, p]));
+  assert.ok(byName['Lineup Batter'].analysis.flags.includes('lineup_unconfirmed'));
+  assert.ok(byName['Bench Batter'].analysis.flags.includes('lineup_unconfirmed'));
+  assert.ok(!byName['Test Pitcher'].analysis.flags.includes('lineup_unconfirmed'));
+  assert.equal(res.body.filtered.length, 1);
+  assert.equal(res.body.filtered[0].player, 'Bench Pitcher');
+});
+
+test('schedule failure: analysis unfiltered, lineupStatus unavailable', async () => {
+  const { app } = lineupApp(errResponse(500));
+  const res = await request(app).get('/api/analyze/mlb/ev2');
+  assert.equal(res.status, 200);
+  assert.equal(res.body.lineupStatus, 'unavailable');
+  assert.equal(res.body.filtered.length, 0);
+  assert.equal(res.body.picks.length, 4);
+  res.body.picks.forEach(p => assert.ok(!p.analysis.flags.includes('lineup_unconfirmed')));
+});
+
+test('unmatched team names: same as unavailable', async () => {
+  const { app } = lineupApp(okResponse(scheduleBody(true, 'Other Club', 'Different Club')));
+  const res = await request(app).get('/api/analyze/mlb/ev2');
+  assert.equal(res.body.lineupStatus, 'unavailable');
+  assert.equal(res.body.filtered.length, 0);
+  assert.equal(res.body.picks.length, 4);
+});
