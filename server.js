@@ -192,28 +192,80 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
       });
     });
 
+    const propCount = Object.keys(grouped).length;
+
+    // ---- lineup / probable-starter context (enhancement — never blocks analysis) ----
+    let lineupStatus = 'unavailable';
+    const probablePitcherIds = new Set();
+    const lineupIds = new Set();
+    let lineupsPosted = false;
+    try {
+      const dateStr = new Date(now()).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+      const sched = await fetchStats(`/api/v1/schedule?sportId=1&date=${dateStr}&hydrate=probablePitcher,lineups`, 15 * 60 * 1000);
+      const home = normName(props.body.home_team || '');
+      const away = normName(props.body.away_team || '');
+      const games = ((sched.dates || [])[0] || {}).games || [];
+      const match = games.find(g =>
+        normName(g.teams?.home?.team?.name || '') === home &&
+        normName(g.teams?.away?.team?.name || '') === away
+      );
+      if (match) {
+        [match.teams?.home?.probablePitcher, match.teams?.away?.probablePitcher].forEach(p => {
+          if (p && p.id) probablePitcherIds.add(p.id);
+        });
+        const homePlayers = match.lineups?.homePlayers || [];
+        const awayPlayers = match.lineups?.awayPlayers || [];
+        lineupsPosted = homePlayers.length > 0 && awayPlayers.length > 0;
+        homePlayers.concat(awayPlayers).forEach(p => { if (p && p.id) lineupIds.add(p.id); });
+        lineupStatus = lineupsPosted ? 'confirmed' : 'pending';
+      }
+    } catch (e) {
+      lineupStatus = 'unavailable';
+    }
+
     const season = new Date(now()).getFullYear();
     const picks = [];
     const skipped = new Set();
+    const filteredMap = new Map();
     try {
       for (const gk of Object.keys(grouped)) {
         const prop = grouped[gk];
         const cfg = MLB_MARKET_STATS[prop.market];
         const pid = await mlbPlayerId(prop.player, season);
         if (!pid) { skipped.add(prop.player); continue; }
+        if (cfg.group === 'pitching' && probablePitcherIds.size && !probablePitcherIds.has(pid)) {
+          filteredMap.set(prop.player + '|' + prop.market, { player: prop.player, reason: 'not_probable_starter' });
+          continue;
+        }
+        if (cfg.group === 'hitting' && lineupsPosted && !lineupIds.has(pid)) {
+          filteredMap.set(prop.player + '|' + prop.market, { player: prop.player, reason: 'not_in_lineup' });
+          continue;
+        }
         let games = await mlbGameValues(pid, cfg.group, cfg.stat, season);
         if (cfg.startsOnly) games = games.filter(g => g.started);
         const values = games.map(g => g.value);
         if (!values.length) { skipped.add(prop.player); continue; }
         const pick = analyzeProp(prop, { recentValues: values.slice(0, cfg.window), seasonValues: values });
-        if (pick) picks.push(pick);
+        if (pick) {
+          if (cfg.group === 'hitting' && lineupStatus === 'pending') {
+            pick.analysis.flags.push('lineup_unconfirmed');
+          }
+          picks.push(pick);
+        }
       }
     } catch (err) {
       if (err && err.kind === 'stats') return sendUpstreamError(res, err);
       throw err;
     }
 
-    const body = { picks: rankPicks(picks), skipped: [...skipped], generatedAt: new Date(now()).toISOString() };
+    const body = {
+      picks: rankPicks(picks),
+      skipped: [...skipped],
+      filtered: [...new Map([...filteredMap.values()].map(f => [f.player + '|' + f.reason, f])).values()],
+      lineupStatus,
+      propCount,
+      generatedAt: new Date(now()).toISOString()
+    };
     analysisCache.set(eventId, { body, expires: now() + cacheTtlMs });
     res.json(body);
   }
