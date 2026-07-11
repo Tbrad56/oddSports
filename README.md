@@ -14,9 +14,9 @@ the app needs their own key.
 - **Home** — cheatsheet of top value spots across the selected sport, sorted by edge
 - **Board** — moneyline odds per game across FanDuel, DraftKings, BetMGM,
   Caesars, ESPN BET, Bet365, Fanatics, and BetRivers, ranked best → worst,
-  with auto-refresh (10 min)
-- **Props** — opt-in per game (protects API quota); player props organized
-  into collapsible market sections with a per-book filter and line-shop chips
+  with auto-refresh (10 min). Each game card also has an opt-in player props
+  section (protects API quota) with a per-book filter and line-shop chips,
+  plus MLB stadium weather and a Kalshi reference price where available
 - **Slip** — parlay builder: finds every book covering all your legs, prices
   the combined parlay per book, and gives you a copyable slip text to paste
   into that book's app

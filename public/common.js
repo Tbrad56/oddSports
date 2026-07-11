@@ -208,7 +208,6 @@ function renderNav(activePage){
   const items = [
     ['home','/','🏠','Home'],
     ['board','/board.html','📊','Board'],
-    ['props','/props.html','🏀','Props'],
     ['getprops','/getprops.html','🎯','Get Props'],
     ['slip','/slip.html','🎟️','Slip']
   ];
