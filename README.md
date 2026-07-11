@@ -9,6 +9,10 @@ per book. Informational only — no bets placed, no sportsbook accounts.
 Static frontend (`public/`) served by an Express proxy (`server.js`) that
 holds The Odds API key server-side and caches responses for 10 minutes.
 
+The Get Props page estimates MLB prop hit probabilities from player game
+logs (MLB StatsAPI, free) and flags lines where the model disagrees with
+the books — informational only.
+
 ## Run locally
 
 1. `npm install`

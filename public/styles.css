@@ -367,3 +367,25 @@
   .cta-card p{font-size:12.5px; color:var(--text-dim); line-height:1.5;}
   .cta-card .go{color:var(--accent); font-weight:700; font-size:12px; margin-top:10px; display:inline-block;}
   @media (max-width:640px){.cta-row{grid-template-columns:1fr;}}
+
+/* ---------- Get Props additions ---------- */
+.model-note{
+  background:rgba(255,180,67,0.07); border:1px solid rgba(255,180,67,0.3);
+  color:var(--text-dim); padding:10px 12px; border-radius:8px; font-size:12px;
+  line-height:1.6; margin-bottom:14px;
+}
+.pick-row{cursor:pointer;}
+.pick-row:hover td{background:rgba(63,182,255,0.05);}
+.edge-cell{font-family:var(--font-mono); font-weight:700; color:var(--good);}
+.pick-detail{background:#070E24;}
+.pick-detail td{padding:12px 16px;}
+.bar-strip{display:flex; align-items:flex-end; gap:3px; height:44px; margin:8px 0;}
+.bar-strip .bar{width:14px; background:var(--text-faint); border-radius:2px 2px 0 0; min-height:3px;}
+.bar-strip .bar.hit{background:var(--good);}
+.flag-chip{
+  font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.5px;
+  padding:2px 7px; border-radius:4px; margin-right:6px; display:inline-block;
+}
+.flag-chip.warn{background:var(--warn); color:#061E45;}
+.flag-chip.info{background:var(--bg-raised); color:var(--text-dim); border:1px solid var(--border);}
+.analyze-cost{font-size:10.5px; color:var(--text-faint); margin-left:8px;}
