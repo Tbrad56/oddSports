@@ -809,10 +809,10 @@
   }
 
   function buildCopyText(bookKey, bookName){
-    let lines = [`${bookName} parlay slip:`];
+    let lines = [`${escapeHtml(bookName)} parlay slip:`];
     state.slip.forEach(leg=>{
       const row = leg.rows.find(r=>r.bookKey===bookKey);
-      lines.push(`• ${leg.side} (${leg.matchup}) — ${fmtAmerican(row.odds)}`);
+      lines.push(`• ${escapeHtml(leg.side)} (${escapeHtml(leg.matchup)}) — ${fmtAmerican(row.odds)}`);
     });
     return lines.join('\n');
   }
