@@ -51,7 +51,7 @@
   }
 
   function flagChips(flags){
-    const labels = { thin_sample:['warn','Thin sample'], check_news:['warn','Check news'], one_sided:['info','One-sided line'] };
+    const labels = { thin_sample:['warn','Thin sample'], check_news:['warn','Check news'], one_sided:['info','One-sided line'], lineup_unconfirmed:['info','Lineup unconfirmed'] };
     return flags.map(f=>{
       const [cls, label] = labels[f] || ['info', f];
       return `<span class="flag-chip ${cls}">${escapeHtml(label)}</span>`;
@@ -59,10 +59,19 @@
   }
 
   function renderResults(game, result){
-    if(!result.picks.length){
-      return `<span style="font-size:12.5px; color:var(--text-faint);">No edges ≥ 3% found in this game's props.</span>`;
+    let head = '';
+    if(result.lineupStatus === 'confirmed'){
+      head = `<div style="font-size:11.5px; color:var(--good); margin-bottom:8px;">Lineups posted ✓</div>`;
+    } else if(result.lineupStatus === 'pending'){
+      head = `<div style="font-size:11.5px; color:var(--warn); margin-bottom:8px;">Lineups pending — batter picks unconfirmed</div>`;
     }
-    let html = `<table class="props-table"><thead><tr>
+    if(!result.picks.length){
+      const msg = result.propCount === 0
+        ? 'No props posted for this game yet — books usually post player props closer to game time.'
+        : 'No edges ≥ 3% found in this game\'s props.';
+      return head + `<span style="font-size:12.5px; color:var(--text-faint);">${msg}</span>`;
+    }
+    let html = head + `<table class="props-table"><thead><tr>
       <th>Player</th><th>Prop</th><th>Side</th><th>Model</th><th>Book</th><th>Edge</th><th>Best price</th><th></th>
     </tr></thead><tbody>`;
     result.picks.forEach((pick, i)=>{
@@ -100,6 +109,9 @@
     html += `</tbody></table>`;
     if(result.skipped.length){
       html += `<div style="font-size:11px; color:var(--text-faint); margin-top:8px;">No stats match: ${result.skipped.map(escapeHtml).join(', ')}</div>`;
+    }
+    if(result.filtered && result.filtered.length){
+      html += `<div style="font-size:11px; color:var(--text-faint); margin-top:8px;">Not starting today: ${result.filtered.map(f=>escapeHtml(f.player)).join(', ')}</div>`;
     }
     return html;
   }
