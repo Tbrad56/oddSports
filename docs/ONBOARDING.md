@@ -96,8 +96,8 @@ npm start
 ```
 
 Open http://localhost:3000 — you should see the LineWatch home page.
-Pages: Home (value cheatsheet), Board (moneylines), Props (per-game player
-props), Slip (parlay builder).
+Pages: Home (value cheatsheet), Board (moneylines + per-game player props),
+Get Props (MLB hit-probability model), Slip (parlay builder).
 
 Run the server tests any time:
 
@@ -165,10 +165,10 @@ git branch -d short-name      # clean up the old branch
 
 ```
 public/          the website (what the browser loads)
-  common.js        shared helpers: slip storage, nav, odds math
+  common.js        shared helpers: slip storage, nav, odds math, weather/Kalshi/My Books
   index.html+home.js    Home page
-  board.html+board.js   odds board
-  props.html+props.js   player props
+  board.html+board.js   odds board — moneylines, player props (per game), weather, Kalshi
+  getprops.html+getprops.js   MLB prop hit-probability model
   slip.html+slip.js     bet slip / parlay
 server.js        Express server: serves public/ + proxies The Odds API
                  (holds the key server-side, caches responses 10 min)

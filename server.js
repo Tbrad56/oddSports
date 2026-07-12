@@ -23,6 +23,8 @@ const PROP_MARKETS = {
 };
 
 const STATSAPI = 'https://statsapi.mlb.com';
+const SCORES_TTL_MS = 30 * 1000;
+const LIVE_TTL_MS = 20 * 1000;
 
 // market key -> which MLB game-log stat backs it
 const MLB_MARKET_STATS = {
@@ -145,6 +147,70 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     const { sport } = req.params;
     if (!SPORTS.has(sport)) return res.status(400).json({ error: 'Unknown sport' });
     proxy(`/v4/sports/${sport}/odds/?regions=us,us2&markets=h2h&oddsFormat=american`, res);
+  });
+
+  // Live/recent scores. Cached on a much shorter TTL than odds (SCORES_TTL_MS)
+  // since games change state every few minutes, not every 10 min like odds.
+  const scoresCache = new Map(); // sport -> {body, remaining, cachedAt, expires}
+  async function getScores(sport){
+    const hit = scoresCache.get(sport);
+    if (hit && now() < hit.expires) {
+      return { body: hit.body, remaining: hit.remaining, cacheAge: Math.round((now() - hit.cachedAt) / 1000) };
+    }
+    let upstream;
+    try {
+      upstream = await fetchFn(`${UPSTREAM}/v4/sports/${sport}/scores/?daysFrom=1&apiKey=${encodeURIComponent(apiKey)}`);
+    } catch (e) {
+      console.error(`Upstream fetch failed for scores/${sport}: ${e.message}`);
+      throw { kind: 'unavailable' };
+    }
+    if (upstream.status === 429) throw { kind: 'quota' };
+    if (!upstream.ok) {
+      console.error(`Upstream ${upstream.status} for scores/${sport}`);
+      throw { kind: 'unavailable' };
+    }
+    let body;
+    try {
+      body = await upstream.json();
+    } catch (e) {
+      console.error(`Upstream returned unparseable JSON for scores/${sport}`);
+      throw { kind: 'unavailable' };
+    }
+    const remaining = upstream.headers.get('x-requests-remaining');
+    scoresCache.set(sport, { body, remaining, cachedAt: now(), expires: now() + SCORES_TTL_MS });
+    return { body, remaining, cacheAge: 0 };
+  }
+  app.get('/api/scores/:sport', (req, res) => {
+    const { sport } = req.params;
+    if (!SPORTS.has(sport)) return res.status(400).json({ error: 'Unknown sport' });
+    getScores(sport).then(r => {
+      if (r.remaining) res.set('x-requests-remaining', r.remaining);
+      res.set('x-cache-age-seconds', String(r.cacheAge));
+      res.json(r.body);
+    }).catch(err => sendUpstreamError(res, err));
+  });
+
+  // MLB live in-game detail (inning, outs, balls/strikes) — MLB StatsAPI only
+  // has this; The Odds API scores endpoint only gives the running score.
+  app.get('/api/live/mlb', (req, res) => {
+    (async () => {
+      const dateStr = new Date(now()).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+      const sched = await fetchStats(`/api/v1/schedule?sportId=1&date=${dateStr}&hydrate=linescore`, LIVE_TTL_MS);
+      const games = ((sched.dates || [])[0] || {}).games || [];
+      res.json({
+        games: games.map(g => ({
+          home_team: g.teams?.home?.team?.name || '',
+          away_team: g.teams?.away?.team?.name || '',
+          abstractGameState: g.status?.abstractGameState || '',
+          detailedState: g.status?.detailedState || '',
+          inning: g.linescore?.currentInning || null,
+          inningState: g.linescore?.inningState || null,
+          outs: g.linescore?.outs ?? null,
+          balls: g.linescore?.balls ?? null,
+          strikes: g.linescore?.strikes ?? null
+        }))
+      });
+    })().catch(err => sendUpstreamError(res, err));
   });
 
   app.get('/api/props/:sport/:eventId', (req, res) => {

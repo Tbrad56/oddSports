@@ -32,7 +32,7 @@
 
   <main>
     <div class="hero-line">Odds Board</div>
-    <div class="hero-sub">Compare moneylines across books — best price first, value flagged.</div>
+    <div class="hero-sub">Compare moneylines and player props across books — best price first, value flagged.</div>
     <div class="chip-row" id="sportChips"></div>
     <div class="status-row">
       <div class="dot" id="statusDot"></div>
@@ -42,11 +42,20 @@
       <input type="text" id="searchInput" placeholder="Search a team or matchup (e.g. Lakers, Chiefs)…">
       <button id="fetchBtn" class="primary">Get Odds</button>
     </div>
+    <div class="props-toggle" style="margin:0 0 14px;">
+      <button class="ghost" id="myBooksToggle">My sportsbooks ▾</button>
+    </div>
+    <div class="panel reveal" id="myBooksPanel" style="display:none; margin-bottom:16px;">
+      <h2>My Sportsbooks</h2>
+      <div id="myBooksList" class="mybooks-panel-books"></div>
+      <div class="settings-hint" style="margin-top:8px;">Pick the books you actually use — the board shows just your prices in a clean grid, with a quiet note when another book beats you. Leave all unchecked to compare every book.</div>
+    </div>
     <div id="errorArea"></div>
+    <div class="chip-row" id="bookFilterChips"></div>
     <div id="gamesArea">
       <div class="empty-state">
         <h3>No odds loaded yet</h3>
-        <p>Pick a sport chip above. Odds are ranked best → worst per side, with a badge for each sportsbook. Player props live on the <a href="/props.html">Props page</a>.</p>
+        <p>Pick a sport chip above. Odds are ranked best → worst per side, with a badge for each sportsbook. Each game card also has a "Load player props" button.</p>
       </div>
     </div>
   </main>

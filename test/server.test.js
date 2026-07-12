@@ -359,6 +359,102 @@ test('filtered list dedupes a batter benched across multiple markets', async () 
   assert.equal(benchEntries.length, 1);
 });
 
+// ---------- /api/scores/:sport ----------
+test('scores: rejects unknown sport with 400, never calls upstream', async () => {
+  const f = fakeFetch(() => okResponse([]));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/scores/basketball_wnba');
+  assert.equal(res.status, 400);
+  assert.equal(f.calls.length, 0);
+});
+
+test('scores: proxies a valid sport with daysFrom=1, passes body and quota header back', async () => {
+  const games = [{ id: 'g1', completed: false, home_team: 'A', away_team: 'B', scores: null }];
+  const f = fakeFetch(() => okResponse(games, '77'));
+  const app = createApp({ apiKey: 'sekret', fetchFn: f });
+  const res = await request(app).get('/api/scores/basketball_nba');
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, games);
+  assert.equal(res.headers['x-requests-remaining'], '77');
+  assert.equal(res.headers['x-cache-age-seconds'], '0');
+  assert.match(f.calls[0], /^https:\/\/api\.the-odds-api\.com\/v4\/sports\/basketball_nba\/scores\/\?daysFrom=1&apiKey=sekret$/);
+});
+
+test('scores: second request within TTL served from cache', async () => {
+  let t = 1000000;
+  const f = fakeFetch(() => okResponse([{ id: 'x' }]));
+  const app = createApp({ apiKey: 'k', fetchFn: f, now: () => t });
+  await request(app).get('/api/scores/basketball_nba');
+  t += 10000; // +10s, within the 30s scores TTL
+  const res2 = await request(app).get('/api/scores/basketball_nba');
+  assert.equal(res2.status, 200);
+  assert.equal(f.calls.length, 1);
+  assert.equal(res2.headers['x-cache-age-seconds'], '10');
+});
+
+test('scores: cache expires after its own (shorter) TTL', async () => {
+  let t = 1000000;
+  const f = fakeFetch(() => okResponse([]));
+  const app = createApp({ apiKey: 'k', fetchFn: f, now: () => t });
+  await request(app).get('/api/scores/basketball_nba');
+  t += 31000; // past the 30s scores TTL
+  await request(app).get('/api/scores/basketball_nba');
+  assert.equal(f.calls.length, 2);
+});
+
+test('scores: upstream 429 maps to quota message', async () => {
+  const f = fakeFetch(() => errResponse(429));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/scores/basketball_nba');
+  assert.equal(res.status, 429);
+  assert.equal(res.body.error, 'Monthly odds quota exhausted — resets on the 1st');
+});
+
+test('scores: upstream failure maps to 502, key not leaked', async () => {
+  const f = fakeFetch(() => errResponse(401));
+  const app = createApp({ apiKey: 'sekret', fetchFn: f });
+  const res = await request(app).get('/api/scores/basketball_nba');
+  assert.equal(res.status, 502);
+  assert.equal(res.body.error, 'Odds service unavailable');
+  assert.ok(!JSON.stringify(res.body).includes('sekret'));
+});
+
+// ---------- /api/live/mlb ----------
+function mlbLiveScheduleBody(){
+  return {
+    dates: [{
+      games: [{
+        teams: {
+          home: { team: { name: 'New York Yankees' } },
+          away: { team: { name: 'Boston Red Sox' } }
+        },
+        status: { abstractGameState: 'Live', detailedState: 'In Progress' },
+        linescore: { currentInning: 4, inningState: 'Bottom', outs: 2, balls: 1, strikes: 2 }
+      }]
+    }]
+  };
+}
+
+test('live/mlb: maps schedule+linescore to a flat games array', async () => {
+  const f = routedFetch([['/api/v1/schedule', okResponse(mlbLiveScheduleBody())]]);
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/live/mlb');
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.games, [{
+    home_team: 'New York Yankees', away_team: 'Boston Red Sox',
+    abstractGameState: 'Live', detailedState: 'In Progress',
+    inning: 4, inningState: 'Bottom', outs: 2, balls: 1, strikes: 2
+  }]);
+});
+
+test('live/mlb: StatsAPI failure maps to 502 Stats service unavailable', async () => {
+  const f = fakeFetch(() => errResponse(500));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/live/mlb');
+  assert.equal(res.status, 502);
+  assert.equal(res.body.error, 'Stats service unavailable');
+});
+
 // ---------- pick tracking ----------
 const fs = require('fs');
 const os = require('os');
