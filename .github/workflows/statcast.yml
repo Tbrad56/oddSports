@@ -21,14 +21,14 @@ jobs:
 
       - name: Fetch Statcast leaderboard
         run: |
-          mkdir -p data
+          mkdir -p public/statcast
           python scripts/fetch_statcast.py
 
       - name: Commit if changed
         run: |
           git config user.name "statcast-bot"
           git config user.email "actions@github.com"
-          git add data/statcast.json
+          git add public/statcast/statcast.json
           git diff --cached --quiet && echo "No changes" && exit 0
           git commit -m "Update Statcast data ($(date -u +%F))"
           git push

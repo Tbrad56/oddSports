@@ -2,7 +2,7 @@
 """
 Fetches season batter Statcast metrics (avg exit velo, barrel%, hard-hit%)
 from Baseball Savant's custom leaderboard CSV export and writes them to
-data/statcast.json for the app to consume.
+public/statcast/statcast.json for the app to consume.
 
 Runs in GitHub Actions (see .github/workflows/statcast.yml) — not in the
 browser, so no CORS concerns. Be a polite citizen: this runs once per day.
@@ -10,6 +10,7 @@ browser, so no CORS concerns. Be a polite citizen: this runs once per day.
 import csv
 import io
 import json
+import os
 import sys
 import urllib.request
 from datetime import date
@@ -67,9 +68,10 @@ def main() -> int:
         return 1
 
     payload = {"updated": date.today().isoformat(), "season": YEAR, "batters": out}
-    with open("data/statcast.json", "w") as f:
+    os.makedirs("public/statcast", exist_ok=True)
+    with open("public/statcast/statcast.json", "w") as f:
         json.dump(payload, f, separators=(",", ":"))
-    print(f"Wrote {len(out)} batters to data/statcast.json")
+    print(f"Wrote {len(out)} batters to public/statcast/statcast.json")
     return 0
 
 if __name__ == "__main__":
