@@ -22,7 +22,11 @@
       }
     }catch(e){
       setStatus(false, 'Fetch failed.');
-      showError(e.message || 'Could not fetch games — try again shortly.');
+      const message = e.message || 'Could not fetch games — try again shortly.';
+      showError(message);
+      document.getElementById('gamesArea').innerHTML = '<div class="empty-state"><h3>Couldn\'t load games</h3><p>' + escapeHtml(message) + '</p><button class="primary" id="retryBtn">Retry</button></div>';
+      const retryBtn = document.getElementById('retryBtn');
+      if(retryBtn) retryBtn.addEventListener('click', loadGames);
     }
   }
 

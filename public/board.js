@@ -6,13 +6,23 @@
     propIdCounter: 0,
     propsBookFilter: 'all',
     marketCollapsed: {},
+    propsOpen: {},        // gameId -> bool, survives re-renders (audit 6.1)
+    propsUnavailable: {}, // gameId -> cached "no props" / error message html
     scores: [], mlbLive: [], scoresTimer: null
   };
+  let renderScheduled = false;
+  // Coalesces multiple renderGames() requests (weather + Kalshi post-fetches, audit 6.2)
+  // into a single call per animation frame, instead of re-rendering the whole board twice more.
+  function scheduleRender(){
+    if(renderScheduled) return;
+    renderScheduled = true;
+    requestAnimationFrame(()=>{ renderScheduled = false; if(state.games.length) renderGames(); });
+  }
 
   renderNav('board');
   renderSportChips(document.getElementById('sportChips'), ()=>{
     state.propsCache = {}; state.propRegistry = {}; state.marketCollapsed = {};
-    state.propsBookFilter = 'all';
+    state.propsBookFilter = 'all'; state.propsOpen = {}; state.propsUnavailable = {};
     refresh();
   });
   renderMyBooksList();
@@ -33,12 +43,12 @@
       const sport = getSport();
       // MLB: pull hourly stadium forecasts (free Open-Meteo, no key), re-render with weather strips
       if(sport === 'baseball_mlb' && games.length){
-        fetchStadiumWeather(games).then(renderGames).catch(()=>{});
+        fetchStadiumWeather(games).then(scheduleRender).catch(()=>{});
       }
       // Kalshi reference prices (public market data, no key) for supported sports
       kalshiEventsCache = [];
       if(KALSHI_SERIES[sport] && games.length){
-        fetchKalshi(sport).then(renderGames).catch(()=>{});
+        fetchKalshi(sport).then(scheduleRender).catch(()=>{});
       }
       // Live scores: fetch now, then keep polling every 30s while this sport is loaded
       state.scores = []; state.mlbLive = [];
@@ -49,12 +59,35 @@
       }
     }catch(e){
       setStatus(false, 'Fetch failed.');
-      showError(e.message || 'Could not fetch odds — try again shortly.');
+      const message = e.message || 'Could not fetch odds — try again shortly.';
+      showError(message);
+      document.getElementById('gamesArea').innerHTML = '<div class="empty-state"><h3>Couldn\'t load games</h3><p>' + escapeHtml(message) + '</p><button class="primary" id="retryBtn">Retry</button></div>';
+      const retryBtn = document.getElementById('retryBtn');
+      if(retryBtn) retryBtn.addEventListener('click', refresh);
     }finally{
       btn.disabled = false; btn.textContent = 'Get Odds';
     }
   }
   document.getElementById('fetchBtn').addEventListener('click', refresh);
+
+  // Patches the live-score slot inside each already-rendered game card in place —
+  // does NOT call renderGames(), so it never collapses open props or replays the
+  // card entrance animation (audit 6.1b). Falls back to one full render only if
+  // a card is missing (e.g. the game list itself changed underneath the poll).
+  function patchScores(){
+    const sportKey = getSport();
+    let missingCard = false;
+    state.games.forEach(game=>{
+      const card = document.querySelector('[data-game-id="' + CSS.escape(String(game.id)) + '"]');
+      if(!card){ missingCard = true; return; }
+      const slot = card.querySelector('.live-score-slot');
+      if(!slot) return;
+      const scoreEntry = findScoreFor(state.scores, game);
+      const liveDetail = sportKey === 'baseball_mlb' ? findMlbLiveFor(state.mlbLive, game) : null;
+      slot.innerHTML = buildScoreBadgeHtml(game, scoreEntry, liveDetail);
+    });
+    if(missingCard) renderGames();
+  }
 
   async function refreshScores(){
     const sport = getSport();
@@ -63,7 +96,7 @@
       if(sport === 'baseball_mlb'){
         state.mlbLive = await fetchMlbLive().catch(()=>[]);
       }
-      if(state.games.length) renderGames();
+      if(state.games.length) patchScores();
     }catch(e){
       // scores are a bonus overlay — quietly skip on failure, odds board still works
     }
@@ -144,15 +177,20 @@
     try{
       const res = await fetch(`/api/props/${sportKey}/${game.id}`);
       if(!res.ok){
-        hostEl.innerHTML = `<div class="props-block"><span style="color:var(--text-faint); font-size:12.5px;">Props aren't available for this game right now (either not offered yet, or the server couldn't reach the odds provider).</span></div>`;
+        const msg = `<div class="props-block"><span style="color:var(--text-faint); font-size:12.5px;">Props aren't available for this game right now (either not offered yet, or the server couldn't reach the odds provider).</span></div>`;
+        state.propsUnavailable[game.id] = msg;
+        hostEl.innerHTML = msg;
         return;
       }
       const data = await res.json();
+      delete state.propsUnavailable[game.id];
       state.propsCache[game.id] = {game, data};
       hostEl.innerHTML = buildPropsHtml(game, data, PROP_MARKETS[sportKey]);
       renderBookFilter();
     }catch(e){
-      hostEl.innerHTML = `<div class="props-block"><span style="color:var(--text-faint); font-size:12.5px;">Couldn't load props right now.</span></div>`;
+      const msg = `<div class="props-block"><span style="color:var(--text-faint); font-size:12.5px;">Couldn't load props right now.</span></div>`;
+      state.propsUnavailable[game.id] = msg;
+      hostEl.innerHTML = msg;
     }
   }
 
@@ -274,6 +312,7 @@
     gamesToShow.forEach(game=>{
       const card = document.createElement('div');
       card.className = 'game-card';
+      card.dataset.gameId = game.id;
 
       const head = document.createElement('div');
       head.className = 'game-head';
@@ -284,15 +323,15 @@
       `;
       card.appendChild(head);
 
-      // Live/final score badge, when the game has started
+      // Live/final score badge, when the game has started. This slot is always
+      // present (even empty) so the 30s scores poll can patch it in place via
+      // patchScores() instead of re-rendering the whole board (audit 6.1b).
       const scoreEntry = findScoreFor(state.scores, game);
       const liveDetail = sportKey === 'baseball_mlb' ? findMlbLiveFor(state.mlbLive, game) : null;
-      const scoreHtml = buildScoreBadgeHtml(game, scoreEntry, liveDetail);
-      if(scoreHtml){
-        const s = document.createElement('div');
-        s.innerHTML = scoreHtml;
-        card.appendChild(s.firstElementChild);
-      }
+      const scoreSlot = document.createElement('div');
+      scoreSlot.className = 'live-score-slot';
+      scoreSlot.innerHTML = buildScoreBadgeHtml(game, scoreEntry, liveDetail);
+      card.appendChild(scoreSlot);
 
       // MLB: stadium weather strip sits above the odds
       if(sportKey === 'baseball_mlb'){
@@ -423,20 +462,29 @@
         const toggleWrap = document.createElement('div');
         toggleWrap.className = 'props-toggle';
         const alreadyLoaded = !!state.propsCache[game.id];
+        const unavailableMsg = state.propsUnavailable[game.id];
+        // Props open/closed state lives in state.propsOpen so it survives re-renders
+        // triggered by the weather/Kalshi batch or a fallback score render (audit 6.1a).
+        const isOpen = !!state.propsOpen[game.id];
         const toggleBtn = document.createElement('button');
         toggleBtn.className = 'ghost';
-        toggleBtn.textContent = alreadyLoaded ? 'Show player props' : 'Load player props';
+        toggleBtn.textContent = isOpen
+          ? 'Hide player props'
+          : ((alreadyLoaded || unavailableMsg) ? 'Show player props' : 'Load player props');
         toggleWrap.appendChild(toggleBtn);
         card.appendChild(toggleWrap);
 
         const propsHost = document.createElement('div');
-        propsHost.className = 'props-host reveal';
+        propsHost.className = 'props-host reveal' + (isOpen ? ' is-open' : '');
         propsHost.dataset.gameId = game.id;
-        propsHost.style.display = 'none';
+        propsHost.style.display = isOpen ? 'block' : 'none';
         card.appendChild(propsHost);
 
         if(alreadyLoaded){
           propsHost.innerHTML = buildPropsHtml(game, state.propsCache[game.id].data, PROP_MARKETS[sportKey]);
+          propsHost.dataset.loaded = '1';
+        } else if(unavailableMsg){
+          propsHost.innerHTML = unavailableMsg;
           propsHost.dataset.loaded = '1';
         }
 
@@ -444,6 +492,7 @@
           if(propsHost.classList.contains('is-open')){
             revealHide(propsHost);
             toggleBtn.textContent = 'Show player props';
+            state.propsOpen[game.id] = false;
             return;
           }
           if(!propsHost.dataset.loaded){
@@ -454,6 +503,7 @@
             toggleBtn.disabled = false;
           }
           toggleBtn.textContent = 'Hide player props';
+          state.propsOpen[game.id] = true;
           revealShow(propsHost);
         });
       }
