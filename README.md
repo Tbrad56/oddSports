@@ -16,7 +16,9 @@ the app needs their own key.
   Caesars, ESPN BET, Bet365, Fanatics, and BetRivers, ranked best → worst,
   with auto-refresh (10 min). Each game card also has an opt-in player props
   section (protects API quota) with a per-book filter and line-shop chips,
-  plus MLB stadium weather and a Kalshi reference price where available
+  plus MLB stadium weather and a Kalshi reference price where available.
+  Live/final scores appear on every card once a game starts, refreshed every
+  30s; MLB cards also show inning/outs/count
 - **Slip** — parlay builder: finds every book covering all your legs, prices
   the combined parlay per book, and gives you a copyable slip text to paste
   into that book's app
@@ -83,7 +85,10 @@ The free tier is 500 credits/month, **shared across everyone using this
 key**. Moneyline pull ≈ 2 credits (2 US regions); props ≈ 12 credits per
 game; Get Props analysis ≈ 12 credits per game. The 10-minute server cache
 is shared by all visitors — only cache misses spend credits, so don't spam
-"Analyze props" or "Load props" on every game.
+"Analyze props" or "Load props" on every game. Live scores poll every 30s
+but are cached server-side on the same 30s window, so simultaneous
+visitors share one upstream call; MLB inning/outs/count comes from the
+free MLB StatsAPI and doesn't touch the Odds API quota at all.
 
 ## Limitations (honest ones)
 

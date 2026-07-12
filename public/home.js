@@ -5,6 +5,9 @@
   async function load(){
     clearError();
     setStatus(false, 'Loading value spots…');
+    document.getElementById('cheatBody').innerHTML = [0,1,2].map(()=>
+      `<div style="padding:8px 0;"><div class="skeleton-line" style="width:70%;"></div><div class="skeleton-line short"></div></div>`
+    ).join('');
     try{
       const {games, remaining, cacheAge} = await fetchOddsFor(getSport());
       renderCheatsheet(games);
@@ -77,6 +80,7 @@
         <div class="cheat-odds">${fmtAmerican(p.odds)}</div>
       </div>
     `).join('');
+    staggerIn(body, 30);
   }
 
   load();

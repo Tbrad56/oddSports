@@ -1,20 +1,38 @@
 (function(){
-  const state = { games: [], results: {}, loading: {}, expanded: {} };
+  const state = { games: [], results: {}, loading: {}, expanded: {}, scores: [], mlbLive: [], scoresTimer: null };
 
   renderNav('getprops');
 
   async function loadGames(){
     clearError();
     setStatus(false, "Loading today's games…");
+    renderSkeletonCards(document.getElementById('gamesArea'), 3);
     try{
       const {games, remaining, cacheAge} = await fetchOddsFor('baseball_mlb');
       state.games = games;
       updateTicker(games);
       renderPage();
+      staggerIn(document.getElementById('gamesArea'));
       setStatus(true, oddsStatusText(games.length, remaining, cacheAge));
+
+      clearInterval(state.scoresTimer);
+      if(games.length){
+        refreshScores();
+        state.scoresTimer = setInterval(refreshScores, 30*1000);
+      }
     }catch(e){
       setStatus(false, 'Fetch failed.');
       showError(e.message || 'Could not fetch games — try again shortly.');
+    }
+  }
+
+  async function refreshScores(){
+    try{
+      state.scores = await fetchScoresFor('baseball_mlb');
+      state.mlbLive = await fetchMlbLive().catch(()=>[]);
+      if(state.games.length) renderPage();
+    }catch(e){
+      // scores are a bonus overlay — quietly skip on failure
     }
   }
 
@@ -31,11 +49,14 @@
       const when = new Date(game.commence_time);
       const result = state.results[game.id];
       const loading = state.loading[game.id];
-      html += `<div class="game-card" style="margin-bottom:14px;">
+      const scoreEntry = findScoreFor(state.scores, game);
+      const liveDetail = findMlbLiveFor(state.mlbLive, game);
+      html += `<div class="game-card" id="getprops-game-${escapeHtml(game.id)}" style="margin-bottom:14px;">
         <div class="game-head">
           <div class="game-teams">${escapeHtml(game.away_team)}<span class="vs">@</span>${escapeHtml(game.home_team)}</div>
           <div class="game-time">${when.toLocaleDateString(undefined,{month:'short',day:'numeric'})} · ${when.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'})}</div>
         </div>
+        ${buildScoreBadgeHtml(game, scoreEntry, liveDetail)}
         <div style="padding:14px 16px;">`;
       if(loading){
         html += `<span class="spinner"></span> <span style="font-size:12.5px; color:var(--text-dim);">Analyzing props…</span>`;
@@ -132,6 +153,8 @@
     }finally{
       state.loading[gameId] = false;
       renderPage();
+      const card = document.getElementById('getprops-game-' + gameId);
+      if(card) card.classList.add('enter');
     }
   }
 
@@ -151,6 +174,8 @@
         rows: pick.rows
       });
       showToast('Added ✓');
+      const row = slipBtn.closest('tr');
+      if(row) flashEl(row);
       return;
     }
     const row = e.target.closest('.pick-row');
