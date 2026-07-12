@@ -432,3 +432,19 @@ test('record endpoint: empty store returns null rates', async () => {
   assert.equal(res.body.summary.graded, 0);
   assert.equal(res.body.summary.hitRate, null);
 });
+
+test('logged gameDate comes from the game commence_time, not the clock', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lw-track-'));
+  const body = JSON.parse(JSON.stringify(ANALYZE_PROPS_BODY));
+  body.commence_time = '2026-07-13T23:00:00Z'; // 7pm ET July 13 — tomorrow relative to the fixed clock
+  const f = routedFetch([
+    ['api.the-odds-api.com', okResponse(body)],
+    ['/api/v1/schedule', errResponse(500)],
+    ['/api/v1/sports/1/players', okResponse(PLAYERS_BODY)],
+    ['/api/v1/people/', okResponse(GAMELOG_BODY)]
+  ]);
+  const app = createApp({ apiKey: 'k', fetchFn: f, dataDir: dir, now: () => Date.parse('2026-07-12T16:00:00Z') });
+  await request(app).get('/api/analyze/mlb/ev1');
+  const rec = JSON.parse(fs.readFileSync(path.join(dir, 'picks.jsonl'), 'utf8').trim().split('\n')[0]);
+  assert.equal(rec.gameDate, '2026-07-13');
+});

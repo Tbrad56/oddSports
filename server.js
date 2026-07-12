@@ -130,9 +130,9 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     return person ? person.id : null;
   }
 
-  // newest-first [{value, started}]
-  async function mlbGameValues(personId, group, statName, season){
-    const data = await fetchStats(`/api/v1/people/${personId}/stats?stats=gameLog&season=${season}&group=${group}`, 6 * 60 * 60 * 1000);
+  // newest-first [{value, started, date}]
+  async function mlbGameValues(personId, group, statName, season, ttlMs = 6 * 60 * 60 * 1000){
+    const data = await fetchStats(`/api/v1/people/${personId}/stats?stats=gameLog&season=${season}&group=${group}`, ttlMs);
     const splits = (((data.stats || [])[0] || {}).splits) || [];
     return splits.slice().reverse().map(s => ({
       value: Number((s.stat || {})[statName] || 0),
@@ -196,7 +196,7 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     });
 
     const propCount = Object.keys(grouped).length;
-    const etDate = new Date(now()).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    const etDate = new Date(Date.parse(props.body.commence_time || '') || now()).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 
     // ---- lineup / probable-starter context (enhancement — never blocks analysis) ----
     let lineupStatus = 'unavailable';
@@ -300,11 +300,10 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
       const cfg = MLB_MARKET_STATS[p.market];
       if (!cfg) continue;
       const daysPast = (Date.parse(todayET) - Date.parse(p.gameDate)) / 86400000;
-      const sameDayOld = p.gameDate === todayET && (now() - Date.parse(p.ts)) > 8 * 60 * 60 * 1000;
-      if (daysPast < 1 && !sameDayOld) continue;
+      if (daysPast < 1) continue;
       let games;
       try {
-        games = await mlbGameValues(p.mlbId, cfg.group, cfg.stat, new Date(Date.parse(p.gameDate)).getFullYear());
+        games = await mlbGameValues(p.mlbId, cfg.group, cfg.stat, new Date(Date.parse(p.gameDate)).getFullYear(), 5 * 60 * 1000);
       } catch (e) {
         continue; // StatsAPI down — retry next sweep
       }
@@ -349,6 +348,9 @@ if (require.main === module) {
     process.exit(1);
   }
   const port = process.env.PORT || 3000;
+  if (process.env.RAILWAY_ENVIRONMENT && !process.env.RAILWAY_VOLUME_MOUNT_PATH) {
+    console.warn('store: RAILWAY detected but no volume attached — picks will be LOST on redeploy (attach a volume mounted at /data)');
+  }
   createApp({
     apiKey: process.env.ODDS_API_KEY,
     dataDir: process.env.RAILWAY_VOLUME_MOUNT_PATH || process.env.DATA_DIR || './data',

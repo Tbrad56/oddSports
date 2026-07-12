@@ -61,8 +61,9 @@ the pick object passed to the store carries it.
   (`.unref()`ed timers so tests exit cleanly; the sweep is skipped entirely
   when `createApp` is constructed with `enableSweep: false`, which tests
   use — tests call the sweep function directly instead).
-- For each pending pick whose `gameDate` is before today (ET) — or equal to
-  today with `ts` more than 8 h old — fetch the player's game log
+- For each pending pick whose `gameDate` is before today (ET) — same-day
+  grading removed after review — picks grade the next ET day, avoiding
+  mid-game partial stats — fetch the player's game log
   (`mlbGameValues`, existing 6 h cache, free) and find the split for
   `gameDate`:
   - split exists → `actual` = stat value; `result` = `hit` if the pick's
@@ -71,8 +72,9 @@ the pick object passed to the store carries it.
   - no split for that date and the date is ≥ 2 days past → `void` (didn't
     play). Between 1–2 days, leave pending (late data, suspended games).
 - Doubleheaders: a player's game log can contain two splits for one date,
-  and v1 cannot tell which game a pick belonged to. Grade against the FIRST
-  split of that date — an accepted imprecision (doubleheaders are rare;
+  and v1 cannot tell which game a pick belonged to. Grade against one split
+  of that date (implementation: the later game, since logs are folded
+  newest-first) — an accepted imprecision (doubleheaders are rare;
   tracked in the same follow-up as the lineup-filtering doubleheader fix,
   where matching by game start time would resolve both).
 - Grading needs zero Odds API credits.

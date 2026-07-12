@@ -25,6 +25,7 @@ function createStore({ dataDir } = {}){
     } catch (e) {
       console.error(`store: load failed (${e.message}) — starting empty`);
     }
+    console.log('store: persisting to ' + file + ' (' + picks.size + ' records loaded)');
   }
 
   function append(rec){
