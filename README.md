@@ -13,6 +13,10 @@ The Get Props page estimates MLB prop hit probabilities from player game
 logs (MLB StatsAPI, free) and flags lines where the model disagrees with
 the books — informational only.
 
+Every Get Props pick is logged and auto-graded against MLB box scores; the
+Record page shows the model's real calibration. Data persists on a Railway
+volume (`RAILWAY_VOLUME_MOUNT_PATH`) or `DATA_DIR` (default `./data`) locally.
+
 ## Run locally
 
 1. `npm install`
