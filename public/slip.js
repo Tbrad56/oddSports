@@ -32,12 +32,16 @@
         }</div>
       `;
       div.querySelector('.remove-btn').addEventListener('click', ()=>{
-        removeLegFromSlip(leg.id);
-        renderSlip();
+        div.classList.add('removing');
+        setTimeout(()=>{
+          removeLegFromSlip(leg.id);
+          renderSlip();
+        }, 200);
       });
       legsEl.appendChild(div);
     });
 
+    staggerIn(legsEl, 30);
     renderParlay();
   }
 
@@ -59,6 +63,7 @@
           </div>
         </div>
       `;
+      staggerIn(area);
       return;
     }
 
@@ -104,6 +109,7 @@
     }
     html += '</div>';
     area.innerHTML = html;
+    staggerIn(area);
   }
 
   function buildCopyText(bookKey, bookName){
@@ -137,6 +143,7 @@
       div.innerHTML = `<div class="tagline">${escapeHtml(m.tagline)}</div><div>${body}</div>`;
       area.appendChild(div);
     });
+    staggerIn(area, 30);
   }
 
   renderSlip();

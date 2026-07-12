@@ -217,10 +217,17 @@ function renderNav(activePage){
     </a>`).join('');
   updateSlipBadge();
 }
+let _lastSlipBadgeCount = 0;
 function updateSlipBadge(){
   const badge = document.getElementById('slipBadge');
   if(!badge) return;
   const n = getSlip().length;
+  if(n > _lastSlipBadgeCount){
+    badge.classList.remove('bump');
+    void badge.offsetWidth; // restart the animation even if it's already mid-bump
+    badge.classList.add('bump');
+  }
+  _lastSlipBadgeCount = n;
   badge.textContent = n || '';
   badge.classList.toggle('on', n > 0);
 }
@@ -239,6 +246,47 @@ function showToast(text){
   t.classList.add('show');
   clearTimeout(showToast._timer);
   showToast._timer = setTimeout(()=>t.classList.remove('show'), 2000);
+}
+
+// ---------- motion helpers ----------
+// Staggered fade/slide-in entrance for a freshly rendered list of elements.
+function staggerIn(container, stepMs){
+  const step = stepMs || 40;
+  [...container.children].forEach((el, i)=>{
+    el.classList.add('enter');
+    el.style.animationDelay = (i * step) + 'ms';
+  });
+}
+
+// Smoothly reveal/hide a collapsible element (expects the "reveal" class on el).
+// Caller is still responsible for populating el's content.
+function revealShow(el){
+  el.style.display = 'block';
+  requestAnimationFrame(()=>requestAnimationFrame(()=>el.classList.add('is-open')));
+}
+function revealHide(el){
+  el.classList.remove('is-open');
+  setTimeout(()=>{ if(!el.classList.contains('is-open')) el.style.display = 'none'; }, 200);
+}
+
+// Brief highlight flash on an element — visual confirmation beyond the toast.
+function flashEl(el){
+  el.classList.remove('flash');
+  void el.offsetWidth; // restart the animation if it's already flashing
+  el.classList.add('flash');
+}
+
+// Skeleton loading placeholders shown while a fetch is in flight.
+function renderSkeletonCards(container, count){
+  let html = '';
+  for(let i=0; i<(count||3); i++){
+    html += `<div class="skeleton-card">
+      <div class="skeleton-line tall" style="width:60%;"></div>
+      <div class="skeleton-line" style="width:90%;"></div>
+      <div class="skeleton-line short"></div>
+    </div>`;
+  }
+  container.innerHTML = html;
 }
 
 // ---------- sport chips ----------
@@ -281,6 +329,66 @@ function oddsStatusText(count, remaining, cacheAge){
     ? `cached ${Math.round(cacheAge/60)} min ago`
     : `updated ${new Date().toLocaleTimeString()}`;
   return `Live — ${count} games loaded${remaining ? ' · '+remaining+' requests left this month' : ''} · ${freshness}`;
+}
+
+// ---------- live scores ----------
+// The Odds API's scores endpoint: current score + completed/not-completed,
+// no in-game clock. Covers every sport this app tracks.
+async function fetchScoresFor(sport){
+  const res = await fetch(`/api/scores/${sport}`);
+  if(!res.ok) throw new Error(`scores fetch failed (${res.status})`);
+  return await res.json();
+}
+
+// MLB-only: inning/outs/balls-strikes from MLB StatsAPI, keyed by team names
+// (not event id — StatsAPI doesn't share Odds API's event ids).
+async function fetchMlbLive(){
+  const res = await fetch('/api/live/mlb');
+  if(!res.ok) throw new Error(`live/mlb fetch failed (${res.status})`);
+  const data = await res.json();
+  return data.games || [];
+}
+
+function findScoreFor(scores, game){
+  return (scores || []).find(s => s.id === game.id) || null;
+}
+function findMlbLiveFor(liveGames, game){
+  const home = (game.home_team || '').trim().toLowerCase();
+  const away = (game.away_team || '').trim().toLowerCase();
+  return (liveGames || []).find(g =>
+    (g.home_team || '').trim().toLowerCase() === home &&
+    (g.away_team || '').trim().toLowerCase() === away
+  ) || null;
+}
+
+// Builds a small LIVE/FINAL score strip for a game card. scoreEntry is one
+// element from fetchScoresFor (has .completed, .scores:[{name,score}]);
+// liveDetail (MLB only) is one element from fetchMlbLive with inning/count.
+// Returns '' when the game hasn't started yet (nothing to show).
+function buildScoreBadgeHtml(game, scoreEntry, liveDetail){
+  if(!scoreEntry || !scoreEntry.scores) return '';
+  const homeScore = scoreEntry.scores.find(s=>s.name===game.home_team);
+  const awayScore = scoreEntry.scores.find(s=>s.name===game.away_team);
+  if(!homeScore || !awayScore) return '';
+
+  const completed = !!scoreEntry.completed;
+  let detail = '';
+  if(!completed && liveDetail && liveDetail.inning){
+    const half = liveDetail.inningState ? escapeHtml(liveDetail.inningState.slice(0,3)) : '';
+    detail = `${half} ${liveDetail.inning}`;
+    if(liveDetail.outs !== null && liveDetail.outs !== undefined){
+      detail += ` · ${liveDetail.outs} out${liveDetail.outs===1?'':'s'}`;
+    }
+    if(liveDetail.balls !== null && liveDetail.balls !== undefined && liveDetail.strikes !== null && liveDetail.strikes !== undefined){
+      detail += ` · ${liveDetail.balls}-${liveDetail.strikes}`;
+    }
+  }
+
+  return `<div class="score-badge ${completed ? 'final' : 'live'}">
+    <span class="score-status">${completed ? 'FINAL' : '<span class="live-dot"></span>LIVE'}</span>
+    ${detail ? `<span class="score-detail">${detail}</span>` : ''}
+    <span class="score-line">${escapeHtml(game.away_team)} <strong>${escapeHtml(String(awayScore.score))}</strong> — <strong>${escapeHtml(String(homeScore.score))}</strong> ${escapeHtml(game.home_team)}</span>
+  </div>`;
 }
 
 // ---------- My books (which sportsbooks the user actually uses) ----------

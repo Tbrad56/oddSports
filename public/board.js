@@ -5,7 +5,8 @@
     propRegistry: {},  // propId -> {side, matchup, rows}
     propIdCounter: 0,
     propsBookFilter: 'all',
-    marketCollapsed: {}
+    marketCollapsed: {},
+    scores: [], mlbLive: [], scoresTimer: null
   };
 
   renderNav('board');
@@ -21,6 +22,7 @@
     const btn = document.getElementById('fetchBtn');
     btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
     setStatus(false, 'Fetching latest odds…');
+    renderSkeletonCards(document.getElementById('gamesArea'), 3);
     try{
       const {games, remaining, cacheAge} = await fetchOddsFor(getSport());
       state.games = games;
@@ -38,6 +40,13 @@
       if(KALSHI_SERIES[sport] && games.length){
         fetchKalshi(sport).then(renderGames).catch(()=>{});
       }
+      // Live scores: fetch now, then keep polling every 30s while this sport is loaded
+      state.scores = []; state.mlbLive = [];
+      clearInterval(state.scoresTimer);
+      if(games.length){
+        refreshScores();
+        state.scoresTimer = setInterval(refreshScores, 30*1000);
+      }
     }catch(e){
       setStatus(false, 'Fetch failed.');
       showError(e.message || 'Could not fetch odds — try again shortly.');
@@ -47,11 +56,24 @@
   }
   document.getElementById('fetchBtn').addEventListener('click', refresh);
 
+  async function refreshScores(){
+    const sport = getSport();
+    try{
+      state.scores = await fetchScoresFor(sport);
+      if(sport === 'baseball_mlb'){
+        state.mlbLive = await fetchMlbLive().catch(()=>[]);
+      }
+      if(state.games.length) renderGames();
+    }catch(e){
+      // scores are a bonus overlay — quietly skip on failure, odds board still works
+    }
+  }
+
   // ---------- My books panel ----------
   document.getElementById('myBooksToggle').addEventListener('click', ()=>{
     const panel = document.getElementById('myBooksPanel');
-    const showing = panel.style.display !== 'none';
-    panel.style.display = showing ? 'none' : 'block';
+    if(panel.classList.contains('is-open')) revealHide(panel);
+    else revealShow(panel);
   });
   function renderMyBooksList(){
     const host = document.getElementById('myBooksList');
@@ -222,6 +244,8 @@
       if(!prop) return;
       addLegToSlip({ id: Date.now()+Math.random(), matchup: prop.matchup, side: prop.side, rows: prop.rows });
       showToast('Added ✓');
+      const row = slipBtn.closest('tr');
+      if(row) flashEl(row);
     }
   });
 
@@ -259,6 +283,16 @@
         <div class="game-time">${when.toLocaleDateString(undefined,{month:'short',day:'numeric'})} · ${when.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'})}</div>
       `;
       card.appendChild(head);
+
+      // Live/final score badge, when the game has started
+      const scoreEntry = findScoreFor(state.scores, game);
+      const liveDetail = sportKey === 'baseball_mlb' ? findMlbLiveFor(state.mlbLive, game) : null;
+      const scoreHtml = buildScoreBadgeHtml(game, scoreEntry, liveDetail);
+      if(scoreHtml){
+        const s = document.createElement('div');
+        s.innerHTML = scoreHtml;
+        card.appendChild(s.firstElementChild);
+      }
 
       // MLB: stadium weather strip sits above the odds
       if(sportKey === 'baseball_mlb'){
@@ -303,7 +337,7 @@
         label.textContent = team + ' to win';
         block.appendChild(label);
 
-        const addLeg = ()=>{
+        const addLeg = (rowEl)=>{
           addLegToSlip({
             id: Date.now()+Math.random(),
             matchup: `${game.away_team} @ ${game.home_team}`,
@@ -311,6 +345,7 @@
             rows: rows
           });
           showToast('Added ✓');
+          if(rowEl) flashEl(rowEl);
         };
 
         const myRows = myBooks.length ? rows.filter(r=>myBooks.includes(r.bookKey.toLowerCase())) : [];
@@ -331,7 +366,7 @@
               <button class="add-leg-btn">+ Slip</button>
               ${link ? `<a class="book-link-btn" href="${link}" target="_blank" rel="noopener" title="Open ${escapeHtml(style?style.name:r.bookTitle)}">↗</a>` : ''}
             `;
-            cell.querySelector('.add-leg-btn').addEventListener('click', addLeg);
+            cell.querySelector('.add-leg-btn').addEventListener('click', ()=>addLeg(cell));
             grid.appendChild(cell);
           });
           block.appendChild(grid);
@@ -362,7 +397,7 @@
               <button class="add-leg-btn">+ Slip</button>
               ${link ? `<a class="book-link-btn" href="${link}" target="_blank" rel="noopener" title="Open ${escapeHtml(style?style.name:r.bookTitle)}">↗</a>` : ''}
             `;
-            row.querySelector('.add-leg-btn').addEventListener('click', addLeg);
+            row.querySelector('.add-leg-btn').addEventListener('click', ()=>addLeg(row));
             block.appendChild(row);
           });
         }
@@ -395,7 +430,7 @@
         card.appendChild(toggleWrap);
 
         const propsHost = document.createElement('div');
-        propsHost.className = 'props-host';
+        propsHost.className = 'props-host reveal';
         propsHost.dataset.gameId = game.id;
         propsHost.style.display = 'none';
         card.appendChild(propsHost);
@@ -406,25 +441,27 @@
         }
 
         toggleBtn.addEventListener('click', async ()=>{
-          if(propsHost.style.display === 'none' && !propsHost.dataset.loaded){
+          if(propsHost.classList.contains('is-open')){
+            revealHide(propsHost);
+            toggleBtn.textContent = 'Show player props';
+            return;
+          }
+          if(!propsHost.dataset.loaded){
             toggleBtn.disabled = true;
             toggleBtn.innerHTML = '<span class="spinner"></span> Loading…';
             await loadProps(game, sportKey, propsHost);
             propsHost.dataset.loaded = '1';
             toggleBtn.disabled = false;
-            toggleBtn.textContent = 'Hide player props';
-            propsHost.style.display = 'block';
-          } else {
-            const showing = propsHost.style.display !== 'none';
-            propsHost.style.display = showing ? 'none' : 'block';
-            toggleBtn.textContent = showing ? 'Show player props' : 'Hide player props';
           }
+          toggleBtn.textContent = 'Hide player props';
+          revealShow(propsHost);
         });
       }
 
       wrap.appendChild(card);
     });
     area.appendChild(wrap);
+    staggerIn(wrap);
     renderBookFilter();
   }
 
