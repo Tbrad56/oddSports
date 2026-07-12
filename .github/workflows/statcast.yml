@@ -31,4 +31,5 @@ jobs:
           git add public/statcast/statcast.json
           git diff --cached --quiet && echo "No changes" && exit 0
           git commit -m "Update Statcast data ($(date -u +%F))"
-          git push
+          git push origin HEAD:statcast-data --force
+
