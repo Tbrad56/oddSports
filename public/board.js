@@ -1,8 +1,19 @@
 (function(){
-  const state = { games: [], searchTerm: '', autoRefresh: false, autoTimer: null };
+  const state = {
+    games: [], searchTerm: '', autoRefresh: false, autoTimer: null,
+    propsCache: {},    // gameId -> {game, data}
+    propRegistry: {},  // propId -> {side, matchup, rows}
+    propIdCounter: 0,
+    propsBookFilter: 'all',
+    marketCollapsed: {}
+  };
 
   renderNav('board');
-  renderSportChips(document.getElementById('sportChips'), refresh);
+  renderSportChips(document.getElementById('sportChips'), ()=>{
+    state.propsCache = {}; state.propRegistry = {}; state.marketCollapsed = {};
+    state.propsBookFilter = 'all';
+    refresh();
+  });
   renderMyBooksList();
 
   async function refresh(){
@@ -74,6 +85,146 @@
     if(state.games.length) renderGames();
   });
 
+  // ---------- player props (opt-in per game) ----------
+  function renderBookFilter(){
+    const el = document.getElementById('bookFilterChips');
+    const cached = Object.values(state.propsCache);
+    if(!cached.length){ el.innerHTML = ''; return; }
+    const booksPresent = new Set();
+    cached.forEach(({data})=>{
+      (data.bookmakers||[]).forEach(b=>{
+        const k = b.key.toLowerCase();
+        if(TRACKED_KEYS.includes(k)) booksPresent.add(k);
+      });
+    });
+    let html = `<button class="chip props-filter-chip${state.propsBookFilter==='all'?' active':''}" data-book="all">All books</button>`;
+    const orderedBooks = [...booksPresent].sort((a,b)=> (a==='fanduel'?-1:b==='fanduel'?1:a.localeCompare(b)));
+    orderedBooks.forEach(k=>{
+      const style = bookStyleFor(k);
+      html += `<button class="chip props-filter-chip${state.propsBookFilter===k?' active':''}" data-book="${k}">${escapeHtml(style?style.name:k)}</button>`;
+    });
+    el.innerHTML = html;
+  }
+  document.getElementById('bookFilterChips').addEventListener('click', (e)=>{
+    const chip = e.target.closest('.props-filter-chip');
+    if(!chip) return;
+    state.propsBookFilter = chip.dataset.book;
+    renderBookFilter();
+    // repaint every already-loaded game's props in place, no refetch
+    document.querySelectorAll('.props-host[data-loaded="1"]').forEach(host=>{
+      const gameId = host.dataset.gameId;
+      const cached = state.propsCache[gameId];
+      if(cached) host.innerHTML = buildPropsHtml(cached.game, cached.data, PROP_MARKETS[getSport()] || []);
+    });
+  });
+
+  async function loadProps(game, sportKey, hostEl){
+    try{
+      const res = await fetch(`/api/props/${sportKey}/${game.id}`);
+      if(!res.ok){
+        hostEl.innerHTML = `<div class="props-block"><span style="color:var(--text-faint); font-size:12.5px;">Props aren't available for this game right now (either not offered yet, or the server couldn't reach the odds provider).</span></div>`;
+        return;
+      }
+      const data = await res.json();
+      state.propsCache[game.id] = {game, data};
+      hostEl.innerHTML = buildPropsHtml(game, data, PROP_MARKETS[sportKey]);
+      renderBookFilter();
+    }catch(e){
+      hostEl.innerHTML = `<div class="props-block"><span style="color:var(--text-faint); font-size:12.5px;">Couldn't load props right now.</span></div>`;
+    }
+  }
+
+  function buildPropsHtml(game, data, markets){
+    let bms = (data.bookmakers || []).filter(b => TRACKED_KEYS.includes(b.key.toLowerCase()));
+    let bookmakersToUse = bms.length ? bms : (data.bookmakers || []);
+    if(state.propsBookFilter !== 'all'){
+      bookmakersToUse = bookmakersToUse.filter(b => b.key.toLowerCase() === state.propsBookFilter);
+    }
+
+    let html = '<div class="props-block">';
+    let any = false;
+    markets.forEach(marketKey=>{
+      const perPlayer = {}; // "playerName|side|point" -> {player, side, point, rows}
+      bookmakersToUse.forEach(bm=>{
+        const market = bm.markets.find(m=>m.key===marketKey);
+        if(!market) return;
+        market.outcomes.forEach(o=>{
+          const playerName = o.description || o.name;
+          const rowKey = playerName + '|' + o.name + '|' + (o.point ?? '');
+          if(!perPlayer[rowKey]) perPlayer[rowKey] = {player:playerName, side:o.name, point:o.point, rows:[]};
+          perPlayer[rowKey].rows.push({bookKey:bm.key, bookTitle:bm.title, odds:o.price});
+        });
+      });
+      const rowKeys = Object.keys(perPlayer);
+      if(!rowKeys.length) return;
+      any = true;
+      const sectionKey = game.id + '|' + marketKey;
+      const collapsed = !!state.marketCollapsed[sectionKey];
+      html += `<div class="props-market-label prop-market-head" data-section-key="${escapeHtml(sectionKey)}" title="Click to ${collapsed?'expand':'collapse'}">
+        <span class="market-arrow">${collapsed?'▸':'▾'}</span>${escapeHtml(marketLabel(marketKey))}
+        <span class="market-count">(${rowKeys.length})</span>
+      </div>`;
+      html += `<div class="market-body" style="${collapsed?'display:none;':''}">`;
+      html += `<table class="props-table"><thead><tr><th>Player</th><th>Line</th><th>Line shop (best → worst)</th><th></th></tr></thead><tbody>`;
+      rowKeys.slice(0,20).forEach(rk=>{
+        const entry = perPlayer[rk];
+        const rows = entry.rows.sort((a,b)=>americanToDecimal(b.odds)-americanToDecimal(a.odds));
+        const pointTxt = entry.point !== undefined && entry.point !== null ? `${entry.side} ${entry.point}` : entry.side;
+        const chips = rows.map((r,idx)=>{
+          const style = bookStyleFor(r.bookKey);
+          const label = style ? style.name : r.bookTitle;
+          const link = BOOK_LINKS[r.bookKey.toLowerCase()];
+          const chip = `<span class="odds-chip${idx===0?' best':''}" title="${escapeHtml(label)}">${escapeHtml(label)} ${fmtAmerican(r.odds)}</span>`;
+          return link ? `<a href="${link}" target="_blank" rel="noopener" style="text-decoration:none;">${chip}</a>` : chip;
+        }).join('');
+        // register this prop so the + Slip button can add it as a parlay leg
+        const propId = 'p' + (++state.propIdCounter);
+        state.propRegistry[propId] = {
+          side: `${entry.player} ${pointTxt} ${marketLabel(marketKey)}`,
+          matchup: `${game.away_team} @ ${game.home_team}`, rows
+        };
+        html += `<tr>
+          <td style="font-weight:600; white-space:nowrap;">${escapeHtml(entry.player)}</td>
+          <td style="color:var(--text-dim); white-space:nowrap;">${escapeHtml(pointTxt)}</td>
+          <td><div class="line-shop">${chips}</div></td>
+          <td><button class="add-leg-btn prop-slip-btn" data-prop-id="${propId}">+ Slip</button></td>
+        </tr>`;
+      });
+      html += `</tbody></table></div>`;
+    });
+    if(!any){
+      html += `<span style="color:var(--text-faint); font-size:12.5px;">No player props posted for this game yet — check back closer to game time.</span>`;
+    }
+    html += '</div>';
+    return html;
+  }
+
+  // Delegated clicks for props content that gets repainted without a full renderGames(): market
+  // collapse headers and + Slip buttons live inside per-game hosts rebuilt by loadProps/filter.
+  document.getElementById('gamesArea').addEventListener('click', (e)=>{
+    const marketHead = e.target.closest('.prop-market-head');
+    if(marketHead){
+      const key = marketHead.dataset.sectionKey;
+      const nowCollapsed = !state.marketCollapsed[key];
+      state.marketCollapsed[key] = nowCollapsed;
+      const body = marketHead.nextElementSibling;
+      if(body && body.classList.contains('market-body')){
+        body.style.display = nowCollapsed ? 'none' : '';
+      }
+      const arrow = marketHead.querySelector('.market-arrow');
+      if(arrow) arrow.textContent = nowCollapsed ? '▸' : '▾';
+      marketHead.title = 'Click to ' + (nowCollapsed ? 'expand' : 'collapse');
+      return;
+    }
+    const slipBtn = e.target.closest('.prop-slip-btn');
+    if(slipBtn){
+      const prop = state.propRegistry[slipBtn.dataset.propId];
+      if(!prop) return;
+      addLegToSlip({ id: Date.now()+Math.random(), matchup: prop.matchup, side: prop.side, rows: prop.rows });
+      showToast('Added ✓');
+    }
+  });
+
   function renderGames(){
     const area = document.getElementById('gamesArea');
     if(!state.games.length){
@@ -94,6 +245,7 @@
     area.innerHTML = '';
     const wrap = document.createElement('div');
     wrap.className = 'games';
+    const sportKey = getSport();
 
     gamesToShow.forEach(game=>{
       const card = document.createElement('div');
@@ -109,7 +261,7 @@
       card.appendChild(head);
 
       // MLB: stadium weather strip sits above the odds
-      if(getSport() === 'baseball_mlb'){
+      if(sportKey === 'baseball_mlb'){
         const weatherHtml = buildWeatherStrip(game);
         if(weatherHtml){
           const w = document.createElement('div');
@@ -231,9 +383,49 @@
         card.appendChild(block);
       });
 
+      // ---- player props (opt-in per game, protects API quota) ----
+      if(PROP_MARKETS[sportKey]){
+        const toggleWrap = document.createElement('div');
+        toggleWrap.className = 'props-toggle';
+        const alreadyLoaded = !!state.propsCache[game.id];
+        const toggleBtn = document.createElement('button');
+        toggleBtn.className = 'ghost';
+        toggleBtn.textContent = alreadyLoaded ? 'Show player props' : 'Load player props';
+        toggleWrap.appendChild(toggleBtn);
+        card.appendChild(toggleWrap);
+
+        const propsHost = document.createElement('div');
+        propsHost.className = 'props-host';
+        propsHost.dataset.gameId = game.id;
+        propsHost.style.display = 'none';
+        card.appendChild(propsHost);
+
+        if(alreadyLoaded){
+          propsHost.innerHTML = buildPropsHtml(game, state.propsCache[game.id].data, PROP_MARKETS[sportKey]);
+          propsHost.dataset.loaded = '1';
+        }
+
+        toggleBtn.addEventListener('click', async ()=>{
+          if(propsHost.style.display === 'none' && !propsHost.dataset.loaded){
+            toggleBtn.disabled = true;
+            toggleBtn.innerHTML = '<span class="spinner"></span> Loading…';
+            await loadProps(game, sportKey, propsHost);
+            propsHost.dataset.loaded = '1';
+            toggleBtn.disabled = false;
+            toggleBtn.textContent = 'Hide player props';
+            propsHost.style.display = 'block';
+          } else {
+            const showing = propsHost.style.display !== 'none';
+            propsHost.style.display = showing ? 'none' : 'block';
+            toggleBtn.textContent = showing ? 'Show player props' : 'Hide player props';
+          }
+        });
+      }
+
       wrap.appendChild(card);
     });
     area.appendChild(wrap);
+    renderBookFilter();
   }
 
   refresh();
