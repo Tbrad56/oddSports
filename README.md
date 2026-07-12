@@ -27,6 +27,10 @@ the app needs their own key.
   surfaces picks where the model disagrees with the book's implied odds by
   a meaningful edge
 
+- **Record** — the model's audited track record: every Get Props pick is
+  logged automatically and auto-graded against MLB box scores the next day;
+  shows calibration (model-said vs reality) by confidence bucket and market
+
 ## Features
 
 ### Odds & value
@@ -51,6 +55,9 @@ the app needs their own key.
 - Flags thin samples, one-sided lines, and situations worth a news check
   before trusting the number
 - Informational only — a season-to-date model, not a guarantee
+- **Auto-graded record** — picks persist (Railway volume via
+  `RAILWAY_VOLUME_MOUNT_PATH`, or `DATA_DIR`, default `./data` locally) and
+  are graded next-day from free MLB StatsAPI game logs
 
 ### Bet slip
 - Finds every book that covers all legs in your slip and ranks the combined

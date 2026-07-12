@@ -454,3 +454,93 @@ test('live/mlb: StatsAPI failure maps to 502 Stats service unavailable', async (
   assert.equal(res.status, 502);
   assert.equal(res.body.error, 'Stats service unavailable');
 });
+
+// ---------- pick tracking ----------
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const DATED_GAMELOG_BODY = { stats: [{ splits: [
+  { date: '2026-07-09', stat: { strikeOuts: 4, gamesStarted: 1, hits: 1, totalBases: 1, rbi: 0, homeRuns: 0 } },
+  { date: '2026-07-10', stat: { strikeOuts: 8, gamesStarted: 1, hits: 2, totalBases: 3, rbi: 1, homeRuns: 0 } }
+] }] };
+
+test('analyze logs picks once (cached second call logs nothing)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lw-track-'));
+  const f = routedFetch([
+    ['api.the-odds-api.com', okResponse(ANALYZE_PROPS_BODY)],
+    ['/api/v1/schedule', errResponse(500)],
+    ['/api/v1/sports/1/players', okResponse(PLAYERS_BODY)],
+    ['/api/v1/people/', okResponse(GAMELOG_BODY)]
+  ]);
+  const app = createApp({ apiKey: 'k', fetchFn: f, dataDir: dir });
+  await request(app).get('/api/analyze/mlb/ev1');
+  await request(app).get('/api/analyze/mlb/ev1');
+  const lines = fs.readFileSync(path.join(dir, 'picks.jsonl'), 'utf8').trim().split('\n');
+  assert.equal(lines.length, 1); // one pick from ev1, logged once
+  const rec = JSON.parse(lines[0]);
+  assert.equal(rec.type, 'pick');
+  assert.equal(rec.player, 'Test Pitcher');
+  assert.equal(rec.mlbId, 660271);
+  assert.ok(rec.gameDate);
+});
+
+test('grading sweep grades a past Over pick as hit and appends a grade line', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lw-track-'));
+  const f = routedFetch([
+    ['/api/v1/people/', okResponse(DATED_GAMELOG_BODY)]
+  ]);
+  // fixed clock: 2026-07-12 noon ET
+  const app = createApp({ apiKey: 'k', fetchFn: f, dataDir: dir, now: () => Date.parse('2026-07-12T16:00:00Z') });
+  app.locals.store.logPick({
+    id: 'evX|Test Pitcher|pitcher_strikeouts|5.5|Over', ts: '2026-07-10T18:00:00.000Z',
+    eventId: 'evX', gameDate: '2026-07-10', matchup: 'A @ B',
+    player: 'Test Pitcher', mlbId: 660271, market: 'pitcher_strikeouts', line: 5.5, side: 'Over',
+    modelP: 0.6, impliedP: 0.5, edge: 0.1, bestBook: { bookKey: 'fanduel', odds: -110 }, flags: []
+  });
+  await app.locals.gradePendingPicks();
+  const res = await request(app).get('/api/record');
+  assert.equal(res.body.summary.graded, 1);
+  assert.equal(res.body.summary.hits, 1);   // 8 Ks on 2026-07-10 > 5.5
+  assert.equal(res.body.recent[0].actual, 8);
+  const lines = fs.readFileSync(path.join(dir, 'picks.jsonl'), 'utf8').trim().split('\n');
+  assert.equal(lines.length, 2); // pick + grade
+});
+
+test('grading sweep voids a pick with no game-log split after 2 days', async () => {
+  const f = routedFetch([[ '/api/v1/people/', okResponse(DATED_GAMELOG_BODY) ]]);
+  const app = createApp({ apiKey: 'k', fetchFn: f, now: () => Date.parse('2026-07-12T16:00:00Z') });
+  app.locals.store.logPick({
+    id: 'evY|Test Pitcher|pitcher_strikeouts|5.5|Over', ts: '2026-07-08T18:00:00.000Z',
+    eventId: 'evY', gameDate: '2026-07-08', matchup: 'A @ B',
+    player: 'Test Pitcher', mlbId: 660271, market: 'pitcher_strikeouts', line: 5.5, side: 'Over',
+    modelP: 0.6, impliedP: 0.5, edge: 0.1, bestBook: null, flags: []
+  });
+  await app.locals.gradePendingPicks();
+  const res = await request(app).get('/api/record');
+  assert.equal(res.body.summary.voids, 1);
+});
+
+test('record endpoint: empty store returns null rates', async () => {
+  const app = createApp({ apiKey: 'k', fetchFn: async () => { throw new Error('no'); } });
+  const res = await request(app).get('/api/record');
+  assert.equal(res.status, 200);
+  assert.equal(res.body.summary.graded, 0);
+  assert.equal(res.body.summary.hitRate, null);
+});
+
+test('logged gameDate comes from the game commence_time, not the clock', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lw-track-'));
+  const body = JSON.parse(JSON.stringify(ANALYZE_PROPS_BODY));
+  body.commence_time = '2026-07-13T23:00:00Z'; // 7pm ET July 13 — tomorrow relative to the fixed clock
+  const f = routedFetch([
+    ['api.the-odds-api.com', okResponse(body)],
+    ['/api/v1/schedule', errResponse(500)],
+    ['/api/v1/sports/1/players', okResponse(PLAYERS_BODY)],
+    ['/api/v1/people/', okResponse(GAMELOG_BODY)]
+  ]);
+  const app = createApp({ apiKey: 'k', fetchFn: f, dataDir: dir, now: () => Date.parse('2026-07-12T16:00:00Z') });
+  await request(app).get('/api/analyze/mlb/ev1');
+  const rec = JSON.parse(fs.readFileSync(path.join(dir, 'picks.jsonl'), 'utf8').trim().split('\n')[0]);
+  assert.equal(rec.gameDate, '2026-07-13');
+});

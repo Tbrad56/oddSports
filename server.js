@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const { analyzeProp, rankPicks } = require('./analysis');
+const { createStore, computeRecord } = require('./store');
 
 const UPSTREAM = 'https://api.the-odds-api.com';
 
@@ -34,11 +35,12 @@ const MLB_MARKET_STATS = {
   batter_home_runs:   { group: 'hitting',  stat: 'homeRuns',   window: 15 }
 };
 
-function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now = Date.now } = {}) {
+function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now = Date.now, dataDir = null, enableSweep = false } = {}) {
   const app = express();
   const cache = new Map(); // upstreamPath -> {body, remaining, cachedAt, expires}
   const statsCache = new Map(); // statsapi path -> {body, expires}
   const analysisCache = new Map(); // eventId -> {body, expires}
+  const store = createStore({ dataDir });
 
   // Fetch (or serve from cache) an Odds API path. Returns {body, remaining, cacheAge}.
   // Throws {kind:'quota'} or {kind:'unavailable'}.
@@ -130,13 +132,14 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     return person ? person.id : null;
   }
 
-  // newest-first [{value, started}]
-  async function mlbGameValues(personId, group, statName, season){
-    const data = await fetchStats(`/api/v1/people/${personId}/stats?stats=gameLog&season=${season}&group=${group}`, 6 * 60 * 60 * 1000);
+  // newest-first [{value, started, date}]
+  async function mlbGameValues(personId, group, statName, season, ttlMs = 6 * 60 * 60 * 1000){
+    const data = await fetchStats(`/api/v1/people/${personId}/stats?stats=gameLog&season=${season}&group=${group}`, ttlMs);
     const splits = (((data.stats || [])[0] || {}).splits) || [];
     return splits.slice().reverse().map(s => ({
       value: Number((s.stat || {})[statName] || 0),
-      started: Number((s.stat || {}).gamesStarted || 0) > 0
+      started: Number((s.stat || {}).gamesStarted || 0) > 0,
+      date: s.date
     }));
   }
 
@@ -259,6 +262,7 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     });
 
     const propCount = Object.keys(grouped).length;
+    const etDate = new Date(Date.parse(props.body.commence_time || '') || now()).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 
     // ---- lineup / probable-starter context (enhancement — never blocks analysis) ----
     let lineupStatus = 'unavailable';
@@ -266,8 +270,7 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     const lineupIds = new Set();
     let lineupsPosted = false;
     try {
-      const dateStr = new Date(now()).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-      const sched = await fetchStats(`/api/v1/schedule?sportId=1&date=${dateStr}&hydrate=probablePitcher,lineups`, 15 * 60 * 1000);
+      const sched = await fetchStats(`/api/v1/schedule?sportId=1&date=${etDate}&hydrate=probablePitcher,lineups`, 15 * 60 * 1000);
       const home = normName(props.body.home_team || '');
       const away = normName(props.body.away_team || '');
       const games = ((sched.dates || [])[0] || {}).games || [];
@@ -293,12 +296,14 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     const picks = [];
     const skipped = new Set();
     const filteredMap = new Map();
+    const pickMlbIds = new Map();
     try {
       for (const gk of Object.keys(grouped)) {
         const prop = grouped[gk];
         const cfg = MLB_MARKET_STATS[prop.market];
         const pid = await mlbPlayerId(prop.player, season);
         if (!pid) { skipped.add(prop.player); continue; }
+        pickMlbIds.set(prop.player, pid);
         if (cfg.group === 'pitching' && probablePitcherIds.size && !probablePitcherIds.has(pid)) {
           filteredMap.set(prop.player + '|' + prop.market, { player: prop.player, reason: 'not_probable_starter' });
           continue;
@@ -332,9 +337,70 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
       propCount,
       generatedAt: new Date(now()).toISOString()
     };
+    try {
+      for (const p of body.picks) {
+        store.logPick({
+          id: `${eventId}|${p.player}|${p.market}|${p.line}|${p.side}`,
+          ts: new Date(now()).toISOString(),
+          eventId,
+          gameDate: etDate,
+          matchup: `${props.body.away_team || ''} @ ${props.body.home_team || ''}`,
+          player: p.player, mlbId: pickMlbIds.get(p.player) || null,
+          market: p.market, line: p.line, side: p.side,
+          modelP: p.modelP, impliedP: p.impliedP, edge: p.edge,
+          bestBook: p.bestBook ? { bookKey: p.bestBook.bookKey, odds: p.bestBook.odds } : null,
+          flags: p.analysis.flags
+        });
+      }
+    } catch (e) {
+      console.error(`store: logging failed (${e.message})`);
+    }
     analysisCache.set(eventId, { body, expires: now() + cacheTtlMs });
     res.json(body);
   }
+
+  async function gradePendingPicks(){
+    const todayET = new Date(now()).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    for (const p of store.pending()) {
+      if (!p.gameDate || !p.mlbId) continue;
+      const cfg = MLB_MARKET_STATS[p.market];
+      if (!cfg) continue;
+      const daysPast = (Date.parse(todayET) - Date.parse(p.gameDate)) / 86400000;
+      if (daysPast < 1) continue;
+      let games;
+      try {
+        games = await mlbGameValues(p.mlbId, cfg.group, cfg.stat, new Date(Date.parse(p.gameDate)).getFullYear(), 5 * 60 * 1000);
+      } catch (e) {
+        continue; // StatsAPI down — retry next sweep
+      }
+      const split = games.find(g => g.date === p.gameDate);
+      const gradedTs = new Date(now()).toISOString();
+      if (!split) {
+        if (daysPast >= 2) store.grade(p.id, null, 'void', gradedTs);
+        continue;
+      }
+      const actual = split.value;
+      let result;
+      if (actual === p.line) result = 'push';
+      else if (p.side === 'Over') result = actual > p.line ? 'hit' : 'miss';
+      else result = actual < p.line ? 'hit' : 'miss';
+      store.grade(p.id, actual, result, gradedTs);
+    }
+  }
+
+  if (enableSweep) {
+    const boot = setTimeout(() => gradePendingPicks().catch(e => console.error(`sweep failed: ${e.message}`)), 60 * 1000);
+    boot.unref();
+    const interval = setInterval(() => gradePendingPicks().catch(e => console.error(`sweep failed: ${e.message}`)), 6 * 60 * 60 * 1000);
+    interval.unref();
+  }
+
+  app.get('/api/record', (req, res) => {
+    res.json(computeRecord(store.all()));
+  });
+
+  app.locals.store = store;
+  app.locals.gradePendingPicks = gradePendingPicks;
 
   app.use(express.static(path.join(__dirname, 'public')));
   return app;
@@ -348,7 +414,14 @@ if (require.main === module) {
     process.exit(1);
   }
   const port = process.env.PORT || 3000;
-  createApp({ apiKey: process.env.ODDS_API_KEY }).listen(port, () => {
+  if (process.env.RAILWAY_ENVIRONMENT && !process.env.RAILWAY_VOLUME_MOUNT_PATH) {
+    console.warn('store: RAILWAY detected but no volume attached — picks will be LOST on redeploy (attach a volume mounted at /data)');
+  }
+  createApp({
+    apiKey: process.env.ODDS_API_KEY,
+    dataDir: process.env.RAILWAY_VOLUME_MOUNT_PATH || process.env.DATA_DIR || './data',
+    enableSweep: true
+  }).listen(port, () => {
     console.log(`LineWatch listening on :${port}`);
   });
 }

@@ -209,6 +209,7 @@ function renderNav(activePage){
     ['home','/','🏠','Home'],
     ['board','/board.html','📊','Board'],
     ['getprops','/getprops.html','🎯','Get Props'],
+    ['record','/record.html','📈','Record'],
     ['slip','/slip.html','🎟️','Slip']
   ];
   rail.innerHTML = '<a class="rail-logo" href="/">LW</a>' + items.map(([key,href,icon,label])=>
