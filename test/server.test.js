@@ -12,12 +12,12 @@ function okResponse(body, remaining = '499') {
     json: async () => body
   };
 }
-function errResponse(status) {
+function errResponse(status, body = {}) {
   return {
     ok: false,
     status,
     headers: { get: () => null },
-    json: async () => ({})
+    json: async () => body
   };
 }
 function fakeFetch(responder) {
@@ -44,7 +44,7 @@ test('proxies a valid sport, appends key upstream, passes body and quota header 
   assert.equal(res.headers['x-requests-remaining'], '123');
   assert.equal(res.headers['x-cache-age-seconds'], '0');
   assert.equal(f.calls.length, 1);
-  assert.match(f.calls[0], /^https:\/\/api\.the-odds-api\.com\/v4\/sports\/basketball_nba\/odds\/\?regions=us,us2&markets=h2h&oddsFormat=american&includeLinks=true&includeSids=true&apiKey=sekret$/);
+  assert.match(f.calls[0], /^https:\/\/api\.the-odds-api\.com\/v4\/sports\/basketball_nba\/odds\/\?regions=us&markets=h2h&oddsFormat=american&includeLinks=true&includeSids=true&apiKey=sekret$/);
 });
 
 test('MLB odds request includes full-game spreads/totals in one call', async () => {
@@ -103,6 +103,19 @@ test('upstream 401 maps to 502 generic message, key not leaked', async () => {
   assert.ok(!JSON.stringify(res.body).includes('sekret'));
 });
 
+test('upstream 401 OUT_OF_USAGE_CREDITS maps to quota message, not generic 502', async () => {
+  // The Odds API signals an exhausted monthly quota with 401 + this error_code,
+  // not with 429 — treat it the same as 429 so users see the real reason.
+  const f = fakeFetch(() => errResponse(401, {
+    message: 'Usage quota has been reached. See usage plans at https://the-odds-api.com',
+    error_code: 'OUT_OF_USAGE_CREDITS'
+  }));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/odds/basketball_nba');
+  assert.equal(res.status, 429);
+  assert.equal(res.body.error, 'Monthly odds quota exhausted — resets on the 1st');
+});
+
 test('upstream 429 maps to quota message', async () => {
   const f = fakeFetch(() => errResponse(429));
   const app = createApp({ apiKey: 'k', fetchFn: f });
@@ -156,7 +169,7 @@ test('props: proxies valid request with server-side market list', async () => {
   const res = await request(app).get('/api/props/basketball_nba/0a1b2c3d4e5f');
   assert.equal(res.status, 200);
   assert.deepEqual(res.body, payload);
-  assert.match(f.calls[0], /\/v4\/sports\/basketball_nba\/events\/0a1b2c3d4e5f\/odds\/\?regions=us,us2&markets=player_points,player_rebounds,player_assists,player_threes,player_points_rebounds_assists&oddsFormat=american&includeLinks=true&includeSids=true&apiKey=k$/);
+  assert.match(f.calls[0], /\/v4\/sports\/basketball_nba\/events\/0a1b2c3d4e5f\/odds\/\?regions=us&markets=player_points,player_rebounds,player_assists,player_threes,player_points_rebounds_assists&oddsFormat=american&includeLinks=true&includeSids=true&apiKey=k$/);
 });
 
 // ---------- /api/analyze/mlb ----------

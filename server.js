@@ -67,6 +67,10 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     }
     if (upstream.status === 429) throw { kind: 'quota' };
     if (!upstream.ok) {
+      // The Odds API reports an exhausted monthly quota as 401 OUT_OF_USAGE_CREDITS, not 429
+      let errBody = null;
+      try { errBody = await upstream.json(); } catch (e) {}
+      if (errBody && errBody.error_code === 'OUT_OF_USAGE_CREDITS') throw { kind: 'quota' };
       console.error(`Upstream ${upstream.status} for ${upstreamPath}`);
       throw { kind: 'unavailable' };
     }
@@ -159,7 +163,7 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     // Lines grid needs Spread/Total/Money for MLB specifically. F5 markets
     // are deliberately NOT requested here (see MLB_F5_MARKETS above).
     const markets = sport === 'baseball_mlb' ? ['h2h', 'spreads', 'totals'] : ['h2h'];
-    proxy(`/v4/sports/${sport}/odds/?regions=us,us2&markets=${markets.join(',')}&oddsFormat=american&includeLinks=true&includeSids=true`, res);
+    proxy(`/v4/sports/${sport}/odds/?regions=us&markets=${markets.join(',')}&oddsFormat=american&includeLinks=true&includeSids=true`, res);
   });
 
   // Live/recent scores. Cached on a much shorter TTL than odds (SCORES_TTL_MS)
@@ -241,7 +245,7 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
 
     let r;
     try {
-      r = await getUpstream(`/v4/sports/${sport}/events/${eventId}/odds/?regions=us,us2&markets=${markets.join(',')}&oddsFormat=american&includeLinks=true&includeSids=true`);
+      r = await getUpstream(`/v4/sports/${sport}/events/${eventId}/odds/?regions=us&markets=${markets.join(',')}&oddsFormat=american&includeLinks=true&includeSids=true`);
     } catch (err) {
       return sendUpstreamError(res, err);
     }
@@ -473,7 +477,7 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     const markets = PROP_MARKETS.baseball_mlb;
     let props;
     try {
-      props = await getUpstream(`/v4/sports/baseball_mlb/events/${eventId}/odds/?regions=us,us2&markets=${markets.join(',')}&oddsFormat=american&includeLinks=true&includeSids=true`);
+      props = await getUpstream(`/v4/sports/baseball_mlb/events/${eventId}/odds/?regions=us&markets=${markets.join(',')}&oddsFormat=american&includeLinks=true&includeSids=true`);
     } catch (err) {
       return sendUpstreamError(res, err);
     }
