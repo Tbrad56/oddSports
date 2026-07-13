@@ -260,12 +260,19 @@
     return out;
   }
 
+  // MLB's public headshot CDN, keyed by the same personId the stats came from — no key needed.
+  function playerAvatarHtml(id, size){
+    if(!id) return '';
+    const url = `https://img.mlbstatic.com/mlb-photos/image/upload/w_180,q_100/v1/people/${encodeURIComponent(id)}/headshot/67/current.png`;
+    return `<img class="player-avatar" src="${url}" width="${size}" height="${size}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
+  }
+
   function pitcherTableHtml(pitcher){
     if(!pitcher){
       return `<div class="hr-note">Probable pitcher not announced yet.</div>`;
     }
     const rows = [['season','Season'], ['vl','vs LHB'], ['vr','vs RHB']];
-    let html = `<div class="hr-pitcher">Facing: ${escapeHtml(pitcher.name)} <span class="hand-tag">${escapeHtml(pitcher.hand)}HP</span></div>`;
+    let html = `<div class="hr-pitcher">${playerAvatarHtml(pitcher.id, 28)}Facing: ${escapeHtml(pitcher.name)} <span class="hand-tag">${escapeHtml(pitcher.hand)}HP</span></div>`;
     html += `<table class="props-table"><thead><tr><th>Split</th><th>IP</th><th>WHIP</th><th>HR</th><th>HR/9</th></tr></thead><tbody>`;
     rows.forEach(([code, label])=>{
       const st = pitcher.rows[code];
@@ -301,7 +308,7 @@
           ? statCell(m.ev, 90, 86, n=>n.toFixed(1)) + statCell(m.barrel, 10, 5, n=>n.toFixed(1)+'%') + statCell(m.hardhit, 42, 33, n=>n.toFixed(1)+'%')
           : '<td>—</td><td>—</td><td>—</td>';
       }
-      html += `<tr><td style="font-weight:600; white-space:nowrap;">${escapeHtml(b.name)} <span class="hand-tag">${escapeHtml(b.hand)}</span></td>`
+      html += `<tr><td style="font-weight:600; white-space:nowrap;">${playerAvatarHtml(b.id, 22)}${escapeHtml(b.name)} <span class="hand-tag">${escapeHtml(b.hand)}</span></td>`
         + oddsCell
         + `<td>${b.hr !== null ? b.hr : '—'}</td>`
         + statCell(b.ba, 0.280, 0.230, n=>n.toFixed(3))
