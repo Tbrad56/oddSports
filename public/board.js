@@ -335,7 +335,9 @@
 
   async function loadHrMatchups(game, hostEl){
     try{
-      const dateStr = game.commence_time.slice(0,10);
+      // Game day in ET, not a naive UTC slice — a late-evening ET game can
+      // already be the next calendar day in UTC, which would miss the schedule.
+      const dateStr = new Date(game.commence_time).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
       const [res] = await Promise.all([
         fetch(`/api/hr-matchups/mlb?home=${encodeURIComponent(game.home_team)}&away=${encodeURIComponent(game.away_team)}&date=${dateStr}`),
         loadStatcastData()
