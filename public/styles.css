@@ -104,11 +104,11 @@
     display:flex; align-items:center; justify-content:center; margin-bottom:14px;
   }
   .rail-btn{
-    width:44px; height:44px; border-radius:10px; background:transparent; border:1px solid transparent;
+    min-width:44px; width:auto; height:44px; border-radius:10px; background:transparent; border:1px solid transparent;
     color:var(--text-faint); display:flex; flex-direction:column; align-items:center; justify-content:center;
-    font-size:18px; cursor:pointer; gap:2px; padding:0;
+    font-size:18px; cursor:pointer; gap:2px; padding:0 6px;
   }
-  .rail-btn span.rail-label{font-size:8.5px; font-weight:600; text-transform:uppercase; letter-spacing:.3px;}
+  .rail-btn span.rail-label{font-size:8.5px; font-weight:600; text-transform:uppercase; letter-spacing:.3px; white-space:nowrap;}
   .rail-btn:hover{background:var(--bg-raised); color:var(--text-dim);}
   .rail-btn.active{background:rgba(187,0,0,0.14); color:var(--accent); border-color:rgba(187,0,0,0.35);}
 
@@ -238,7 +238,7 @@
   .props-table th{
     text-align:left; font-size:10px; text-transform:uppercase; letter-spacing:.6px;
     color:var(--text-faint); font-weight:700; padding:6px 8px; border-bottom:1px solid var(--border-soft);
-    position:sticky; top:0; background:#101010;
+    background:#101010;
   }
   .props-table td{padding:7px 8px; border-bottom:1px solid var(--border-soft); vertical-align:middle;}
   .props-table tr:hover td{background:rgba(187,0,0,0.05);}
@@ -404,7 +404,7 @@
 .pick-detail{background:#101010;}
 .pick-detail td{padding:12px 16px;}
 .bar-strip{display:flex; align-items:flex-end; gap:3px; height:44px; margin:8px 0;}
-.bar-strip .bar{width:14px; background:var(--text-faint); border-radius:2px 2px 0 0; min-height:3px;}
+.bar-strip .bar{flex:1 1 0; max-width:14px; min-width:4px; background:var(--text-faint); border-radius:2px 2px 0 0; min-height:3px;}
 .bar-strip .bar.hit{background:var(--good);}
 .flag-chip{
   font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.5px;
@@ -550,4 +550,12 @@
 }
 @media (prefers-reduced-motion:reduce){
   .live-dot{animation:none;}
+}
+
+/* ---------- Phone-width layout fixes (audit 2.1-2.4, 2.7a) ---------- */
+.table-scroll{overflow-x:auto; -webkit-overflow-scrolling:touch; max-width:100%;}
+.layout main{min-width:0;}
+@media (max-width:480px){
+  .book-row{flex-wrap:wrap; row-gap:6px;}
+  .book-odds{margin-left:0;}
 }

@@ -96,7 +96,7 @@
         : 'No edges ≥ 3% found in this game\'s props.';
       return head + `<span style="font-size:12.5px; color:var(--text-faint);">${msg}</span>`;
     }
-    let html = head + `<table class="props-table"><thead><tr>
+    let html = head + `<div class="table-scroll"><table class="props-table"><thead><tr>
       <th>Player</th><th>Prop</th><th>Side</th><th>Model</th><th>Book</th><th>Edge</th><th>Best price</th><th></th>
     </tr></thead><tbody>`;
     result.picks.forEach((pick, i)=>{
@@ -131,7 +131,7 @@
         </td></tr>`;
       }
     });
-    html += `</tbody></table>`;
+    html += `</tbody></table></div>`;
     if(result.skipped.length){
       html += `<div style="font-size:11px; color:var(--text-faint); margin-top:8px;">No stats match: ${result.skipped.map(escapeHtml).join(', ')}</div>`;
     }

@@ -224,7 +224,7 @@
         <span class="market-arrow">${collapsed?'▸':'▾'}</span>${escapeHtml(marketLabel(marketKey))}
         <span class="market-count">(${rowKeys.length})</span>
       </div>`;
-      html += `<div class="market-body" style="${collapsed?'display:none;':''}">`;
+      html += `<div class="market-body" style="${collapsed?'display:none;':''}"><div class="table-scroll">`;
       html += `<table class="props-table"><thead><tr><th>Player</th><th>Line</th><th>Line shop (best → worst)</th><th></th></tr></thead><tbody>`;
       rowKeys.slice(0,20).forEach(rk=>{
         const entry = perPlayer[rk];
@@ -250,7 +250,7 @@
           <td><button class="add-leg-btn prop-slip-btn" data-prop-id="${propId}">+ Slip</button></td>
         </tr>`;
       });
-      html += `</tbody></table></div>`;
+      html += `</tbody></table></div></div>`;
     });
     if(!any){
       html += `<span style="color:var(--text-faint); font-size:12.5px;">No player props posted for this game yet — check back closer to game time.</span>`;
