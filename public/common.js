@@ -174,7 +174,14 @@ function updateTicker(games){
       }
     });
   });
-  track.innerHTML = items.length ? items.join('&nbsp;&nbsp;•&nbsp;&nbsp;') : 'No odds loaded yet.';
+  if(!items.length){ track.innerHTML = 'No odds loaded yet.'; return; }
+  const sep = '&nbsp;&nbsp;•&nbsp;&nbsp;';
+  const html = items.join(sep);
+  // Render the sequence twice so the -50% translate loop is seamless — otherwise
+  // the viewport sits empty from when the single copy exits until it restarts
+  // (audit 6.8). The track stays aria-hidden, so the duplicate copy doesn't
+  // double-announce anything to screen readers.
+  track.innerHTML = html + sep + html;
 }
 
 // Ticker pause control (audit 5.2 + 2.6): hover-pause already exists in CSS, but
@@ -244,12 +251,14 @@ function renderNav(activePage){
     ['slip','/slip.html','🎟️','Slip']
   ];
   rail.innerHTML = '<a class="rail-logo" href="/">LW</a>' + items.map(([key,href,icon,label])=>
-    `<a class="rail-btn${key===activePage?' active':''}" href="${href}" title="${label}">
-      <span>${icon}</span><span class="rail-label">${label}${key==='slip'?'<span class="slip-badge" id="slipBadge"></span>':''}</span>
+    `<a class="rail-btn${key===activePage?' active':''}" href="${href}">
+      <span aria-hidden="true">${icon}</span><span class="rail-label">${label}${key==='slip'?'<span class="slip-badge" id="slipBadge"></span>':''}</span>
     </a>`).join('');
   updateSlipBadge();
 }
-let _lastSlipBadgeCount = 0;
+// Seed from the persisted slip so a non-empty slip doesn't fake-trigger the
+// bump animation on every page's first nav render (audit 6.6).
+let _lastSlipBadgeCount = getSlip().length;
 function updateSlipBadge(){
   const badge = document.getElementById('slipBadge');
   if(!badge) return;
@@ -438,17 +447,16 @@ function getMyBooks(){
 function setMyBooks(list){
   try{ localStorage.setItem(MYBOOKS_KEY, JSON.stringify(list)); }catch(e){}
 }
-function myBookKeys(){
+// Never filters a bookmaker/row list down to nothing — falls back to the full
+// list so a market never appears to vanish just because none of "my books"
+// quote it. keyOf extracts the book key from each entry (defaults to `.key`,
+// board.js's per-team rows use `.bookKey` instead).
+function filterToMyBooks(entries, keyOf){
+  const getKey = keyOf || (b => b.key);
   const mine = getMyBooks();
-  return mine.length ? mine : TRACKED_KEYS;
-}
-// Never filters a bookmaker list down to nothing — falls back to the full list
-// so a market never appears to vanish just because none of "my books" quote it.
-function filterToMyBooks(bookmakers){
-  const mine = getMyBooks();
-  if(!mine.length) return bookmakers;
-  const filtered = bookmakers.filter(b => mine.includes(b.key.toLowerCase()));
-  return filtered.length ? filtered : bookmakers;
+  if(!mine.length) return entries;
+  const filtered = entries.filter(b => mine.includes(getKey(b).toLowerCase()));
+  return filtered.length ? filtered : entries;
 }
 
 // ---------- MLB stadium weather ----------

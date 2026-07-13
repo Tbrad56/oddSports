@@ -143,8 +143,10 @@
   // ---------- player props (opt-in per game) ----------
   function renderBookFilter(){
     const el = document.getElementById('bookFilterChips');
+    const label = document.getElementById('bookFilterLabel');
     const cached = Object.values(state.propsCache);
-    if(!cached.length){ el.innerHTML = ''; return; }
+    if(!cached.length){ el.innerHTML = ''; if(label) label.style.display = 'none'; return; }
+    if(label) label.style.display = '';
     const booksPresent = new Set();
     cached.forEach(({data})=>{
       (data.bookmakers||[]).forEach(b=>{
@@ -253,7 +255,13 @@
       html += `</tbody></table></div></div>`;
     });
     if(!any){
-      html += `<span style="color:var(--text-faint); font-size:12.5px;">No player props posted for this game yet — check back closer to game time.</span>`;
+      if(state.propsBookFilter !== 'all'){
+        const filterStyle = bookStyleFor(state.propsBookFilter);
+        const filterName = filterStyle ? filterStyle.name : state.propsBookFilter;
+        html += `<span style="color:var(--text-faint); font-size:12.5px;">No ${escapeHtml(filterName)} props for this game — clear the book filter to see all.</span>`;
+      } else {
+        html += `<span style="color:var(--text-faint); font-size:12.5px;">No player props posted for this game yet — check back closer to game time.</span>`;
+      }
     }
     html += '</div>';
     return html;
@@ -400,7 +408,7 @@
           if(rowEl) flashEl(rowEl);
         };
 
-        const myRows = myBooks.length ? rows.filter(r=>myBooks.includes(r.bookKey.toLowerCase())) : [];
+        const myRows = myBooks.length ? filterToMyBooks(rows, r=>r.bookKey) : [];
         const otherRows = myBooks.length ? rows.filter(r=>!myBooks.includes(r.bookKey.toLowerCase())) : [];
 
         if(myBooks.length && myRows.length){

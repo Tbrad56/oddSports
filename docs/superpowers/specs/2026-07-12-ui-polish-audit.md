@@ -201,4 +201,60 @@ Works only while `api.elections.kalshi.com` serves permissive CORS; failures are
 | ugly | 12 (1.1, 2.5, 2.6, 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 6.2, 6.3, 6.5) |
 | polish | 28 (2.7×2, 3.1-3.9, 4.1-4.7, 5.7-5.10, 6.4, 6.6-6.10) |
 
+---
+
+## Resolution
+
+All 45 catalogued items, mapped to the commit (or explicit reassignment) that resolved them.
+
+| Item | Fixing commit / disposition |
+|---|---|
+| 1.1 | 9f20316 |
+| 2.1 | 9f20316 |
+| 2.2 | 9f20316 |
+| 2.3 | 9f20316 |
+| 2.4 | 9f20316 |
+| 2.5 | 299bff7 / 8f69314 / 5ff0e67 |
+| 2.6 | partial: ticker-pause done Task 3 (299bff7/8f69314/5ff0e67); weather microcopy reassigned (not implemented — hover-only weather tooltips remain; visible microcopy would need a design pass, out of scope for this batch) |
+| 2.7a | 9f20316 |
+| 2.7b | this commit (`header.app-header{position:static}` at ≤640px) |
+| 3.1 | this commit (deleted `input[type=password]` from selector list) |
+| 3.2 | this commit (deleted `select` from selector lists) |
+| 3.3 | this commit (deleted `.settings-field` rules, kept `.settings-hint`) |
+| 3.4 | this commit (deleted `button.icon-btn`) |
+| 3.5 | this commit (deleted `myBookKeys()`) |
+| 3.6 | this commit (board.js now calls the documented `filterToMyBooks()` helper instead of its own inline filter/fallback) |
+| 3.7 | 9f20316 (verified gone this task — zero `position:sticky` hits outside the header) |
+| 3.8 | this commit (board.html:45 wrapper renamed `.props-toggle`→`.books-toggle`, own CSS rule) |
+| 3.9 | this commit (`shotsPanel`→`linksPanel` in slip.html) |
+| 4.1 | this commit (weather/error rgba values re-derived from `--warn`/`--bad`) |
+| 4.2 | this commit (`button.primary:hover` now `var(--accent-dim)`) |
+| 4.3 | this commit ("All odds everywhere" tagline rolled out to board/getprops/record/slip) |
+| 4.4 | this commit (ticker placeholder → "Loading the ticker →" on getprops/record/slip) |
+| 4.5 | this commit (book-filtered empty-props message names the filtered book) |
+| 4.6 | this commit (Kalshi badge tokenized to `var(--good)`) |
+| 4.7 | this commit (Record hero "Model Record" → "Record") |
+| 5.1 | 299bff7 / 8f69314 / 5ff0e67 |
+| 5.2 | 299bff7 / 8f69314 / 5ff0e67 |
+| 5.3 | 299bff7 / 8f69314 / 5ff0e67 |
+| 5.4 | 299bff7 / 8f69314 / 5ff0e67 |
+| 5.5 | 299bff7 / 8f69314 / 5ff0e67 |
+| 5.6 | 299bff7 / 8f69314 / 5ff0e67 |
+| 5.7 | this commit (nav emoji wrapped `aria-hidden="true"`, redundant `title` dropped) |
+| 5.8 | this commit (`.hero-line` div → `<h2>` on all five pages) |
+| 5.9 | this commit (`aria-label="Search teams or matchups"` on the board search input — it's the only search input in the app; the slip page's link-paste field is a different control with its own visible label) |
+| 5.10 | this commit (`.rail-label` 8.5px→9.5px; `.roof-tag`/`.rating-tag` bumped to a 10.5px floor; probe-verified no wrap at 390px) |
+| 6.1 | 629f67c |
+| 6.2 | 629f67c |
+| 6.3 | 629f67c |
+| 6.4 | this commit (record load failure now shows empty-state + Retry, matching Task 1's board/getprops pattern) |
+| 6.5 | this commit (`state.manual` persists to `lw_links` with the same guarded-JSON pattern as `lw_slip`; links only render as `<a>` when they match `/^https?:\/\//i`, else plain text) |
+| 6.6 | this commit (`_lastSlipBadgeCount` seeded from `getSlip().length` at load instead of `0`) |
+| 6.7 | this commit (`.copy-block` gained a Copy button using `navigator.clipboard.writeText`, flashes "Copied ✓") |
+| 6.8 | this commit (ticker track renders its item sequence twice; animation translates -50% with `padding-left:0`) |
+| 6.9 | this commit (minimal connect: "My sportsbooks — moneylines" toggle label + "Props — book filter" heading above the props chip row) |
+| 6.10 | reassigned: kalshi spec §3 |
+
+Zero unexplained rows — all 45 items accounted for.
+
 45 catalogued kinks total. Positives worth keeping: viewport meta on all pages, thorough `prefers-reduced-motion` coverage, consistent element-guarded shared JS, escapeHtml discipline everywhere except 6.5.

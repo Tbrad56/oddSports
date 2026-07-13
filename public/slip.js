@@ -1,5 +1,17 @@
 (function(){
-  const state = { manual: [] };
+  // Reference links persist across refreshes just like the slip itself (audit 6.5).
+  const LINKS_KEY = 'lw_links';
+  function getManualLinks(){
+    try{
+      const v = JSON.parse(localStorage.getItem(LINKS_KEY));
+      return Array.isArray(v) ? v : [];
+    }catch(e){ return []; }
+  }
+  function saveManualLinks(list){
+    try{ localStorage.setItem(LINKS_KEY, JSON.stringify(list)); }catch(e){}
+  }
+
+  const state = { manual: getManualLinks() };
 
   renderNav('slip');
 
@@ -93,7 +105,9 @@
 
       const bestBookKey = results[0].bookKey;
       const bestStyle = bookStyleFor(bestBookKey);
-      html += `<div class="copy-block">${buildCopyText(bestBookKey, bestStyle ? bestStyle.name : bestBookKey)}</div>`;
+      const bestBookName = bestStyle ? bestStyle.name : bestBookKey;
+      html += `<div class="copy-block">${buildCopyText(bestBookKey, bestBookName)}</div>
+        <button type="button" class="ghost copy-btn" data-book-key="${escapeHtml(bestBookKey)}" data-book-name="${escapeHtml(bestBookName)}" style="margin-top:6px; font-size:11.5px; padding:6px 10px;">Copy</button>`;
     } else {
       html += `<div style="font-size:12px; color:var(--text-dim); margin-bottom:6px;">No single book covers every leg. Best price per leg (mixed books, informational only):</div>`;
       let decimal = 1;
@@ -110,27 +124,56 @@
     html += '</div>';
     area.innerHTML = html;
     staggerIn(area);
+    wireCopyButton(area);
   }
 
-  function buildCopyText(bookKey, bookName){
+  function buildCopyLines(bookKey, bookName){
     const slip = getSlip();
-    let lines = [`${escapeHtml(bookName)} parlay slip:`];
+    const lines = [`${bookName} parlay slip:`];
     slip.forEach(leg=>{
       const row = leg.rows.find(r=>r.bookKey===bookKey);
-      lines.push(`• ${escapeHtml(leg.side)} (${escapeHtml(leg.matchup)}) — ${fmtAmerican(row.odds)}`);
+      lines.push(`• ${leg.side} (${leg.matchup}) — ${fmtAmerican(row.odds)}`);
     });
-    return lines.join('\n');
+    return lines;
+  }
+  // Escaped version for display inside the .copy-block (innerHTML).
+  function buildCopyText(bookKey, bookName){
+    return buildCopyLines(bookKey, bookName).map(escapeHtml).join('\n');
+  }
+
+  // Copy-to-clipboard for the parlay copy-block (audit 6.7) — flashes "Copied ✓"
+  // on the button itself so the confirmation sits right where the click happened.
+  function wireCopyButton(area){
+    const btn = area.querySelector('.copy-btn');
+    if(!btn) return;
+    btn.addEventListener('click', async ()=>{
+      const text = buildCopyLines(btn.dataset.bookKey, btn.dataset.bookName).join('\n');
+      try{
+        await navigator.clipboard.writeText(text);
+        const original = btn.textContent;
+        btn.textContent = 'Copied ✓';
+        clearTimeout(btn._copyResetTimer);
+        btn._copyResetTimer = setTimeout(()=>{ btn.textContent = original; }, 1500);
+      }catch(e){
+        btn.textContent = 'Copy failed';
+        clearTimeout(btn._copyResetTimer);
+        btn._copyResetTimer = setTimeout(()=>{ btn.textContent = 'Copy'; }, 1500);
+      }
+    });
   }
 
   document.getElementById('linkAddBtn').addEventListener('click', ()=>{
     const input = document.getElementById('linkInput');
     const val = input.value.trim();
     if(!val) return;
-    addManualEntry({tagline:'Reference link', text: val, isLink:true});
+    // Only render as a clickable link when it's actually http(s) — guards against
+    // javascript: URLs turning into live self-XSS links (audit 6.5).
+    addManualEntry({tagline:'Reference link', text: val, isLink: /^https?:\/\//i.test(val)});
     input.value = '';
   });
   function addManualEntry(entry){
     state.manual.push(entry);
+    saveManualLinks(state.manual);
     renderManual();
   }
   function renderManual(){
@@ -147,6 +190,7 @@
   }
 
   renderSlip();
+  renderManual();
 
   // fill the ticker quietly (server cache makes this cheap); ignore failures
   fetchOddsFor(getSport()).then(r=>updateTicker(r.games)).catch(()=>{});

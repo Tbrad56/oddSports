@@ -14,7 +14,7 @@
   <div class="header-top">
     <div class="brand">
       <h1>Line<span>Watch</span></h1>
-      <div class="tag">Your Odds Copilot</div>
+      <div class="tag">All odds everywhere</div>
     </div>
     <div class="header-controls">
       <button id="autoBtn" class="ghost" title="Toggle auto-refresh">Auto: Off</button>
@@ -31,7 +31,7 @@
   <nav class="nav-rail" id="navRail"></nav>
 
   <main>
-    <div class="hero-line">Odds Board</div>
+    <h2 class="hero-line">Odds Board</h2>
     <div class="hero-sub">Compare moneylines and player props across books — best price first, value flagged.</div>
     <div class="chip-row" id="sportChips"></div>
     <div class="status-row">
@@ -39,11 +39,11 @@
       <span id="statusText">Loading odds…</span>
     </div>
     <div class="search-row">
-      <input type="text" id="searchInput" placeholder="Search a team or matchup (e.g. Lakers, Chiefs)…">
+      <input type="text" id="searchInput" placeholder="Search a team or matchup (e.g. Lakers, Chiefs)…" aria-label="Search teams or matchups">
       <button id="fetchBtn" class="primary">Get Odds</button>
     </div>
-    <div class="props-toggle" style="margin:0 0 14px;">
-      <button class="ghost" id="myBooksToggle">My sportsbooks ▾</button>
+    <div class="books-toggle" style="margin:0 0 14px;">
+      <button class="ghost" id="myBooksToggle">My sportsbooks — moneylines ▾</button>
     </div>
     <div class="panel reveal" id="myBooksPanel" style="display:none; margin-bottom:16px;">
       <h2>My Sportsbooks</h2>
@@ -51,6 +51,7 @@
       <div class="settings-hint" style="margin-top:8px;">Pick the books you actually use — the board shows just your prices in a clean grid, with a quiet note when another book beats you. Leave all unchecked to compare every book.</div>
     </div>
     <div id="errorArea"></div>
+    <div class="settings-hint" id="bookFilterLabel" style="display:none; margin:0 0 6px;">Props — book filter</div>
     <div class="chip-row" id="bookFilterChips"></div>
     <div id="gamesArea">
       <div class="empty-state">

@@ -5,13 +5,17 @@
   const RESULT_CHIP = { hit: ['good','✓ Hit'], miss: ['bad','✗ Miss'], push: ['dim','— Push'], void: ['dim','∅ Void'] };
 
   async function load(){
+    clearError();
     try{
       const res = await fetch('/api/record');
       if(!res.ok) throw new Error('Error ' + res.status);
       render(await res.json());
     }catch(e){
-      showError(e.message || 'Could not load record.');
-      document.getElementById('recordArea').innerHTML = '';
+      const message = e.message || 'Could not load record.';
+      showError(message);
+      document.getElementById('recordArea').innerHTML = '<div class="empty-state"><h3>Couldn\'t load your record</h3><p>' + escapeHtml(message) + '</p><button class="primary" id="retryBtn">Retry</button></div>';
+      const retryBtn = document.getElementById('retryBtn');
+      if(retryBtn) retryBtn.addEventListener('click', load);
     }
   }
 
