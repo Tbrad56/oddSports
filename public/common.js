@@ -105,7 +105,7 @@ function badgeTextColor(hex){
   const chan = s => { const c = parseInt(s,16)/255; return c <= 0.03928 ? c/12.92 : Math.pow((c+0.055)/1.055, 2.4); };
   const L = 0.2126*chan(n.substr(0,2)) + 0.7152*chan(n.substr(2,2)) + 0.0722*chan(n.substr(4,2));
   const contrast = (l1,l2) => (Math.max(l1,l2)+0.05)/(Math.min(l1,l2)+0.05);
-  return contrast(1.0, L) >= contrast(L, 0.0243) ? '#FFFFFF' : '#1B1B1B';
+  return contrast(1.0, L) >= contrast(L, 0.010960094) ? '#FFFFFF' : '#1B1B1B';
 }
 
 function marketLabel(key){
