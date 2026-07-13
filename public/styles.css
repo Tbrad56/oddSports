@@ -551,3 +551,22 @@
 @media (prefers-reduced-motion:reduce){
   .live-dot{animation:none;}
 }
+
+/* ---------- HR Matchups (MLB) ---------- */
+.hr-block{padding:14px 16px; border-top:1px dashed var(--border-soft); background:var(--bg-card);}
+.hr-pitcher{
+  font-size:13px; font-weight:700; margin:12px 0 6px; display:flex; align-items:center; gap:8px;
+}
+.hr-pitcher:first-child{margin-top:0;}
+.hand-tag{
+  font-size:9.5px; font-weight:700; padding:2px 6px; border-radius:4px;
+  background:var(--bg-raised); border:1px solid var(--border); color:var(--text-dim);
+}
+.lineup-tag{
+  font-size:9.5px; font-weight:700; padding:2px 6px; border-radius:4px;
+  text-transform:uppercase; letter-spacing:.4px;
+}
+.lineup-tag.confirmed{color:var(--good); border:1px solid var(--good); background:rgba(61,220,132,0.08);}
+.stat-g{background:rgba(61,220,132,0.16);}
+.stat-r{background:rgba(255,92,92,0.14);}
+.hr-note{font-size:11px; color:var(--text-faint); margin-top:8px;}

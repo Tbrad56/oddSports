@@ -605,6 +605,43 @@ function buildWeatherStrip(game){
   </div>`;
 }
 
+// ---------- HR Matchups (MLB StatsAPI splits, proxied server-side) ----------
+async function fetchHrMatchups(homeTeam, awayTeam, commenceTime){
+  const qs = new URLSearchParams({ home: homeTeam, away: awayTeam, commence_time: commenceTime });
+  const res = await fetch(`/api/hr-matchups/mlb?${qs}`);
+  if(!res.ok){
+    let msg = `Error ${res.status}`;
+    try{ const j = await res.json(); if(j.error) msg = j.error; }catch(_){}
+    throw new Error(msg);
+  }
+  return await res.json();
+}
+
+// Statcast metrics (season EV / Barrel% / HardHit% per batter) come from
+// public/statcast/statcast.json, refreshed daily by a GitHub Actions workflow.
+// Absent until that workflow has run at least once — callers just omit the
+// Statcast columns when this returns null.
+let statcastCache; // undefined = not yet loaded, null = loaded but unavailable
+async function loadStatcast(){
+  if(statcastCache !== undefined) return statcastCache;
+  try{
+    const res = await fetch('/statcast/statcast.json', {cache:'no-store'});
+    statcastCache = res.ok ? (await res.json()) : null;
+  }catch(e){ statcastCache = null; }
+  return statcastCache;
+}
+
+// Color-codes a stat value against a rough league-average band: green when
+// at/above goodAbove, red when at/below badBelow, neutral otherwise. Context
+// only — not a recommendation. Returns a full <td> so callers can just
+// concatenate these into a row.
+function statCell(val, goodAbove, badBelow, fmt){
+  if(val === undefined || val === null || val === '' || isNaN(Number(val))) return '<td>—</td>';
+  const n = Number(val);
+  const cls = n >= goodAbove ? ' class="stat-g"' : n <= badBelow ? ' class="stat-r"' : '';
+  return `<td${cls}>${fmt ? fmt(n) : n}</td>`;
+}
+
 // ---------- Kalshi reference prices ----------
 // Kalshi is a CFTC-regulated prediction exchange, not a licensed sportsbook —
 // prices are shown as a reference row only, excluded from Best/Value ranking.

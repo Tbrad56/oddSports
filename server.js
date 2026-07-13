@@ -25,6 +25,7 @@ const PROP_MARKETS = {
 const STATSAPI = 'https://statsapi.mlb.com';
 const SCORES_TTL_MS = 30 * 1000;
 const LIVE_TTL_MS = 20 * 1000;
+const HR_SPLITS_TTL_MS = 6 * 60 * 60 * 1000; // season/split stats only change once per game played
 
 // market key -> which MLB game-log stat backs it
 const MLB_MARKET_STATS = {
@@ -40,6 +41,7 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
   const cache = new Map(); // upstreamPath -> {body, remaining, cachedAt, expires}
   const statsCache = new Map(); // statsapi path -> {body, expires}
   const analysisCache = new Map(); // eventId -> {body, expires}
+  const hrMatchupsCache = new Map(); // "home|away|dateStr" -> {body, expires}
   const store = createStore({ dataDir });
 
   // Fetch (or serve from cache) an Odds API path. Returns {body, remaining, cacheAge}.
@@ -132,6 +134,37 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     return person ? person.id : null;
   }
 
+  // HR/9 from HR count + innings-pitched string like "43.1" (43 IP, 1 out into the 44th)
+  function ip9(hr, ip){
+    if(!ip) return null;
+    const parts = String(ip).split('.');
+    const outs = (Number(parts[0]) || 0) * 3 + (Number(parts[1]) || 0);
+    if(!outs) return null;
+    return (Number(hr) || 0) * 27 / outs;
+  }
+
+  // Batched people call with season totals + vs-handedness splits hydrated
+  // (one request per group). MLB returns season and statSplits as separate
+  // stat-group entries in p.stats[]; the season entry's split has no .code,
+  // hence the 'season' fallback. Returns {personId: {name, hand, splits: {season, vl, vr}}}.
+  async function getPeopleSplits(personIds, group, season){
+    if(!personIds.length) return {};
+    const path = `/api/v1/people?personIds=${personIds.join(',')}&hydrate=stats(group=[${group}],type=[season,statSplits],sitCodes=[vl,vr],season=${season})`;
+    const data = await fetchStats(path, HR_SPLITS_TTL_MS);
+    const out = {};
+    (data.people || []).forEach(p => {
+      const splits = {};
+      (p.stats || []).forEach(sg => {
+        (sg.splits || []).forEach(sp => {
+          const code = (sp.split && sp.split.code) || 'season';
+          splits[code] = sp.stat || {};
+        });
+      });
+      out[p.id] = { name: p.fullName, hand: (p.pitchHand && p.pitchHand.code) || (p.batSide && p.batSide.code) || '?', splits };
+    });
+    return out;
+  }
+
   // newest-first [{value, started, date}]
   async function mlbGameValues(personId, group, statName, season, ttlMs = 6 * 60 * 60 * 1000){
     const data = await fetchStats(`/api/v1/people/${personId}/stats?stats=gameLog&season=${season}&group=${group}`, ttlMs);
@@ -212,6 +245,117 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
       });
     })().catch(err => sendUpstreamError(res, err));
   });
+
+  // HR matchups: probable-pitcher and lineup-batter season splits vs the
+  // opposing handedness, plus best HR odds per batter. Data only — the
+  // client (board.js) renders the tables and color-codes the cells. StatsAPI
+  // only — no Odds API call here. HR odds are merged in client-side from
+  // props the board page already fetched (per spec: reuse what's already
+  // loaded rather than spending extra quota on a redundant odds call).
+  app.get('/api/hr-matchups/mlb', (req, res) => {
+    handleHrMatchups(req, res).catch(err => {
+      console.error(`HR matchups failed: ${err && err.message || err}`);
+      if (!res.headersSent) res.status(502).json({ error: 'Stats service unavailable' });
+    });
+  });
+
+  async function handleHrMatchups(req, res){
+    const { home, away, commence_time } = req.query;
+    if (!home || !away || typeof home !== 'string' || typeof away !== 'string' || home.length > 100 || away.length > 100) {
+      return res.status(400).json({ error: 'home and away team names are required' });
+    }
+    const commenceMs = Date.parse(commence_time || '');
+    if (!commence_time || Number.isNaN(commenceMs)) return res.status(400).json({ error: 'Bad commence_time' });
+
+    // Game day in ET, not a naive UTC slice of commence_time — a late-evening
+    // ET game can already be the next calendar day in UTC.
+    const dateStr = new Date(commenceMs).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    const cacheKey = `${normName(home)}|${normName(away)}|${dateStr}`;
+    const hit = hrMatchupsCache.get(cacheKey);
+    if (hit && now() < hit.expires) return res.json(hit.body);
+
+    const season = dateStr.slice(0, 4);
+    let sched;
+    try {
+      sched = await fetchStats(`/api/v1/schedule?sportId=1&date=${dateStr}&hydrate=probablePitcher,lineups`, 15 * 60 * 1000);
+    } catch (err) {
+      return sendUpstreamError(res, err);
+    }
+    const games = ((sched.dates || [])[0] || {}).games || [];
+    const homeN = normName(home), awayN = normName(away);
+    const mg = games.find(g =>
+      normName(g.teams?.home?.team?.name || '') === homeN &&
+      normName(g.teams?.away?.team?.name || '') === awayN
+    );
+
+    if (!mg) {
+      const body = { matched: false };
+      hrMatchupsCache.set(cacheKey, { body, expires: now() + cacheTtlMs });
+      return res.json(body);
+    }
+
+    const homeP = mg.teams.home.probablePitcher, awayP = mg.teams.away.probablePitcher;
+    const lineups = mg.lineups || {};
+    const homeBatIds = (lineups.homePlayers || []).map(p => p.id);
+    const awayBatIds = (lineups.awayPlayers || []).map(p => p.id);
+    const pitcherIds = [homeP, awayP].filter(Boolean).map(p => p.id);
+
+    let pitchers, homeHit, awayHit;
+    try {
+      [pitchers, homeHit, awayHit] = await Promise.all([
+        getPeopleSplits(pitcherIds, 'pitching', season),
+        getPeopleSplits(homeBatIds, 'hitting', season),
+        getPeopleSplits(awayBatIds, 'hitting', season)
+      ]);
+    } catch (err) {
+      return sendUpstreamError(res, err);
+    }
+
+    function pitcherPayload(pObj){
+      if (!pObj || !pitchers[pObj.id]) return null;
+      const pd = pitchers[pObj.id];
+      const splitPayload = code => {
+        const st = pd.splits[code];
+        if (!st) return null;
+        const hr9 = st.homeRunsPer9 !== undefined ? Number(st.homeRunsPer9) : ip9(st.homeRuns, st.inningsPitched);
+        return { ip: st.inningsPitched ?? null, whip: st.whip ?? null, hr: st.homeRuns ?? null, hr9 };
+      };
+      return { id: pObj.id, name: pd.name, hand: pd.hand, season: splitPayload('season'), vsLHB: splitPayload('vl'), vsRHB: splitPayload('vr') };
+    }
+
+    function battersPayload(batIds, batterMap, oppHand){
+      const sitCode = oppHand === 'L' ? 'vl' : 'vr';
+      return batIds.map(id => {
+        const b = batterMap[id];
+        if (!b) return null;
+        const st = b.splits[sitCode] || {};
+        const iso = (st.slg !== undefined && st.avg !== undefined) ? (Number(st.slg) - Number(st.avg)) : null;
+        return { id, name: b.name, hand: b.hand, hr: st.homeRuns ?? null, ba: st.avg ?? null, obp: st.obp ?? null, slg: st.slg ?? null, iso };
+      }).filter(Boolean);
+    }
+
+    const homePitcherPayload = pitcherPayload(homeP);
+    const awayPitcherPayload = pitcherPayload(awayP);
+
+    const body = {
+      matched: true,
+      away: { // away team's batters face the HOME pitcher
+        battingTeam: away,
+        pitcher: homePitcherPayload,
+        lineupPosted: awayBatIds.length > 0,
+        batters: battersPayload(awayBatIds, awayHit, homePitcherPayload ? homePitcherPayload.hand : null)
+      },
+      home: { // home team's batters face the AWAY pitcher
+        battingTeam: home,
+        pitcher: awayPitcherPayload,
+        lineupPosted: homeBatIds.length > 0,
+        batters: battersPayload(homeBatIds, homeHit, awayPitcherPayload ? awayPitcherPayload.hand : null)
+      },
+      season
+    };
+    hrMatchupsCache.set(cacheKey, { body, expires: now() + cacheTtlMs });
+    res.json(body);
+  }
 
   app.get('/api/props/:sport/:eventId', (req, res) => {
     const { sport, eventId } = req.params;

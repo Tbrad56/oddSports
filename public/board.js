@@ -140,6 +140,111 @@
     });
   });
 
+  // ---------- HR matchups (MLB only): probable pitchers + lineup vs handedness ----------
+  // Best "Over" (HR 0.5+) price per batter, read from this game's already-fetched
+  // props cache — no extra fetch/quota spend. Blank until "Load player props"
+  // has been used on this game at least once.
+  function hrOddsFor(gameId){
+    const cached = state.propsCache[gameId];
+    const out = {};
+    if(!cached) return out;
+    (cached.data.bookmakers || []).forEach(bm=>{
+      const m = (bm.markets || []).find(mk=>mk.key === 'batter_home_runs');
+      if(!m) return;
+      (m.outcomes || []).forEach(o=>{
+        if(o.name !== 'Over') return;
+        const nm = (o.description || '').toLowerCase();
+        if(!nm) return;
+        if(!out[nm] || americanToDecimal(o.price) > americanToDecimal(out[nm].odds)){
+          out[nm] = { odds: o.price, bookKey: bm.key };
+        }
+      });
+    });
+    return out;
+  }
+
+  async function loadHrMatchups(game, hostEl){
+    try{
+      const [data, sc] = await Promise.all([
+        fetchHrMatchups(game.home_team, game.away_team, game.commence_time),
+        loadStatcast()
+      ]);
+      hostEl.innerHTML = buildHrMatchupsHtml(data, sc, hrOddsFor(game.id));
+    }catch(e){
+      hostEl.innerHTML = '<div class="hr-block"><span class="hr-note">Couldn\'t load matchup data right now.</span></div>';
+    }
+  }
+
+  function buildHrMatchupsHtml(data, sc, hrOdds){
+    if(!data.matched){
+      return '<div class="hr-block"><span class="hr-note">Couldn\'t match this game in the MLB schedule.</span></div>';
+    }
+
+    function sideHtml(side){
+      let html = '';
+      if(side.pitcher){
+        html += `<div class="hr-pitcher">Facing: ${escapeHtml(side.pitcher.name)} <span class="hand-tag">${escapeHtml(side.pitcher.hand)}HP</span></div>`;
+        html += `<table class="props-table"><thead><tr><th>Split</th><th>IP</th><th>WHIP</th><th>HR</th><th>HR/9</th></tr></thead><tbody>`;
+        [['season','Season'],['vsLHB','vs LHB'],['vsRHB','vs RHB']].forEach(([key,label])=>{
+          const st = side.pitcher[key];
+          if(!st) return;
+          html += `<tr><td>${label}</td><td>${st.ip ?? '—'}</td><td>${st.whip ?? '—'}</td>`
+            + statCell(st.hr, 8, 2, n=>n)
+            + statCell(st.hr9, 1.4, 0.8, n=>n.toFixed(2))
+            + `</tr>`;
+        });
+        html += `</tbody></table>`;
+      } else {
+        html += `<div class="hr-pitcher">Probable pitcher not announced yet</div>`;
+      }
+
+      if(side.batters.length){
+        const oppHand = side.pitcher ? side.pitcher.hand : null;
+        html += `<div class="hr-pitcher" style="margin-top:12px;">${escapeHtml(side.battingTeam)} lineup ${side.lineupPosted?'<span class="lineup-tag confirmed">✓ Confirmed</span>':''}</div>`;
+        const scCols = sc && sc.batters ? '<th>EV</th><th>Barrel%</th><th>HardHit%</th>' : '';
+        html += `<table class="props-table"><thead><tr><th>Batter</th><th>HR odds</th><th>HR ${oppHand?('vs '+oppHand+'HP'):''}</th><th>BA</th><th>OBP</th><th>SLG</th><th>ISO</th>${scCols}</tr></thead><tbody>`;
+        side.batters.forEach(b=>{
+          const odds = hrOdds[(b.name||'').toLowerCase()];
+          const style = odds ? bookStyleFor(odds.bookKey) : null;
+          const link = odds ? BOOK_LINKS[odds.bookKey.toLowerCase()] : null;
+          const oddsCell = odds
+            ? `<td><span class="odds-chip best">${escapeHtml(style ? style.name : odds.bookKey)} ${fmtAmerican(odds.odds)}</span>${link?` <a class="book-link-btn" href="${link}" target="_blank" rel="noopener">↗</a>`:''}</td>`
+            : '<td>—</td>';
+          let scCells = '';
+          if(sc && sc.batters){
+            const m = sc.batters[(b.name||'').toLowerCase()];
+            scCells = m
+              ? statCell(m.ev, 90, 86, n=>n.toFixed(1))
+                + statCell(m.barrel, 10, 5, n=>n.toFixed(1)+'%')
+                + statCell(m.hardhit, 42, 33, n=>n.toFixed(1)+'%')
+              : '<td>—</td><td>—</td><td>—</td>';
+          }
+          html += `<tr><td style="font-weight:600;">${escapeHtml(b.name)} <span class="hand-tag">${escapeHtml(b.hand)}</span></td>`
+            + oddsCell
+            + statCell(b.hr, 5, 1, n=>n)
+            + statCell(b.ba, 0.280, 0.230, n=>n.toFixed(3))
+            + statCell(b.obp, 0.350, 0.300, n=>n.toFixed(3))
+            + statCell(b.slg, 0.480, 0.370, n=>n.toFixed(3))
+            + statCell(b.iso, 0.200, 0.130, n=>n.toFixed(3))
+            + scCells
+            + `</tr>`;
+        });
+        html += `</tbody></table>`;
+      } else {
+        html += `<div class="hr-note">Lineup not posted yet — usually appears 2–4 hours before first pitch.</div>`;
+      }
+      return html;
+    }
+
+    let html = '<div class="hr-block">';
+    html += sideHtml(data.away);
+    html += '<div style="height:10px;"></div>';
+    html += sideHtml(data.home);
+    html += `<div class="hr-note">Splits are season vs-handedness from MLB's public Stats API.${sc && sc.batters ? ` Statcast columns (season-level) via Baseball Savant, updated ${escapeHtml(sc.updated||'daily')}.` : ''} HR odds shown only if you've already loaded player props for this game. Green/red bands are rough league-average thresholds — context, not picks.</div>`;
+    html += '</div>';
+    return html;
+  }
+
   async function loadProps(game, sportKey, hostEl){
     try{
       const res = await fetch(`/api/props/${sportKey}/${game.id}`);
@@ -455,6 +560,39 @@
           }
           toggleBtn.textContent = 'Hide player props';
           revealShow(propsHost);
+        });
+      }
+
+      // ---- HR matchups (MLB only): probable pitchers + lineup vs handedness ----
+      if(sportKey === 'baseball_mlb'){
+        const hrToggleWrap = document.createElement('div');
+        hrToggleWrap.className = 'props-toggle';
+        const hrBtn = document.createElement('button');
+        hrBtn.className = 'ghost';
+        hrBtn.textContent = 'HR matchups';
+        hrToggleWrap.appendChild(hrBtn);
+        card.appendChild(hrToggleWrap);
+
+        const hrHost = document.createElement('div');
+        hrHost.className = 'hr-host reveal';
+        hrHost.style.display = 'none';
+        card.appendChild(hrHost);
+
+        hrBtn.addEventListener('click', async ()=>{
+          if(hrHost.classList.contains('is-open')){
+            revealHide(hrHost);
+            hrBtn.textContent = 'HR matchups';
+            return;
+          }
+          if(!hrHost.dataset.loaded){
+            hrBtn.disabled = true;
+            hrBtn.innerHTML = '<span class="spinner"></span> Loading…';
+            await loadHrMatchups(game, hrHost);
+            hrHost.dataset.loaded = '1';
+            hrBtn.disabled = false;
+          }
+          hrBtn.textContent = 'Hide HR matchups';
+          revealShow(hrHost);
         });
       }
 

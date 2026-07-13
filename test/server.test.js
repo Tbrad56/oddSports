@@ -544,3 +544,140 @@ test('logged gameDate comes from the game commence_time, not the clock', async (
   const rec = JSON.parse(fs.readFileSync(path.join(dir, 'picks.jsonl'), 'utf8').trim().split('\n')[0]);
   assert.equal(rec.gameDate, '2026-07-13');
 });
+
+// ---------- /api/hr-matchups/mlb (query params: home, away, commence_time) ----------
+// StatsAPI-only — HR odds are merged in client-side from already-fetched props,
+// so there's no Odds API fixture needed here.
+function hrScheduleBody(){
+  return { dates: [{ games: [{
+    teams: {
+      home: { team: { name: 'Home Nine' }, probablePitcher: { id: 501, fullName: 'Home Ace' } },
+      away: { team: { name: 'Away Nine' }, probablePitcher: { id: 502, fullName: 'Away Ace' } }
+    },
+    lineups: { homePlayers: [{ id: 601 }], awayPlayers: [{ id: 701 }] }
+  }] }] };
+}
+// MLB's people?hydrate=stats(...,type=[season,statSplits],...) response nests
+// season and statSplits as separate stats[] group entries — the season split
+// has no .split.code (hence getPeopleSplits' 'season' fallback).
+const HR_PEOPLE_BODY = { people: [
+  { id: 501, fullName: 'Home Ace', pitchHand: { code: 'R' }, stats: [
+    { splits: [{ stat: { inningsPitched: '95.0', whip: '1.15', homeRuns: 12, homeRunsPer9: 1.14 } }] },
+    { splits: [
+      { split: { code: 'vl' }, stat: { inningsPitched: '40.1', whip: '1.20', homeRuns: 6, homeRunsPer9: 1.34 } },
+      { split: { code: 'vr' }, stat: { inningsPitched: '38.0', whip: '1.35', homeRuns: 9, homeRunsPer9: 2.13 } }
+    ] }
+  ] },
+  { id: 502, fullName: 'Away Ace', pitchHand: { code: 'L' }, stats: [
+    { splits: [{ stat: { inningsPitched: '70.0', whip: '1.25', homeRuns: 9 } }] },
+    { splits: [
+      { split: { code: 'vl' }, stat: { inningsPitched: '20.0', whip: '1.10', homeRuns: 2 } },
+      { split: { code: 'vr' }, stat: { inningsPitched: '50.0', whip: '1.30', homeRuns: 7 } }
+    ] }
+  ] },
+  { id: 601, fullName: 'Home Slugger', batSide: { code: 'R' }, stats: [
+    { splits: [{ stat: { homeRuns: 13, avg: .270, obp: .335, slg: .460 } }] },
+    { splits: [
+      { split: { code: 'vl' }, stat: { homeRuns: 4, avg: .255, obp: .320, slg: .410 } },
+      { split: { code: 'vr' }, stat: { homeRuns: 9, avg: .295, obp: .360, slg: .520 } }
+    ] }
+  ] },
+  { id: 701, fullName: 'Away Slugger', batSide: { code: 'L' }, stats: [
+    { splits: [{ stat: { homeRuns: 11, avg: .258, obp: .318, slg: .440 } }] },
+    { splits: [
+      { split: { code: 'vl' }, stat: { homeRuns: 3, avg: .240, obp: .300, slg: .380 } },
+      { split: { code: 'vr' }, stat: { homeRuns: 8, avg: .280, obp: .340, slg: .490 } }
+    ] }
+  ] }
+]};
+function hrApp(overrides = {}){
+  // overrides first: routedFetch returns the first substring match, so an
+  // override for a path also covered by a default below must be checked first.
+  const f = routedFetch([
+    ...(overrides.routes || []),
+    ['/api/v1/schedule', okResponse(hrScheduleBody())],
+    ['/api/v1/people', okResponse(HR_PEOPLE_BODY)]
+  ]);
+  return { app: createApp({ apiKey: 'k', fetchFn: f, ...(overrides.opts || {}) }), f };
+}
+const HR_QUERY = { home: 'Home Nine', away: 'Away Nine', commence_time: '2026-07-12T23:00:00Z' };
+
+test('hr-matchups: missing home/away -> 400, nothing fetched', async () => {
+  const { app, f } = hrApp();
+  const res = await request(app).get('/api/hr-matchups/mlb').query({ commence_time: HR_QUERY.commence_time });
+  assert.equal(res.status, 400);
+  assert.equal(f.calls.length, 0);
+});
+
+test('hr-matchups: missing/bad commence_time -> 400, nothing fetched', async () => {
+  const { app, f } = hrApp();
+  const res = await request(app).get('/api/hr-matchups/mlb').query({ home: 'Home Nine', away: 'Away Nine', commence_time: 'not-a-date' });
+  assert.equal(res.status, 400);
+  assert.equal(f.calls.length, 0);
+});
+
+test('hr-matchups: no schedule match -> matched:false, no error', async () => {
+  const { app } = hrApp({ routes: [['/api/v1/schedule', okResponse({ dates: [] })]] });
+  const res = await request(app).get('/api/hr-matchups/mlb').query(HR_QUERY);
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, { matched: false });
+});
+
+test('hr-matchups: matched game returns Season/vsLHB/vsRHB pitcher splits and batter splits vs correct handedness', async () => {
+  const { app } = hrApp();
+  const res = await request(app).get('/api/hr-matchups/mlb').query(HR_QUERY);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.matched, true);
+
+  // Away batters face the HOME pitcher (Home Ace, R) -> batters read the vsRHB (vr) split
+  assert.equal(res.body.away.pitcher.name, 'Home Ace');
+  assert.equal(res.body.away.pitcher.hand, 'R');
+  assert.equal(res.body.away.pitcher.season.hr9, 1.14);
+  assert.equal(res.body.away.pitcher.vsLHB.hr9, 1.34);
+  assert.equal(res.body.away.pitcher.vsRHB.hr9, 2.13);
+  assert.equal(res.body.away.lineupPosted, true);
+  const awaySlugger = res.body.away.batters.find(b => b.name === 'Away Slugger');
+  assert.equal(awaySlugger.hr, 8);              // vr split, since facing an R pitcher
+  assert.equal(awaySlugger.slg, 0.49);
+  assert.ok(Math.abs(awaySlugger.iso - (0.49 - 0.28)) < 1e-9);
+
+  // Home batters face the AWAY pitcher (Away Ace, L) -> batters read the vsLHB (vl) split
+  assert.equal(res.body.home.pitcher.name, 'Away Ace');
+  assert.equal(res.body.home.pitcher.hand, 'L');
+  assert.equal(res.body.home.pitcher.season.hr, 9);
+  const homeSlugger = res.body.home.batters.find(b => b.name === 'Home Slugger');
+  assert.equal(homeSlugger.hr, 4);               // vl split, since facing an L pitcher
+});
+
+test('hr-matchups: lineup not posted -> lineupPosted false, empty batters, pitcher still returned', async () => {
+  const { app } = hrApp({
+    routes: [['/api/v1/schedule', okResponse({ dates: [{ games: [{
+      teams: {
+        home: { team: { name: 'Home Nine' }, probablePitcher: { id: 501, fullName: 'Home Ace' } },
+        away: { team: { name: 'Away Nine' }, probablePitcher: { id: 502, fullName: 'Away Ace' } }
+      },
+      lineups: {}
+    }] }] })]]
+  });
+  const res = await request(app).get('/api/hr-matchups/mlb').query(HR_QUERY);
+  assert.equal(res.body.away.lineupPosted, false);
+  assert.deepEqual(res.body.away.batters, []);
+  assert.equal(res.body.away.pitcher.name, 'Home Ace');
+});
+
+test('hr-matchups: second call within TTL served from cache (no re-fetch)', async () => {
+  let t = 1000000;
+  const { app, f } = hrApp({ opts: { now: () => t } });
+  await request(app).get('/api/hr-matchups/mlb').query(HR_QUERY);
+  const callsAfterFirst = f.calls.length;
+  t += 60000;
+  await request(app).get('/api/hr-matchups/mlb').query(HR_QUERY);
+  assert.equal(f.calls.length, callsAfterFirst);
+});
+
+test('hr-matchups: schedule StatsAPI failure -> 502 Stats service unavailable', async () => {
+  const { app } = hrApp({ routes: [['/api/v1/schedule', errResponse(500)]] });
+  const res = await request(app).get('/api/hr-matchups/mlb').query(HR_QUERY);
+  assert.equal(res.status, 502);
+  assert.equal(res.body.error, 'Stats service unavailable');
+});
