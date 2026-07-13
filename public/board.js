@@ -220,7 +220,7 @@
       any = true;
       const sectionKey = game.id + '|' + marketKey;
       const collapsed = !!state.marketCollapsed[sectionKey];
-      html += `<div class="props-market-label prop-market-head" data-section-key="${escapeHtml(sectionKey)}" title="Click to ${collapsed?'expand':'collapse'}">
+      html += `<div class="props-market-label prop-market-head" data-section-key="${escapeHtml(sectionKey)}" tabindex="0" role="button" aria-expanded="${!collapsed}" title="Click to ${collapsed?'expand':'collapse'}">
         <span class="market-arrow">${collapsed?'▸':'▾'}</span>${escapeHtml(marketLabel(marketKey))}
         <span class="market-count">(${rowKeys.length})</span>
       </div>`;
@@ -261,19 +261,24 @@
 
   // Delegated clicks for props content that gets repainted without a full renderGames(): market
   // collapse headers and + Slip buttons live inside per-game hosts rebuilt by loadProps/filter.
+  function toggleMarketHead(marketHead){
+    const key = marketHead.dataset.sectionKey;
+    const nowCollapsed = !state.marketCollapsed[key];
+    state.marketCollapsed[key] = nowCollapsed;
+    const body = marketHead.nextElementSibling;
+    if(body && body.classList.contains('market-body')){
+      body.style.display = nowCollapsed ? 'none' : '';
+    }
+    const arrow = marketHead.querySelector('.market-arrow');
+    if(arrow) arrow.textContent = nowCollapsed ? '▸' : '▾';
+    marketHead.title = 'Click to ' + (nowCollapsed ? 'expand' : 'collapse');
+    marketHead.setAttribute('aria-expanded', String(!nowCollapsed));
+  }
+
   document.getElementById('gamesArea').addEventListener('click', (e)=>{
     const marketHead = e.target.closest('.prop-market-head');
     if(marketHead){
-      const key = marketHead.dataset.sectionKey;
-      const nowCollapsed = !state.marketCollapsed[key];
-      state.marketCollapsed[key] = nowCollapsed;
-      const body = marketHead.nextElementSibling;
-      if(body && body.classList.contains('market-body')){
-        body.style.display = nowCollapsed ? 'none' : '';
-      }
-      const arrow = marketHead.querySelector('.market-arrow');
-      if(arrow) arrow.textContent = nowCollapsed ? '▸' : '▾';
-      marketHead.title = 'Click to ' + (nowCollapsed ? 'expand' : 'collapse');
+      toggleMarketHead(marketHead);
       return;
     }
     const slipBtn = e.target.closest('.prop-slip-btn');
@@ -284,6 +289,14 @@
       showToast('Added ✓');
       const row = slipBtn.closest('tr');
       if(row) flashEl(row);
+    }
+  });
+
+  document.getElementById('gamesArea').addEventListener('keydown', (e)=>{
+    if((e.key==='Enter'||e.key===' ') && e.target.closest('.pick-row,.props-market-label')){
+      e.preventDefault();
+      const marketHead = e.target.closest('.props-market-label');
+      if(marketHead) toggleMarketHead(marketHead);
     }
   });
 
@@ -400,7 +413,7 @@
             const cell = document.createElement('div');
             cell.className = 'mybook-cell';
             cell.innerHTML = `
-              <div class="book-badge" style="background:${style?style.color:'var(--bg-raised)'};">${escapeHtml(style?style.name:r.bookTitle)}</div>
+              <div class="book-badge" style="background:${style?style.color:'var(--bg-raised)'}; color:${style?badgeTextColor(style.color):'#F5F5F5'};">${escapeHtml(style?style.name:r.bookTitle)}</div>
               <span class="book-odds ${Number(r.odds)>0?'pos':'neg'}">${fmtAmerican(r.odds)}</span>
               <button class="add-leg-btn">+ Slip</button>
               ${link ? `<a class="book-link-btn" href="${link}" target="_blank" rel="noopener" title="Open ${escapeHtml(style?style.name:r.bookTitle)}">↗</a>` : ''}
@@ -425,7 +438,7 @@
             row.className = 'book-row' + (idx===0 ? ' best' : '');
             const style = bookStyleFor(r.bookKey);
             const badgeHtml = style
-              ? `<div class="book-badge" style="background:${style.color};">${escapeHtml(style.name)}</div>`
+              ? `<div class="book-badge" style="background:${style.color}; color:${badgeTextColor(style.color)};">${escapeHtml(style.name)}</div>`
               : `<div class="book-name-fallback">${escapeHtml(r.bookTitle)}</div>`;
             const link = BOOK_LINKS[r.bookKey.toLowerCase()];
             row.innerHTML = `

@@ -99,6 +99,13 @@ function bookStyleFor(key){
   return BOOK_STYLES[k] || null;
 }
 
+// Relative luminance of a brand color -> pick readable badge text color (audit 5.5).
+function badgeTextColor(hex){
+  const n = hex.replace('#','');
+  const r = parseInt(n.substr(0,2),16), g = parseInt(n.substr(2,2),16), b = parseInt(n.substr(4,2),16);
+  return (0.2126*r + 0.7152*g + 0.0722*b) < 140 ? '#FFFFFF' : '#1B1B1B';
+}
+
 function marketLabel(key){
   const labels = {
     player_pass_yds:"Passing Yards", player_pass_tds:"Passing TDs", player_rush_yds:"Rushing Yards",
@@ -116,7 +123,7 @@ function marketLabel(key){
 function linkedBadge(bookKey, fallbackTitle){
   const style = bookStyleFor(bookKey);
   const inner = style
-    ? `<div class="book-badge" style="background:${style.color};">${escapeHtml(style.name)}</div>`
+    ? `<div class="book-badge" style="background:${style.color}; color:${badgeTextColor(style.color)};">${escapeHtml(style.name)}</div>`
     : `<span>${escapeHtml(fallbackTitle || bookKey)}</span>`;
   const link = BOOK_LINKS[bookKey.toLowerCase()];
   return link ? `<a href="${link}" target="_blank" rel="noopener" style="text-decoration:none;" title="Open ${escapeHtml(style?style.name:fallbackTitle||bookKey)}">${inner}</a>` : inner;
@@ -167,6 +174,27 @@ function updateTicker(games){
   });
   track.innerHTML = items.length ? items.join('&nbsp;&nbsp;•&nbsp;&nbsp;') : 'No odds loaded yet.';
 }
+
+// Ticker pause control (audit 5.2 + 2.6): hover-pause already exists in CSS, but
+// touch/keyboard users have no way to stop the marquee. The track itself is
+// aria-hidden (decorative, updating content) so the pause button is too — it's
+// a convenience for sighted users tracking the moving text, not AT-relevant.
+(function initTickerPause(){
+  const wrap = document.querySelector('.ticker-wrap');
+  if(!wrap || wrap.querySelector('.ticker-pause')) return;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'ticker-pause';
+  btn.setAttribute('aria-hidden','true');
+  btn.title = 'Pause ticker';
+  btn.textContent = '⏸';
+  btn.addEventListener('click', ()=>{
+    const paused = wrap.classList.toggle('paused');
+    btn.textContent = paused ? '▶' : '⏸';
+    btn.title = paused ? 'Resume ticker' : 'Pause ticker';
+  });
+  wrap.appendChild(btn);
+})();
 
 // ---------- slip storage (localStorage, shared across pages) ----------
 const SLIP_KEY = 'lw_slip';
@@ -241,12 +269,13 @@ function showToast(text){
     t.id = 'lwToast';
     t.className = 'toast';
     t.href = '/slip.html';
+    t.setAttribute('role','status');
     document.body.appendChild(t);
   }
   t.textContent = text + ' — View slip';
   t.classList.add('show');
   clearTimeout(showToast._timer);
-  showToast._timer = setTimeout(()=>t.classList.remove('show'), 2000);
+  showToast._timer = setTimeout(()=>t.classList.remove('show'), 4500);
 }
 
 // ---------- motion helpers ----------
