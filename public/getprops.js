@@ -103,7 +103,7 @@
       const key = game.id + '|' + i;
       const style = bookStyleFor(pick.bestBook.bookKey);
       const isExpanded = !!state.expanded[key];
-      html += `<tr class="pick-row" data-key="${escapeHtml(key)}" tabindex="0" role="button" aria-expanded="${isExpanded}">
+      html += `<tr class="pick-row" data-key="${escapeHtml(key)}" tabindex="0" aria-expanded="${isExpanded}">
         <td style="font-weight:600; white-space:nowrap;">${escapeHtml(pick.player)}</td>
         <td style="white-space:nowrap;">${escapeHtml(marketLabel(pick.market))} ${escapeHtml(String(pick.line))}</td>
         <td>${escapeHtml(pick.side)}</td>
@@ -193,7 +193,7 @@
 
   document.getElementById('gamesArea').addEventListener('keydown', (e)=>{
     if(e.target.closest('.pick-slip-btn,.analyze-btn')) return; // let the button handle its own Enter/Space
-    if((e.key==='Enter'||e.key===' ') && e.target.closest('.pick-row,.props-market-label')){
+    if((e.key==='Enter'||e.key===' ') && e.target.closest('.pick-row')){
       e.preventDefault();
       const row = e.target.closest('.pick-row');
       if(row){

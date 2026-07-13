@@ -571,9 +571,9 @@
 
 /* ---------- Mobile tap targets (audit 2.5) ---------- */
 @media (max-width:640px){
-  .odds-chip{padding:6px 9px;}
+  .odds-chip{padding:6px 9px; min-height:32px; display:inline-flex; align-items:center;}
   .add-leg-btn{padding:8px 10px;}
-  .remove-btn{padding:8px;}
+  .leg-item .remove-btn{padding:8px;}
   .book-link-btn{padding:8px;}
   .props-market-label{padding:6px 0;}
 }

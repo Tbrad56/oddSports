@@ -293,7 +293,7 @@
   });
 
   document.getElementById('gamesArea').addEventListener('keydown', (e)=>{
-    if((e.key==='Enter'||e.key===' ') && e.target.closest('.pick-row,.props-market-label')){
+    if((e.key==='Enter'||e.key===' ') && e.target.closest('.props-market-label')){
       e.preventDefault();
       const marketHead = e.target.closest('.props-market-label');
       if(marketHead) toggleMarketHead(marketHead);

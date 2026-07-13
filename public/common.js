@@ -102,8 +102,10 @@ function bookStyleFor(key){
 // Relative luminance of a brand color -> pick readable badge text color (audit 5.5).
 function badgeTextColor(hex){
   const n = hex.replace('#','');
-  const r = parseInt(n.substr(0,2),16), g = parseInt(n.substr(2,2),16), b = parseInt(n.substr(4,2),16);
-  return (0.2126*r + 0.7152*g + 0.0722*b) < 140 ? '#FFFFFF' : '#1B1B1B';
+  const chan = s => { const c = parseInt(s,16)/255; return c <= 0.03928 ? c/12.92 : Math.pow((c+0.055)/1.055, 2.4); };
+  const L = 0.2126*chan(n.substr(0,2)) + 0.7152*chan(n.substr(2,2)) + 0.0722*chan(n.substr(4,2));
+  const contrast = (l1,l2) => (Math.max(l1,l2)+0.05)/(Math.min(l1,l2)+0.05);
+  return contrast(1.0, L) >= contrast(L, 0.0243) ? '#FFFFFF' : '#1B1B1B';
 }
 
 function marketLabel(key){
@@ -176,22 +178,23 @@ function updateTicker(games){
 }
 
 // Ticker pause control (audit 5.2 + 2.6): hover-pause already exists in CSS, but
-// touch/keyboard users have no way to stop the marquee. The track itself is
-// aria-hidden (decorative, updating content) so the pause button is too — it's
-// a convenience for sighted users tracking the moving text, not AT-relevant.
+// touch/keyboard users have no way to stop the marquee. The track itself stays
+// aria-hidden (decorative, updating content); the pause button is a real
+// control, so it's focusable with its own aria-label instead.
 (function initTickerPause(){
   const wrap = document.querySelector('.ticker-wrap');
   if(!wrap || wrap.querySelector('.ticker-pause')) return;
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'ticker-pause';
-  btn.setAttribute('aria-hidden','true');
+  btn.setAttribute('aria-label','Pause ticker');
   btn.title = 'Pause ticker';
   btn.textContent = '⏸';
   btn.addEventListener('click', ()=>{
     const paused = wrap.classList.toggle('paused');
     btn.textContent = paused ? '▶' : '⏸';
     btn.title = paused ? 'Resume ticker' : 'Pause ticker';
+    btn.setAttribute('aria-label', paused ? 'Resume ticker' : 'Pause ticker');
   });
   wrap.appendChild(btn);
 })();
