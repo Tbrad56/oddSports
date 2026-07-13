@@ -6,15 +6,25 @@
     propIdCounter: 0,
     propsBookFilter: 'all',
     marketCollapsed: {},
+    propsOpen: {},        // gameId -> bool, survives re-renders (audit 6.1)
+    propsUnavailable: {}, // gameId -> cached "no props" / error message html
     scores: [], mlbLive: [], scoresTimer: null,
     hrCache: {},   // gameId -> hr-matchups API response
     statcast: undefined // batters map from /statcast/statcast.json, or null if unavailable
   };
+  let renderScheduled = false;
+  // Coalesces multiple renderGames() requests (weather + Kalshi post-fetches, audit 6.2)
+  // into a single call per animation frame, instead of re-rendering the whole board twice more.
+  function scheduleRender(){
+    if(renderScheduled) return;
+    renderScheduled = true;
+    requestAnimationFrame(()=>{ renderScheduled = false; if(state.games.length) renderGames(); });
+  }
 
   renderNav('board');
   renderSportChips(document.getElementById('sportChips'), ()=>{
     state.propsCache = {}; state.propRegistry = {}; state.marketCollapsed = {};
-    state.propsBookFilter = 'all';
+    state.propsBookFilter = 'all'; state.propsOpen = {}; state.propsUnavailable = {};
     refresh();
   });
   renderMyBooksList();
@@ -35,12 +45,12 @@
       const sport = getSport();
       // MLB: pull hourly stadium forecasts (free Open-Meteo, no key), re-render with weather strips
       if(sport === 'baseball_mlb' && games.length){
-        fetchStadiumWeather(games).then(renderGames).catch(()=>{});
+        fetchStadiumWeather(games).then(scheduleRender).catch(()=>{});
       }
       // Kalshi reference prices (public market data, no key) for supported sports
       kalshiEventsCache = [];
       if(KALSHI_SERIES[sport] && games.length){
-        fetchKalshi(sport).then(renderGames).catch(()=>{});
+        fetchKalshi(sport).then(scheduleRender).catch(()=>{});
       }
       // Live scores: fetch now, then keep polling every 30s while this sport is loaded
       state.scores = []; state.mlbLive = [];
@@ -51,12 +61,35 @@
       }
     }catch(e){
       setStatus(false, 'Fetch failed.');
-      showError(e.message || 'Could not fetch odds — try again shortly.');
+      const message = e.message || 'Could not fetch odds — try again shortly.';
+      showError(message);
+      document.getElementById('gamesArea').innerHTML = '<div class="empty-state"><h3>Couldn\'t load games</h3><p>' + escapeHtml(message) + '</p><button class="primary" id="retryBtn">Retry</button></div>';
+      const retryBtn = document.getElementById('retryBtn');
+      if(retryBtn) retryBtn.addEventListener('click', refresh);
     }finally{
       btn.disabled = false; btn.textContent = 'Get Odds';
     }
   }
   document.getElementById('fetchBtn').addEventListener('click', refresh);
+
+  // Patches the live-score slot inside each already-rendered game card in place —
+  // does NOT call renderGames(), so it never collapses open props or replays the
+  // card entrance animation (audit 6.1b). Falls back to one full render only if
+  // a card is missing (e.g. the game list itself changed underneath the poll).
+  function patchScores(){
+    const sportKey = getSport();
+    let missingCard = false;
+    state.games.forEach(game=>{
+      const card = document.querySelector('[data-game-id="' + CSS.escape(String(game.id)) + '"]');
+      if(!card){ missingCard = true; return; }
+      const slot = card.querySelector('.live-score-slot');
+      if(!slot) return;
+      const scoreEntry = findScoreFor(state.scores, game);
+      const liveDetail = sportKey === 'baseball_mlb' ? findMlbLiveFor(state.mlbLive, game) : null;
+      slot.innerHTML = buildScoreBadgeHtml(game, scoreEntry, liveDetail);
+    });
+    if(missingCard) renderGames();
+  }
 
   async function refreshScores(){
     const sport = getSport();
@@ -65,7 +98,7 @@
       if(sport === 'baseball_mlb'){
         state.mlbLive = await fetchMlbLive().catch(()=>[]);
       }
-      if(state.games.length) renderGames();
+      if(state.games.length) patchScores();
     }catch(e){
       // scores are a bonus overlay — quietly skip on failure, odds board still works
     }
@@ -112,8 +145,10 @@
   // ---------- player props (opt-in per game) ----------
   function renderBookFilter(){
     const el = document.getElementById('bookFilterChips');
+    const label = document.getElementById('bookFilterLabel');
     const cached = Object.values(state.propsCache);
-    if(!cached.length){ el.innerHTML = ''; return; }
+    if(!cached.length){ el.innerHTML = ''; if(label) label.style.display = 'none'; return; }
+    if(label) label.style.display = '';
     const booksPresent = new Set();
     cached.forEach(({data})=>{
       (data.bookmakers||[]).forEach(b=>{
@@ -146,15 +181,20 @@
     try{
       const res = await fetch(`/api/props/${sportKey}/${game.id}`);
       if(!res.ok){
-        hostEl.innerHTML = `<div class="props-block"><span style="color:var(--text-faint); font-size:12.5px;">Props aren't available for this game right now (either not offered yet, or the server couldn't reach the odds provider).</span></div>`;
+        const msg = `<div class="props-block"><span style="color:var(--text-faint); font-size:12.5px;">Props aren't available for this game right now (either not offered yet, or the server couldn't reach the odds provider).</span></div>`;
+        state.propsUnavailable[game.id] = msg;
+        hostEl.innerHTML = msg;
         return;
       }
       const data = await res.json();
+      delete state.propsUnavailable[game.id];
       state.propsCache[game.id] = {game, data};
       hostEl.innerHTML = buildPropsHtml(game, data, PROP_MARKETS[sportKey]);
       renderBookFilter();
     }catch(e){
-      hostEl.innerHTML = `<div class="props-block"><span style="color:var(--text-faint); font-size:12.5px;">Couldn't load props right now.</span></div>`;
+      const msg = `<div class="props-block"><span style="color:var(--text-faint); font-size:12.5px;">Couldn't load props right now.</span></div>`;
+      state.propsUnavailable[game.id] = msg;
+      hostEl.innerHTML = msg;
     }
   }
 
@@ -184,11 +224,11 @@
       any = true;
       const sectionKey = game.id + '|' + marketKey;
       const collapsed = !!state.marketCollapsed[sectionKey];
-      html += `<div class="props-market-label prop-market-head" data-section-key="${escapeHtml(sectionKey)}" title="Click to ${collapsed?'expand':'collapse'}">
+      html += `<div class="props-market-label prop-market-head" data-section-key="${escapeHtml(sectionKey)}" tabindex="0" role="button" aria-expanded="${!collapsed}" title="Click to ${collapsed?'expand':'collapse'}">
         <span class="market-arrow">${collapsed?'▸':'▾'}</span>${escapeHtml(marketLabel(marketKey))}
         <span class="market-count">(${rowKeys.length})</span>
       </div>`;
-      html += `<div class="market-body" style="${collapsed?'display:none;':''}">`;
+      html += `<div class="market-body" style="${collapsed?'display:none;':''}"><div class="table-scroll">`;
       html += `<table class="props-table"><thead><tr><th>Player</th><th>Line</th><th>Line shop (best → worst)</th><th></th></tr></thead><tbody>`;
       rowKeys.slice(0,20).forEach(rk=>{
         const entry = perPlayer[rk];
@@ -216,10 +256,16 @@
           <td><button class="add-leg-btn prop-slip-btn" data-prop-id="${propId}">+ Slip</button></td>
         </tr>`;
       });
-      html += `</tbody></table></div>`;
+      html += `</tbody></table></div></div>`;
     });
     if(!any){
-      html += `<span style="color:var(--text-faint); font-size:12.5px;">No player props posted for this game yet — check back closer to game time.</span>`;
+      if(state.propsBookFilter !== 'all'){
+        const filterStyle = bookStyleFor(state.propsBookFilter);
+        const filterName = filterStyle ? filterStyle.name : state.propsBookFilter;
+        html += `<span style="color:var(--text-faint); font-size:12.5px;">No ${escapeHtml(filterName)} props for this game — clear the book filter to see all.</span>`;
+      } else {
+        html += `<span style="color:var(--text-faint); font-size:12.5px;">No player props posted for this game yet — check back closer to game time.</span>`;
+      }
     }
     html += '</div>';
     return html;
@@ -368,19 +414,24 @@
 
   // Delegated clicks for props content that gets repainted without a full renderGames(): market
   // collapse headers and + Slip buttons live inside per-game hosts rebuilt by loadProps/filter.
+  function toggleMarketHead(marketHead){
+    const key = marketHead.dataset.sectionKey;
+    const nowCollapsed = !state.marketCollapsed[key];
+    state.marketCollapsed[key] = nowCollapsed;
+    const body = marketHead.nextElementSibling;
+    if(body && body.classList.contains('market-body')){
+      body.style.display = nowCollapsed ? 'none' : '';
+    }
+    const arrow = marketHead.querySelector('.market-arrow');
+    if(arrow) arrow.textContent = nowCollapsed ? '▸' : '▾';
+    marketHead.title = 'Click to ' + (nowCollapsed ? 'expand' : 'collapse');
+    marketHead.setAttribute('aria-expanded', String(!nowCollapsed));
+  }
+
   document.getElementById('gamesArea').addEventListener('click', (e)=>{
     const marketHead = e.target.closest('.prop-market-head');
     if(marketHead){
-      const key = marketHead.dataset.sectionKey;
-      const nowCollapsed = !state.marketCollapsed[key];
-      state.marketCollapsed[key] = nowCollapsed;
-      const body = marketHead.nextElementSibling;
-      if(body && body.classList.contains('market-body')){
-        body.style.display = nowCollapsed ? 'none' : '';
-      }
-      const arrow = marketHead.querySelector('.market-arrow');
-      if(arrow) arrow.textContent = nowCollapsed ? '▸' : '▾';
-      marketHead.title = 'Click to ' + (nowCollapsed ? 'expand' : 'collapse');
+      toggleMarketHead(marketHead);
       return;
     }
     const slipBtn = e.target.closest('.prop-slip-btn');
@@ -391,6 +442,14 @@
       showToast('Added ✓');
       const row = slipBtn.closest('tr');
       if(row) flashEl(row);
+    }
+  });
+
+  document.getElementById('gamesArea').addEventListener('keydown', (e)=>{
+    if((e.key==='Enter'||e.key===' ') && e.target.closest('.props-market-label')){
+      e.preventDefault();
+      const marketHead = e.target.closest('.props-market-label');
+      if(marketHead) toggleMarketHead(marketHead);
     }
   });
 
@@ -419,6 +478,7 @@
     gamesToShow.forEach(game=>{
       const card = document.createElement('div');
       card.className = 'game-card';
+      card.dataset.gameId = game.id;
 
       const head = document.createElement('div');
       head.className = 'game-head';
@@ -429,15 +489,15 @@
       `;
       card.appendChild(head);
 
-      // Live/final score badge, when the game has started
+      // Live/final score badge, when the game has started. This slot is always
+      // present (even empty) so the 30s scores poll can patch it in place via
+      // patchScores() instead of re-rendering the whole board (audit 6.1b).
       const scoreEntry = findScoreFor(state.scores, game);
       const liveDetail = sportKey === 'baseball_mlb' ? findMlbLiveFor(state.mlbLive, game) : null;
-      const scoreHtml = buildScoreBadgeHtml(game, scoreEntry, liveDetail);
-      if(scoreHtml){
-        const s = document.createElement('div');
-        s.innerHTML = scoreHtml;
-        card.appendChild(s.firstElementChild);
-      }
+      const scoreSlot = document.createElement('div');
+      scoreSlot.className = 'live-score-slot';
+      scoreSlot.innerHTML = buildScoreBadgeHtml(game, scoreEntry, liveDetail);
+      card.appendChild(scoreSlot);
 
       // MLB: stadium weather strip sits above the odds
       if(sportKey === 'baseball_mlb'){
@@ -493,7 +553,7 @@
           if(rowEl) flashEl(rowEl);
         };
 
-        const myRows = myBooks.length ? rows.filter(r=>myBooks.includes(r.bookKey.toLowerCase())) : [];
+        const myRows = myBooks.length ? filterToMyBooks(rows, r=>r.bookKey) : [];
         const otherRows = myBooks.length ? rows.filter(r=>!myBooks.includes(r.bookKey.toLowerCase())) : [];
 
         if(myBooks.length && myRows.length){
@@ -506,7 +566,7 @@
             const cell = document.createElement('div');
             cell.className = 'mybook-cell';
             cell.innerHTML = `
-              <div class="book-badge" style="background:${style?style.color:'var(--bg-raised)'};">${escapeHtml(style?style.name:r.bookTitle)}</div>
+              <div class="book-badge" style="background:${style?style.color:'var(--bg-raised)'}; color:${style?badgeTextColor(style.color):'#F5F5F5'};">${escapeHtml(style?style.name:r.bookTitle)}</div>
               <span class="book-odds ${Number(r.odds)>0?'pos':'neg'}">${fmtAmerican(r.odds)}</span>
               <button class="add-leg-btn">+ Slip</button>
               ${link ? `<a class="book-link-btn" href="${link}" target="_blank" rel="noopener" title="Open ${escapeHtml(style?style.name:r.bookTitle)}">↗</a>` : ''}
@@ -531,7 +591,7 @@
             row.className = 'book-row' + (idx===0 ? ' best' : '');
             const style = bookStyleFor(r.bookKey);
             const badgeHtml = style
-              ? `<div class="book-badge" style="background:${style.color};">${escapeHtml(style.name)}</div>`
+              ? `<div class="book-badge" style="background:${style.color}; color:${badgeTextColor(style.color)};">${escapeHtml(style.name)}</div>`
               : `<div class="book-name-fallback">${escapeHtml(r.bookTitle)}</div>`;
             const link = BOOK_LINKS[r.bookKey.toLowerCase()];
             row.innerHTML = `
@@ -568,20 +628,29 @@
         const toggleWrap = document.createElement('div');
         toggleWrap.className = 'props-toggle';
         const alreadyLoaded = !!state.propsCache[game.id];
+        const unavailableMsg = state.propsUnavailable[game.id];
+        // Props open/closed state lives in state.propsOpen so it survives re-renders
+        // triggered by the weather/Kalshi batch or a fallback score render (audit 6.1a).
+        const isOpen = !!state.propsOpen[game.id];
         const toggleBtn = document.createElement('button');
         toggleBtn.className = 'ghost';
-        toggleBtn.textContent = alreadyLoaded ? 'Show player props' : 'Load player props';
+        toggleBtn.textContent = isOpen
+          ? 'Hide player props'
+          : ((alreadyLoaded || unavailableMsg) ? 'Show player props' : 'Load player props');
         toggleWrap.appendChild(toggleBtn);
         card.appendChild(toggleWrap);
 
         const propsHost = document.createElement('div');
-        propsHost.className = 'props-host reveal';
+        propsHost.className = 'props-host reveal' + (isOpen ? ' is-open' : '');
         propsHost.dataset.gameId = game.id;
-        propsHost.style.display = 'none';
+        propsHost.style.display = isOpen ? 'block' : 'none';
         card.appendChild(propsHost);
 
         if(alreadyLoaded){
           propsHost.innerHTML = buildPropsHtml(game, state.propsCache[game.id].data, PROP_MARKETS[sportKey]);
+          propsHost.dataset.loaded = '1';
+        } else if(unavailableMsg){
+          propsHost.innerHTML = unavailableMsg;
           propsHost.dataset.loaded = '1';
         }
 
@@ -589,6 +658,7 @@
           if(propsHost.classList.contains('is-open')){
             revealHide(propsHost);
             toggleBtn.textContent = 'Show player props';
+            state.propsOpen[game.id] = false;
             return;
           }
           if(!propsHost.dataset.loaded){
@@ -599,6 +669,7 @@
             toggleBtn.disabled = false;
           }
           toggleBtn.textContent = 'Hide player props';
+          state.propsOpen[game.id] = true;
           revealShow(propsHost);
         });
       }

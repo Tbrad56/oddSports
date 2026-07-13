@@ -99,6 +99,15 @@ function bookStyleFor(key){
   return BOOK_STYLES[k] || null;
 }
 
+// Relative luminance of a brand color -> pick readable badge text color (audit 5.5).
+function badgeTextColor(hex){
+  const n = hex.replace('#','');
+  const chan = s => { const c = parseInt(s,16)/255; return c <= 0.03928 ? c/12.92 : Math.pow((c+0.055)/1.055, 2.4); };
+  const L = 0.2126*chan(n.substr(0,2)) + 0.7152*chan(n.substr(2,2)) + 0.0722*chan(n.substr(4,2));
+  const contrast = (l1,l2) => (Math.max(l1,l2)+0.05)/(Math.min(l1,l2)+0.05);
+  return contrast(1.0, L) >= contrast(L, 0.010960094) ? '#FFFFFF' : '#1B1B1B';
+}
+
 function marketLabel(key){
   const labels = {
     player_pass_yds:"Passing Yards", player_pass_tds:"Passing TDs", player_rush_yds:"Rushing Yards",
@@ -116,7 +125,7 @@ function marketLabel(key){
 function linkedBadge(bookKey, fallbackTitle){
   const style = bookStyleFor(bookKey);
   const inner = style
-    ? `<div class="book-badge" style="background:${style.color};">${escapeHtml(style.name)}</div>`
+    ? `<div class="book-badge" style="background:${style.color}; color:${badgeTextColor(style.color)};">${escapeHtml(style.name)}</div>`
     : `<span>${escapeHtml(fallbackTitle || bookKey)}</span>`;
   const link = BOOK_LINKS[bookKey.toLowerCase()];
   return link ? `<a href="${link}" target="_blank" rel="noopener" style="text-decoration:none;" title="Open ${escapeHtml(style?style.name:fallbackTitle||bookKey)}">${inner}</a>` : inner;
@@ -165,8 +174,37 @@ function updateTicker(games){
       }
     });
   });
-  track.innerHTML = items.length ? items.join('&nbsp;&nbsp;•&nbsp;&nbsp;') : 'No odds loaded yet.';
+  if(!items.length){ track.innerHTML = 'No odds loaded yet.'; return; }
+  const sep = '&nbsp;&nbsp;•&nbsp;&nbsp;';
+  const html = items.join(sep);
+  // Render the sequence twice so the -50% translate loop is seamless — otherwise
+  // the viewport sits empty from when the single copy exits until it restarts
+  // (audit 6.8). The track stays aria-hidden, so the duplicate copy doesn't
+  // double-announce anything to screen readers.
+  track.innerHTML = html + sep + html;
 }
+
+// Ticker pause control (audit 5.2 + 2.6): hover-pause already exists in CSS, but
+// touch/keyboard users have no way to stop the marquee. The track itself stays
+// aria-hidden (decorative, updating content); the pause button is a real
+// control, so it's focusable with its own aria-label instead.
+(function initTickerPause(){
+  const wrap = document.querySelector('.ticker-wrap');
+  if(!wrap || wrap.querySelector('.ticker-pause')) return;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'ticker-pause';
+  btn.setAttribute('aria-label','Pause ticker');
+  btn.title = 'Pause ticker';
+  btn.textContent = '⏸';
+  btn.addEventListener('click', ()=>{
+    const paused = wrap.classList.toggle('paused');
+    btn.textContent = paused ? '▶' : '⏸';
+    btn.title = paused ? 'Resume ticker' : 'Pause ticker';
+    btn.setAttribute('aria-label', paused ? 'Resume ticker' : 'Pause ticker');
+  });
+  wrap.appendChild(btn);
+})();
 
 // ---------- slip storage (localStorage, shared across pages) ----------
 const SLIP_KEY = 'lw_slip';
@@ -213,12 +251,14 @@ function renderNav(activePage){
     ['slip','/slip.html','🎟️','Slip']
   ];
   rail.innerHTML = '<a class="rail-logo" href="/">LW</a>' + items.map(([key,href,icon,label])=>
-    `<a class="rail-btn${key===activePage?' active':''}" href="${href}" title="${label}">
-      <span>${icon}</span><span class="rail-label">${label}${key==='slip'?'<span class="slip-badge" id="slipBadge"></span>':''}</span>
+    `<a class="rail-btn${key===activePage?' active':''}" href="${href}">
+      <span aria-hidden="true">${icon}</span><span class="rail-label">${label}${key==='slip'?'<span class="slip-badge" id="slipBadge"></span>':''}</span>
     </a>`).join('');
   updateSlipBadge();
 }
-let _lastSlipBadgeCount = 0;
+// Seed from the persisted slip so a non-empty slip doesn't fake-trigger the
+// bump animation on every page's first nav render (audit 6.6).
+let _lastSlipBadgeCount = getSlip().length;
 function updateSlipBadge(){
   const badge = document.getElementById('slipBadge');
   if(!badge) return;
@@ -241,12 +281,13 @@ function showToast(text){
     t.id = 'lwToast';
     t.className = 'toast';
     t.href = '/slip.html';
+    t.setAttribute('role','status');
     document.body.appendChild(t);
   }
   t.textContent = text + ' — View slip';
   t.classList.add('show');
   clearTimeout(showToast._timer);
-  showToast._timer = setTimeout(()=>t.classList.remove('show'), 2000);
+  showToast._timer = setTimeout(()=>t.classList.remove('show'), 4500);
 }
 
 // ---------- motion helpers ----------
@@ -406,17 +447,16 @@ function getMyBooks(){
 function setMyBooks(list){
   try{ localStorage.setItem(MYBOOKS_KEY, JSON.stringify(list)); }catch(e){}
 }
-function myBookKeys(){
+// Never filters a bookmaker/row list down to nothing — falls back to the full
+// list so a market never appears to vanish just because none of "my books"
+// quote it. keyOf extracts the book key from each entry (defaults to `.key`,
+// board.js's per-team rows use `.bookKey` instead).
+function filterToMyBooks(entries, keyOf){
+  const getKey = keyOf || (b => b.key);
   const mine = getMyBooks();
-  return mine.length ? mine : TRACKED_KEYS;
-}
-// Never filters a bookmaker list down to nothing — falls back to the full list
-// so a market never appears to vanish just because none of "my books" quote it.
-function filterToMyBooks(bookmakers){
-  const mine = getMyBooks();
-  if(!mine.length) return bookmakers;
-  const filtered = bookmakers.filter(b => mine.includes(b.key.toLowerCase()));
-  return filtered.length ? filtered : bookmakers;
+  if(!mine.length) return entries;
+  const filtered = entries.filter(b => mine.includes(getKey(b).toLowerCase()));
+  return filtered.length ? filtered : entries;
 }
 
 // ---------- MLB stadium weather ----------

@@ -55,7 +55,11 @@
       }
     }catch(e){
       setStatus(false, 'Fetch failed.');
-      showError(e.message || 'Could not fetch games — try again shortly.');
+      const message = e.message || 'Could not fetch games — try again shortly.';
+      showError(message);
+      document.getElementById('gamesArea').innerHTML = '<div class="empty-state"><h3>Couldn\'t load games</h3><p>' + escapeHtml(message) + '</p><button class="primary" id="retryBtn">Retry</button></div>';
+      const retryBtn = document.getElementById('retryBtn');
+      if(retryBtn) retryBtn.addEventListener('click', loadGames);
     }
   }
 
@@ -125,13 +129,14 @@
         : 'No edges ≥ 3% found in this game\'s props.';
       return head + `<span style="font-size:12.5px; color:var(--text-faint);">${msg}</span>`;
     }
-    let html = head + `<table class="props-table"><thead><tr>
+    let html = head + `<div class="table-scroll"><table class="props-table"><thead><tr>
       <th>Player</th><th>Prop</th><th>Side</th><th>Model</th><th>Book</th><th>Edge</th><th>Best price</th><th></th>
     </tr></thead><tbody>`;
     result.picks.forEach((pick, i)=>{
       const key = game.id + '|' + i;
       const style = bookStyleFor(pick.bestBook.bookKey);
-      html += `<tr class="pick-row" data-key="${escapeHtml(key)}">
+      const isExpanded = !!state.expanded[key];
+      html += `<tr class="pick-row" data-key="${escapeHtml(key)}" tabindex="0" aria-expanded="${isExpanded}">
         <td style="font-weight:600; white-space:nowrap;">${escapeHtml(pick.player)}${statcastLineHtml(pick.player, pick.market)}</td>
         <td style="white-space:nowrap;">${escapeHtml(marketLabel(pick.market))} ${escapeHtml(String(pick.line))}</td>
         <td>${escapeHtml(pick.side)}</td>
@@ -160,7 +165,7 @@
         </td></tr>`;
       }
     });
-    html += `</tbody></table>`;
+    html += `</tbody></table></div>`;
     if(result.skipped.length){
       html += `<div style="font-size:11px; color:var(--text-faint); margin-top:8px;">No stats match: ${result.skipped.map(escapeHtml).join(', ')}</div>`;
     }
@@ -216,6 +221,19 @@
       const key = row.dataset.key;
       state.expanded[key] = !state.expanded[key];
       renderPage();
+    }
+  });
+
+  document.getElementById('gamesArea').addEventListener('keydown', (e)=>{
+    if(e.target.closest('.pick-slip-btn,.analyze-btn')) return; // let the button handle its own Enter/Space
+    if((e.key==='Enter'||e.key===' ') && e.target.closest('.pick-row')){
+      e.preventDefault();
+      const row = e.target.closest('.pick-row');
+      if(row){
+        const key = row.dataset.key;
+        state.expanded[key] = !state.expanded[key];
+        renderPage();
+      }
     }
   });
 

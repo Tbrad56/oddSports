@@ -5,13 +5,17 @@
   const RESULT_CHIP = { hit: ['good','✓ Hit'], miss: ['bad','✗ Miss'], push: ['dim','— Push'], void: ['dim','∅ Void'] };
 
   async function load(){
+    clearError();
     try{
       const res = await fetch('/api/record');
       if(!res.ok) throw new Error('Error ' + res.status);
       render(await res.json());
     }catch(e){
-      showError(e.message || 'Could not load record.');
-      document.getElementById('recordArea').innerHTML = '';
+      const message = e.message || 'Could not load record.';
+      showError(message);
+      document.getElementById('recordArea').innerHTML = '<div class="empty-state"><h3>Couldn\'t load your record</h3><p>' + escapeHtml(message) + '</p><button class="primary" id="retryBtn">Retry</button></div>';
+      const retryBtn = document.getElementById('retryBtn');
+      if(retryBtn) retryBtn.addEventListener('click', load);
     }
   }
 
@@ -33,28 +37,28 @@
     </div>`;
 
     html += `<div class="panel" style="margin-bottom:14px;"><h2>By model confidence</h2>
-      <table class="props-table"><thead><tr><th>Model said</th><th>Picks</th><th>Avg model</th><th>Actual</th></tr></thead><tbody>`;
+      <div class="table-scroll"><table class="props-table"><thead><tr><th>Model said</th><th>Picks</th><th>Avg model</th><th>Actual</th></tr></thead><tbody>`;
     r.buckets.forEach(b => {
       html += `<tr><td>${escapeHtml(b.range)}%</td><td>${b.n}</td>
         <td style="font-family:var(--font-mono);">${pct(b.avgModelP)}</td>
         <td style="font-family:var(--font-mono);">${pct(b.actualRate)}</td></tr>`;
     });
-    html += `</tbody></table></div>`;
+    html += `</tbody></table></div></div>`;
 
     if(r.byMarket.length){
       html += `<div class="panel" style="margin-bottom:14px;"><h2>By market</h2>
-        <table class="props-table"><thead><tr><th>Market</th><th>Picks</th><th>Avg model</th><th>Hit rate</th></tr></thead><tbody>`;
+        <div class="table-scroll"><table class="props-table"><thead><tr><th>Market</th><th>Picks</th><th>Avg model</th><th>Hit rate</th></tr></thead><tbody>`;
       r.byMarket.forEach(m => {
         html += `<tr><td>${escapeHtml(marketLabel(m.market))}</td><td>${m.n}</td>
           <td style="font-family:var(--font-mono);">${pct(m.avgModelP)}</td>
           <td style="font-family:var(--font-mono);">${pct(m.hitRate)}</td></tr>`;
       });
-      html += `</tbody></table></div>`;
+      html += `</tbody></table></div></div>`;
     }
 
     if(r.recent.length){
       html += `<div class="panel"><h2>Recent results</h2>
-        <table class="props-table"><thead><tr><th>Result</th><th>Player</th><th>Pick</th><th>Model</th><th>Actual</th><th>Game</th></tr></thead><tbody>`;
+        <div class="table-scroll"><table class="props-table"><thead><tr><th>Result</th><th>Player</th><th>Pick</th><th>Model</th><th>Actual</th><th>Game</th></tr></thead><tbody>`;
       r.recent.forEach(p => {
         const [cls, label] = RESULT_CHIP[p.result] || ['dim', p.result];
         const color = cls === 'good' ? 'var(--good)' : cls === 'bad' ? 'var(--bad)' : 'var(--text-faint)';
@@ -67,7 +71,7 @@
           <td style="color:var(--text-faint); font-size:11px; white-space:nowrap;">${escapeHtml(p.matchup)} · ${escapeHtml(p.gameDate)}</td>
         </tr>`;
       });
-      html += `</tbody></table></div>`;
+      html += `</tbody></table></div></div>`;
     }
 
     area.innerHTML = html;
