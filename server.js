@@ -214,12 +214,49 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
   });
 
   app.get('/api/props/:sport/:eventId', (req, res) => {
+    handlePropsRequest(req, res).catch(err => {
+      console.error(`Props fetch failed: ${err && err.message || err}`);
+      if (!res.headersSent) sendUpstreamError(res, err);
+    });
+  });
+
+  async function handlePropsRequest(req, res){
     const { sport, eventId } = req.params;
     const markets = PROP_MARKETS[sport];
     if (!markets) return res.status(400).json({ error: 'Props not supported for this sport' });
     if (!/^[a-z0-9]{1,64}$/i.test(eventId)) return res.status(400).json({ error: 'Bad event id' });
-    proxy(`/v4/sports/${sport}/events/${eventId}/odds/?regions=us,us2&markets=${markets.join(',')}&oddsFormat=american`, res);
-  });
+
+    let r;
+    try {
+      r = await getUpstream(`/v4/sports/${sport}/events/${eventId}/odds/?regions=us,us2&markets=${markets.join(',')}&oddsFormat=american`);
+    } catch (err) {
+      return sendUpstreamError(res, err);
+    }
+
+    let body = r.body;
+    // MLB only: resolve each player name to a StatsAPI personId (cached lookup,
+    // same helper /api/analyze uses) so the frontend can show a real headshot.
+    if (sport === 'baseball_mlb') {
+      const names = new Set();
+      (body.bookmakers || []).forEach(bm => (bm.markets || []).forEach(m => (m.outcomes || []).forEach(o => {
+        const nm = o.description || o.name;
+        if (nm) names.add(nm);
+      })));
+      const season = new Date(now()).getFullYear();
+      const mlbIds = {};
+      for (const nm of names) {
+        try {
+          const id = await mlbPlayerId(nm, season);
+          if (id) mlbIds[nm.toLowerCase()] = id;
+        } catch (e) { /* best-effort — a missed id just means no photo for that player */ }
+      }
+      body = { ...body, mlbIds };
+    }
+
+    if (r.remaining) res.set('x-requests-remaining', r.remaining);
+    res.set('x-cache-age-seconds', String(r.cacheAge));
+    res.json(body);
+  }
 
   // HR matchup context for a scheduled MLB game: each probable pitcher's
   // Season / vs LHB / vs RHB rows, plus (when lineups are posted) each

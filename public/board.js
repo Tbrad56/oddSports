@@ -207,8 +207,10 @@
           side: `${entry.player} ${pointTxt} ${marketLabel(marketKey)}`,
           matchup: `${game.away_team} @ ${game.home_team}`, rows
         };
+        const mlbId = data.mlbIds && data.mlbIds[entry.player.toLowerCase()];
+        const avatar = mlbId ? playerAvatarHtml(mlbId, 20) : emptyAvatarHtml(20);
         html += `<tr>
-          <td style="font-weight:600; white-space:nowrap;">${escapeHtml(entry.player)}</td>
+          <td style="font-weight:600; white-space:nowrap;">${avatar}${escapeHtml(entry.player)}</td>
           <td style="color:var(--text-dim); white-space:nowrap;">${escapeHtml(pointTxt)}</td>
           <td><div class="line-shop">${chips}</div></td>
           <td><button class="add-leg-btn prop-slip-btn" data-prop-id="${propId}">+ Slip</button></td>
@@ -265,6 +267,11 @@
     if(!id) return '';
     const url = `https://img.mlbstatic.com/mlb-photos/image/upload/w_180,q_100/v1/people/${encodeURIComponent(id)}/headshot/67/current.png`;
     return `<img class="player-avatar" src="${url}" width="${size}" height="${size}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
+  }
+
+  // Placeholder bubble for sports without a wired-up photo source yet (everything but MLB).
+  function emptyAvatarHtml(size){
+    return `<span class="player-avatar player-avatar-empty" style="width:${size}px; height:${size}px;"></span>`;
   }
 
   function pitcherTableHtml(pitcher){
