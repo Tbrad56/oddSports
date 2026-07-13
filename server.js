@@ -214,12 +214,176 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
   });
 
   app.get('/api/props/:sport/:eventId', (req, res) => {
+    handlePropsRequest(req, res).catch(err => {
+      console.error(`Props fetch failed: ${err && err.message || err}`);
+      if (!res.headersSent) sendUpstreamError(res, err);
+    });
+  });
+
+  async function handlePropsRequest(req, res){
     const { sport, eventId } = req.params;
     const markets = PROP_MARKETS[sport];
     if (!markets) return res.status(400).json({ error: 'Props not supported for this sport' });
     if (!/^[a-z0-9]{1,64}$/i.test(eventId)) return res.status(400).json({ error: 'Bad event id' });
-    proxy(`/v4/sports/${sport}/events/${eventId}/odds/?regions=us,us2&markets=${markets.join(',')}&oddsFormat=american`, res);
+
+    let r;
+    try {
+      r = await getUpstream(`/v4/sports/${sport}/events/${eventId}/odds/?regions=us,us2&markets=${markets.join(',')}&oddsFormat=american`);
+    } catch (err) {
+      return sendUpstreamError(res, err);
+    }
+
+    let body = r.body;
+    // MLB only: resolve each player name to a StatsAPI personId (cached lookup,
+    // same helper /api/analyze uses) so the frontend can show a real headshot.
+    if (sport === 'baseball_mlb') {
+      const names = new Set();
+      (body.bookmakers || []).forEach(bm => (bm.markets || []).forEach(m => (m.outcomes || []).forEach(o => {
+        const nm = o.description || o.name;
+        if (nm) names.add(nm);
+      })));
+      const season = new Date(now()).getFullYear();
+      const mlbIds = {};
+      for (const nm of names) {
+        try {
+          const id = await mlbPlayerId(nm, season);
+          if (id) mlbIds[nm.toLowerCase()] = id;
+        } catch (e) { /* best-effort — a missed id just means no photo for that player */ }
+      }
+      body = { ...body, mlbIds };
+    }
+
+    if (r.remaining) res.set('x-requests-remaining', r.remaining);
+    res.set('x-cache-age-seconds', String(r.cacheAge));
+    res.json(body);
+  }
+
+  // HR matchup context for a scheduled MLB game: each probable pitcher's
+  // Season / vs LHB / vs RHB rows, plus (when lineups are posted) each
+  // batter's splits vs the opposing pitcher's hand. Identified by team names
+  // + date rather than an Odds API event id — this only talks to StatsAPI.
+  function ip9(hr, ip){
+    if(!ip) return null;
+    const parts = String(ip).split('.');
+    const outs = (Number(parts[0]) || 0) * 3 + (Number(parts[1]) || 0);
+    if(!outs) return null;
+    return (Number(hr) || 0) * 27 / outs;
+  }
+
+  async function getMlbScheduleGame(dateStr, home, away){
+    const sched = await fetchStats(`/api/v1/schedule?sportId=1&date=${dateStr}&hydrate=probablePitcher,lineups`, 15 * 60 * 1000);
+    const games = ((sched.dates || [])[0] || {}).games || [];
+    return games.find(g =>
+      g.teams && normName(g.teams.home?.team?.name || '') === normName(home) &&
+      normName(g.teams.away?.team?.name || '') === normName(away)
+    ) || null;
+  }
+
+  // Batched people call with season + vs-hand splits hydrated (one request per group of players)
+  async function getPeopleSplits(personIds, group, season){
+    if (!personIds.length) return {};
+    const path = `/api/v1/people?personIds=${personIds.join(',')}&hydrate=stats(group=[${group}],type=[season,statSplits],sitCodes=[vl,vr],season=${season})`;
+    const data = await fetchStats(path, 6 * 60 * 60 * 1000);
+    const out = {};
+    (data.people || []).forEach(p => {
+      const splits = {};
+      (p.stats || []).forEach(sg => {
+        (sg.splits || []).forEach(sp => {
+          const code = (sp.split && sp.split.code) || 'season';
+          splits[code] = sp.stat || {};
+        });
+      });
+      out[p.id] = { name: p.fullName, hand: (p.pitchHand && p.pitchHand.code) || (p.batSide && p.batSide.code) || '?', splits };
+    });
+    return out;
+  }
+
+  app.get('/api/hr-matchups/mlb', (req, res) => {
+    handleHrMatchups(req, res).catch(err => {
+      console.error(`HR matchups failed: ${err && err.message || err}`);
+      if (!res.headersSent) res.status(502).json({ error: 'Stats service unavailable' });
+    });
   });
+
+  async function handleHrMatchups(req, res){
+    const { home, away, date } = req.query;
+    if (!home || !away || !date) return res.status(400).json({ error: 'home, away, and date are required' });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'Bad date' });
+
+    let mg;
+    try {
+      mg = await getMlbScheduleGame(date, home, away);
+    } catch (err) {
+      return sendUpstreamError(res, err);
+    }
+    if (!mg) return res.json({ matched: false });
+
+    const homeP = mg.teams.home.probablePitcher || null;
+    const awayP = mg.teams.away.probablePitcher || null;
+    const lineups = mg.lineups || {};
+    const homeBatIds = (lineups.homePlayers || []).map(p => p.id);
+    const awayBatIds = (lineups.awayPlayers || []).map(p => p.id);
+    const pitcherIds = [homeP, awayP].filter(Boolean).map(p => p.id);
+    const season = date.slice(0, 4);
+
+    let pitchers, homeHit, awayHit;
+    try {
+      [pitchers, homeHit, awayHit] = await Promise.all([
+        getPeopleSplits(pitcherIds, 'pitching', season),
+        getPeopleSplits(homeBatIds, 'hitting', season),
+        getPeopleSplits(awayBatIds, 'hitting', season)
+      ]);
+    } catch (err) {
+      return sendUpstreamError(res, err);
+    }
+
+    function pitcherPayload(pObj){
+      if (!pObj || !pitchers[pObj.id]) return null;
+      const pd = pitchers[pObj.id];
+      const rows = {};
+      ['season', 'vl', 'vr'].forEach(code => {
+        const st = pd.splits[code];
+        if (!st) return;
+        const ip = st.inningsPitched || null;
+        const hr = st.homeRuns !== undefined ? Number(st.homeRuns) : null;
+        const hr9 = st.homeRunsPer9 !== undefined ? Number(st.homeRunsPer9) : ip9(hr, ip);
+        rows[code] = { ip, whip: st.whip || null, hr, hr9 };
+      });
+      return { id: pObj.id, name: pd.name, hand: pd.hand, rows };
+    }
+
+    function battersPayload(batterIds, batterMap, oppHand){
+      const sitCode = oppHand === 'L' ? 'vl' : oppHand === 'R' ? 'vr' : null;
+      return batterIds.map(id => {
+        const b = batterMap[id];
+        if (!b) return null;
+        const st = (sitCode && b.splits[sitCode]) || {};
+        const ba = st.avg !== undefined ? Number(st.avg) : null;
+        const obp = st.obp !== undefined ? Number(st.obp) : null;
+        const slg = st.slg !== undefined ? Number(st.slg) : null;
+        const hr = st.homeRuns !== undefined ? Number(st.homeRuns) : null;
+        const iso = (slg !== null && ba !== null) ? Math.round((slg - ba) * 1000) / 1000 : null;
+        return { id, name: b.name, hand: b.hand, hr, ba, obp, slg, iso };
+      }).filter(Boolean);
+    }
+
+    const homePitcherHand = homeP && pitchers[homeP.id] ? pitchers[homeP.id].hand : null;
+    const awayPitcherHand = awayP && pitchers[awayP.id] ? pitchers[awayP.id].hand : null;
+
+    res.json({
+      matched: true,
+      home: {
+        pitcher: pitcherPayload(homeP),
+        lineupPosted: homeBatIds.length > 0,
+        batters: battersPayload(homeBatIds, homeHit, awayPitcherHand)
+      },
+      away: {
+        pitcher: pitcherPayload(awayP),
+        lineupPosted: awayBatIds.length > 0,
+        batters: battersPayload(awayBatIds, awayHit, homePitcherHand)
+      }
+    });
+  }
 
   app.get('/api/analyze/mlb/:eventId', (req, res) => {
     handleAnalyze(req, res).catch(err => {

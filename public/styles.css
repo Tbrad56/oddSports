@@ -268,6 +268,27 @@
   }
   .odds-chip.best{background:rgba(187,0,0,0.16); border-color:var(--accent); color:var(--accent);}
 
+  /* ---------- HR Matchups ---------- */
+  .hr-block{padding:14px 16px; border-top:1px dashed var(--border-soft); background:#101010;}
+  .hr-toggle{margin:0 16px 14px; font-size:12px;}
+  .hr-pitcher{font-size:12.5px; font-weight:600; color:var(--text); margin-bottom:6px;}
+  .player-avatar{
+    display:inline-block; border-radius:50%; object-fit:cover; background:var(--bg-raised);
+    border:1px solid var(--border-soft); vertical-align:middle; margin-right:7px;
+  }
+  .hand-tag{
+    font-size:9.5px; font-weight:700; color:var(--text-faint); border:1px solid var(--border-soft);
+    border-radius:3px; padding:1px 4px; margin-left:5px; letter-spacing:.4px;
+  }
+  .lineup-tag{
+    font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:.4px;
+    padding:1px 6px; border-radius:4px; margin-left:6px;
+  }
+  .lineup-tag.confirmed{background:rgba(61,220,132,0.16); color:var(--good);}
+  .props-table td.stat-g{color:var(--good); font-weight:600;}
+  .props-table td.stat-r{color:var(--bad); font-weight:600;}
+  .hr-note{font-size:10.5px; color:var(--text-faint); margin-top:10px;}
+
   /* ---------- Cheatsheet ---------- */
   .cheat-row{
     display:flex; justify-content:space-between; align-items:center;

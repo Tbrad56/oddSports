@@ -1,7 +1,40 @@
 (function(){
-  const state = { games: [], results: {}, loading: {}, expanded: {}, scores: [], mlbLive: [], scoresTimer: null };
+  const state = { games: [], results: {}, loading: {}, expanded: {}, scores: [], mlbLive: [], scoresTimer: null, statcast: null };
 
   renderNav('getprops');
+
+  async function loadStatcast(){
+    try{
+      const res = await fetch('/statcast/statcast.json');
+      if(!res.ok) return;
+      const data = await res.json();
+      state.statcast = data.batters || null;
+    }catch(e){
+      // stats overlay is a bonus — quietly skip on failure
+    }
+  }
+
+  function statBand(value, hi, lo){
+    if(value >= hi) return 'good';
+    if(value <= lo) return 'bad';
+    return '';
+  }
+
+  function statcastLineHtml(player, market){
+    if(!state.statcast || !market || !market.startsWith('batter_')) return '';
+    const s = state.statcast[String(player).toLowerCase()];
+    if(!s) return '';
+    const parts = [
+      ['EV', s.ev, statBand(s.ev, 90, 86), s.ev.toFixed(1)],
+      ['Barrel%', s.barrel, statBand(s.barrel, 10, 5), s.barrel.toFixed(1)+'%'],
+      ['HardHit%', s.hardhit, statBand(s.hardhit, 42, 33), s.hardhit.toFixed(1)+'%']
+    ];
+    const spans = parts.map(([label,,band,disp])=>{
+      const color = band === 'good' ? 'var(--good)' : band === 'bad' ? 'var(--bad)' : 'var(--text-dim)';
+      return `<span style="color:${color};">${label} ${disp}</span>`;
+    }).join(' <span style="color:var(--text-faint);">·</span> ');
+    return `<div style="font-size:10.5px; font-family:var(--font-mono); font-weight:400; margin-top:2px;">${spans}</div>`;
+  }
 
   async function loadGames(){
     clearError();
@@ -104,7 +137,7 @@
       const style = bookStyleFor(pick.bestBook.bookKey);
       const isExpanded = !!state.expanded[key];
       html += `<tr class="pick-row" data-key="${escapeHtml(key)}" tabindex="0" aria-expanded="${isExpanded}">
-        <td style="font-weight:600; white-space:nowrap;">${escapeHtml(pick.player)}</td>
+        <td style="font-weight:600; white-space:nowrap;">${escapeHtml(pick.player)}${statcastLineHtml(pick.player, pick.market)}</td>
         <td style="white-space:nowrap;">${escapeHtml(marketLabel(pick.market))} ${escapeHtml(String(pick.line))}</td>
         <td>${escapeHtml(pick.side)}</td>
         <td style="font-family:var(--font-mono);">${pct(pick.modelP)}</td>
@@ -205,4 +238,5 @@
   });
 
   loadGames();
+  loadStatcast();
 })();
