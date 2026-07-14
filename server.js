@@ -146,7 +146,7 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
   app.get('/api/odds/:sport', (req, res) => {
     const { sport } = req.params;
     if (!SPORTS.has(sport)) return res.status(400).json({ error: 'Unknown sport' });
-    proxy(`/v4/sports/${sport}/odds/?regions=us,us2&markets=h2h&oddsFormat=american`, res);
+    proxy(`/v4/sports/${sport}/odds/?regions=us,us2&markets=h2h&oddsFormat=american&includeLinks=true&includeSids=true`, res);
   });
 
   // Live/recent scores. Cached on a much shorter TTL than odds (SCORES_TTL_MS)
@@ -228,7 +228,7 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
 
     let r;
     try {
-      r = await getUpstream(`/v4/sports/${sport}/events/${eventId}/odds/?regions=us,us2&markets=${markets.join(',')}&oddsFormat=american`);
+      r = await getUpstream(`/v4/sports/${sport}/events/${eventId}/odds/?regions=us,us2&markets=${markets.join(',')}&oddsFormat=american&includeLinks=true&includeSids=true`);
     } catch (err) {
       return sendUpstreamError(res, err);
     }
@@ -402,7 +402,7 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     const markets = PROP_MARKETS.baseball_mlb;
     let props;
     try {
-      props = await getUpstream(`/v4/sports/baseball_mlb/events/${eventId}/odds/?regions=us,us2&markets=${markets.join(',')}&oddsFormat=american`);
+      props = await getUpstream(`/v4/sports/baseball_mlb/events/${eventId}/odds/?regions=us,us2&markets=${markets.join(',')}&oddsFormat=american&includeLinks=true&includeSids=true`);
     } catch (err) {
       return sendUpstreamError(res, err);
     }
@@ -418,7 +418,7 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
           if (!player) return;
           const gk = `${player}|${m.key}|${o.point}`;
           if (!grouped[gk]) grouped[gk] = { player, market: m.key, line: Number(o.point), overRows: [], underRows: [] };
-          const row = { bookKey: bm.key, bookTitle: bm.title, odds: o.price };
+          const row = { bookKey: bm.key, bookTitle: bm.title, odds: o.price, link: o.link || bm.link || null, sid: o.sid || null, marketSid: m.sid || null };
           if (o.name === 'Over') grouped[gk].overRows.push(row);
           else if (o.name === 'Under') grouped[gk].underRows.push(row);
         });

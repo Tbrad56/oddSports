@@ -216,7 +216,7 @@
           const playerName = o.description || o.name;
           const rowKey = playerName + '|' + o.name + '|' + (o.point ?? '');
           if(!perPlayer[rowKey]) perPlayer[rowKey] = {player:playerName, side:o.name, point:o.point, rows:[]};
-          perPlayer[rowKey].rows.push({bookKey:bm.key, bookTitle:bm.title, odds:o.price});
+          perPlayer[rowKey].rows.push({bookKey:bm.key, bookTitle:bm.title, odds:o.price, link:o.link||bm.link||null, sid:o.sid||null, marketSid:market.sid||null});
         });
       });
       const rowKeys = Object.keys(perPlayer);
@@ -525,7 +525,7 @@
           if(!market) return;
           const outcome = market.outcomes.find(o=>o.name === team);
           if(!outcome) return;
-          rows.push({bookKey: bm.key, bookTitle: bm.title, odds: outcome.price});
+          rows.push({bookKey: bm.key, bookTitle: bm.title, odds: outcome.price, link: outcome.link || bm.link || null, sid: outcome.sid || null, marketSid: market.sid || null});
         });
         rows.sort((a,b)=> americanToDecimal(b.odds) - americanToDecimal(a.odds));
         rowsByTeam[team] = rows;

@@ -346,6 +346,26 @@
     margin-top:10px; line-height:1.6;
   }
 
+  /* ---------- One-tap slip handoff ---------- */
+  .place-all-btn{
+    display:block; text-align:center; margin-top:12px;
+    background:linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%);
+    color:#FFFFFF; text-decoration:none; font-weight:700; font-size:14px;
+    padding:13px 16px; border-radius:9px; letter-spacing:.2px;
+    transition:transform .15s ease, box-shadow .15s ease;
+  }
+  .place-all-btn:hover{transform:translateY(-1px); box-shadow:0 6px 18px rgba(187,0,0,0.35);}
+  .place-all-btn:active{transform:scale(0.98);}
+  .place-note{font-size:11px; color:var(--text-faint); margin-top:6px; text-align:center;}
+  .place-leg-list{display:flex; flex-direction:column; gap:6px; margin-top:8px;}
+  .place-leg-btn{
+    display:block; text-align:center; background:var(--bg-raised);
+    border:1px solid var(--border); border-radius:7px; padding:9px 12px;
+    color:var(--text); text-decoration:none; font-size:12.5px; font-weight:600;
+    transition:border-color .15s ease;
+  }
+  .place-leg-btn:hover{border-color:var(--accent);}
+
 
   .manual-entry{
     padding:10px; border-radius:8px; background:var(--bg-raised);
