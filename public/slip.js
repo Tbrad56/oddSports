@@ -11,7 +11,7 @@
     try{ localStorage.setItem(LINKS_KEY, JSON.stringify(list)); }catch(e){}
   }
 
-  const state = { manual: getManualLinks() };
+  const state = { manual: getManualLinks(), selectedBook: null };
 
   renderNav('slip');
 
@@ -57,36 +57,56 @@
     renderParlay();
   }
 
-  // One URL that lands the whole slip pre-filled in the book. FanDuel supports
-  // multi-leg addToBetslip built from the sids The Odds API returns; other books
-  // only take one selection per link, so they fall back to per-leg buttons.
+  // One URL that lands the whole slip pre-filled in the book, built from the
+  // sids The Odds API returns. FanDuel's addToBetslip format is stable and
+  // documented in the wild; DraftKings and BetMGM use best-effort community
+  // patterns — worst case the book opens without the slip and the per-leg
+  // buttons below still work. Other books only take one selection per link.
   function multiLegUrlFor(bookKey, rowsPerLeg){
-    if(bookKey.toLowerCase() === 'fanduel' && rowsPerLeg.length && rowsPerLeg.every(r => r.sid && r.marketSid)){
+    const key = bookKey.toLowerCase();
+    if(!rowsPerLeg.length || !rowsPerLeg.every(r => r && r.sid)) return null;
+    if(key === 'fanduel' && rowsPerLeg.every(r => r.marketSid)){
       const params = rowsPerLeg.map((r,i)=>`marketId[${i}]=${encodeURIComponent(r.marketSid)}&selectionId[${i}]=${encodeURIComponent(r.sid)}`).join('&');
       return `https://sportsbook.fanduel.com/addToBetslip?${params}`;
     }
+    if(key === 'draftkings'){
+      // DK event pages accept +-chained outcome ids in one ?outcomes= param.
+      // Reuse the first leg's own event link as the base so the page is real.
+      const base = rowsPerLeg[0].link ? rowsPerLeg[0].link.split('?')[0] : null;
+      if(!base || !/^https:\/\/sportsbook\.draftkings\.com\//.test(base)) return null;
+      return `${base}?outcomes=${rowsPerLeg.map(r=>encodeURIComponent(r.sid)).join('+')}`;
+    }
+    if(key === 'betmgm'){
+      return `https://sports.betmgm.com/en/sports?options=${rowsPerLeg.map(r=>encodeURIComponent(r.sid)).join('-')}&type=Multi`;
+    }
     return null;
   }
+
+  // Books where the combined URL is a community pattern, not an official one.
+  const BEST_EFFORT_MULTI = new Set(['draftkings', 'betmgm']);
 
   // The Gambly-style handoff block: one tap opens the book with the slip loaded.
   function placeButtonsHtml(bookKey, bookName, rowsPerLeg){
     const n = rowsPerLeg.length;
     const multiUrl = multiLegUrlFor(bookKey, rowsPerLeg);
+    let html = '';
     if(multiUrl){
-      return `<a class="place-all-btn" href="${escapeHtml(multiUrl)}" target="_blank" rel="noopener">
+      const beta = BEST_EFFORT_MULTI.has(bookKey.toLowerCase());
+      html += `<a class="place-all-btn" href="${escapeHtml(multiUrl)}" target="_blank" rel="noopener">
           Place all ${n} bet${n===1?'':'s'} on ${escapeHtml(bookName)} ↗
         </a>
-        <div class="place-note">Opens ${escapeHtml(bookName)} with your slip pre-filled — set your wager there.</div>`;
+        <div class="place-note">Opens ${escapeHtml(bookName)} with your slip pre-filled — set your wager there.${beta ? ' If the slip arrives empty, use the per-leg buttons below.' : ''}</div>`;
+      if(!beta) return html;
     }
     if(rowsPerLeg.every(r => r.link)){
       const slip = getSlip();
       const btns = rowsPerLeg.map((r,i)=>
         `<a class="place-leg-btn" href="${escapeHtml(r.link)}" target="_blank" rel="noopener">${escapeHtml(slip[i] ? slip[i].side : 'Leg '+(i+1))} ↗</a>`
       ).join('');
-      return `<div class="place-note" style="margin-top:8px;">${escapeHtml(bookName)} takes one leg per link — tap each to add it to your slip:</div>
+      html += `<div class="place-note" style="margin-top:8px;">${multiUrl ? 'Backup — add ' : escapeHtml(bookName) + ' takes '}one leg per link${multiUrl ? '' : ' — tap each to add it to your slip'}:</div>
         <div class="place-leg-list">${btns}</div>`;
     }
-    return '';
+    return html;
   }
 
   function renderParlay(){
@@ -119,7 +139,6 @@
 
     let html = '<div class="parlay-result">';
     if(common.length){
-      html += `<div style="font-size:12px; color:var(--text-dim); margin-bottom:6px;">Parlay price by book (all legs on one book)</div>`;
       const results = common.map(bookKey=>{
         let decimal = 1;
         slip.forEach(leg=>{
@@ -129,28 +148,38 @@
         return {bookKey, decimal};
       }).sort((a,b)=>b.decimal-a.decimal);
 
-      results.forEach(r=>{
-        const american = decimalToAmerican(r.decimal);
-        html += `<div class="parlay-line">
-          ${linkedBadge(r.bookKey)}
-          <span class="odds">${fmtAmerican(american)}</span>
-        </div>`;
-      });
-
-      const bestBookKey = results[0].bookKey;
-      const bestStyle = bookStyleFor(bestBookKey);
-      const bestBookName = bestStyle ? bestStyle.name : bestBookKey;
-
-      // Prefer a book that can take the whole slip in one tap; among those,
-      // keep the by-price order so the button is also the best available price.
+      // Selected book: sticky across re-renders while it still covers every leg;
+      // defaults to the best-priced book.
+      if(!state.selectedBook || !results.some(r=>r.bookKey===state.selectedBook)){
+        state.selectedBook = results[0].bookKey;
+      }
+      const selected = results.find(r=>r.bookKey===state.selectedBook);
       const rowsFor = bookKey => slip.map(leg => leg.rows.find(r=>r.bookKey===bookKey));
-      const oneTap = results.find(r => multiLegUrlFor(r.bookKey, rowsFor(r.bookKey)));
-      const target = oneTap || results[0];
-      const targetStyle = bookStyleFor(target.bookKey);
-      html += placeButtonsHtml(target.bookKey, targetStyle ? targetStyle.name : target.bookKey, rowsFor(target.bookKey));
 
-      html += `<div class="copy-block">${buildCopyText(bestBookKey, bestBookName)}</div>
-        <button type="button" class="ghost copy-btn" data-book-key="${escapeHtml(bestBookKey)}" data-book-name="${escapeHtml(bestBookName)}" style="margin-top:6px; font-size:11.5px; padding:6px 10px;">Copy</button>`;
+      html += `<div style="font-size:12px; color:var(--text-dim); margin-bottom:8px;">Pick a book — all ${slip.length} legs priced together</div>`;
+      html += `<div class="slip-book-chips">`;
+      results.forEach(r=>{
+        const style = bookStyleFor(r.bookKey);
+        const name = style ? style.name : r.bookKey;
+        const isBest = r === results[0];
+        html += `<button type="button" class="slip-book-chip${r.bookKey===state.selectedBook?' active':''}" data-book-key="${escapeHtml(r.bookKey)}">
+          <span class="chip-book-name">${escapeHtml(name)}</span>
+          <span class="chip-book-odds">${fmtAmerican(decimalToAmerican(r.decimal))}</span>
+          ${isBest ? '<span class="chip-best-tag">Best</span>' : ''}
+        </button>`;
+      });
+      html += `</div>`;
+
+      const selStyle = bookStyleFor(selected.bookKey);
+      const selName = selStyle ? selStyle.name : selected.bookKey;
+      html += `<div class="parlay-line" style="margin-top:10px;">
+        ${linkedBadge(selected.bookKey)}
+        <span class="odds">${fmtAmerican(decimalToAmerican(selected.decimal))}</span>
+      </div>`;
+      html += placeButtonsHtml(selected.bookKey, selName, rowsFor(selected.bookKey));
+
+      html += `<div class="copy-block">${buildCopyText(selected.bookKey, selName)}</div>
+        <button type="button" class="ghost copy-btn" data-book-key="${escapeHtml(selected.bookKey)}" data-book-name="${escapeHtml(selName)}" style="margin-top:6px; font-size:11.5px; padding:6px 10px;">Copy</button>`;
     } else {
       html += `<div style="font-size:12px; color:var(--text-dim); margin-bottom:6px;">No single book covers every leg. Best price per leg (mixed books, informational only):</div>`;
       let decimal = 1;
@@ -168,6 +197,12 @@
     area.innerHTML = html;
     staggerIn(area);
     wireCopyButton(area);
+    area.querySelectorAll('.slip-book-chip').forEach(chip=>{
+      chip.addEventListener('click', ()=>{
+        state.selectedBook = chip.dataset.bookKey;
+        renderParlay();
+      });
+    });
   }
 
   function buildCopyLines(bookKey, bookName){

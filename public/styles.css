@@ -347,6 +347,24 @@
   }
 
   /* ---------- One-tap slip handoff ---------- */
+  .slip-book-chips{display:flex; flex-wrap:wrap; gap:8px;}
+  .slip-book-chip{
+    display:flex; flex-direction:column; align-items:center; gap:2px;
+    background:var(--bg-raised); border:1px solid var(--border);
+    border-radius:9px; padding:8px 14px; cursor:pointer;
+    transition:all .15s ease; position:relative; min-width:86px;
+  }
+  .slip-book-chip:hover{border-color:var(--accent-dim); transform:translateY(-1px);}
+  .slip-book-chip.active{background:rgba(187,0,0,0.14); border-color:var(--accent);}
+  .slip-book-chip .chip-book-name{font-size:11.5px; font-weight:700; color:var(--text);}
+  .slip-book-chip.active .chip-book-name{color:var(--accent);}
+  .slip-book-chip .chip-book-odds{font-family:var(--font-mono); font-size:12.5px; font-weight:700; color:var(--text-dim);}
+  .slip-book-chip.active .chip-book-odds{color:var(--accent);}
+  .slip-book-chip .chip-best-tag{
+    position:absolute; top:-7px; right:-6px;
+    font-size:8.5px; font-weight:800; text-transform:uppercase; letter-spacing:.4px;
+    background:var(--good); color:#1B1B1B; border-radius:4px; padding:1px 5px;
+  }
   .place-all-btn{
     display:block; text-align:center; margin-top:12px;
     background:linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%);
