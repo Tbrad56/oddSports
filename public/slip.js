@@ -57,6 +57,38 @@
     renderParlay();
   }
 
+  // One URL that lands the whole slip pre-filled in the book. FanDuel supports
+  // multi-leg addToBetslip built from the sids The Odds API returns; other books
+  // only take one selection per link, so they fall back to per-leg buttons.
+  function multiLegUrlFor(bookKey, rowsPerLeg){
+    if(bookKey.toLowerCase() === 'fanduel' && rowsPerLeg.length && rowsPerLeg.every(r => r.sid && r.marketSid)){
+      const params = rowsPerLeg.map((r,i)=>`marketId[${i}]=${encodeURIComponent(r.marketSid)}&selectionId[${i}]=${encodeURIComponent(r.sid)}`).join('&');
+      return `https://sportsbook.fanduel.com/addToBetslip?${params}`;
+    }
+    return null;
+  }
+
+  // The Gambly-style handoff block: one tap opens the book with the slip loaded.
+  function placeButtonsHtml(bookKey, bookName, rowsPerLeg){
+    const n = rowsPerLeg.length;
+    const multiUrl = multiLegUrlFor(bookKey, rowsPerLeg);
+    if(multiUrl){
+      return `<a class="place-all-btn" href="${escapeHtml(multiUrl)}" target="_blank" rel="noopener">
+          Place all ${n} bet${n===1?'':'s'} on ${escapeHtml(bookName)} ↗
+        </a>
+        <div class="place-note">Opens ${escapeHtml(bookName)} with your slip pre-filled — set your wager there.</div>`;
+    }
+    if(rowsPerLeg.every(r => r.link)){
+      const slip = getSlip();
+      const btns = rowsPerLeg.map((r,i)=>
+        `<a class="place-leg-btn" href="${escapeHtml(r.link)}" target="_blank" rel="noopener">${escapeHtml(slip[i] ? slip[i].side : 'Leg '+(i+1))} ↗</a>`
+      ).join('');
+      return `<div class="place-note" style="margin-top:8px;">${escapeHtml(bookName)} takes one leg per link — tap each to add it to your slip:</div>
+        <div class="place-leg-list">${btns}</div>`;
+    }
+    return '';
+  }
+
   function renderParlay(){
     const slip = getSlip();
     const area = document.getElementById('parlayArea');
@@ -73,6 +105,8 @@
             ${linkedBadge(best.bookKey, best.bookTitle)}
             <span class="odds">${fmtAmerican(best.odds)}</span>
           </div>
+          ${best.link ? `<a class="place-all-btn" href="${escapeHtml(best.link)}" target="_blank" rel="noopener">Place bet on ${escapeHtml(style ? style.name : best.bookTitle)} ↗</a>
+          <div class="place-note">Opens with this selection in your slip — set your wager there.</div>` : ''}
         </div>
       `;
       staggerIn(area);
@@ -106,6 +140,15 @@
       const bestBookKey = results[0].bookKey;
       const bestStyle = bookStyleFor(bestBookKey);
       const bestBookName = bestStyle ? bestStyle.name : bestBookKey;
+
+      // Prefer a book that can take the whole slip in one tap; among those,
+      // keep the by-price order so the button is also the best available price.
+      const rowsFor = bookKey => slip.map(leg => leg.rows.find(r=>r.bookKey===bookKey));
+      const oneTap = results.find(r => multiLegUrlFor(r.bookKey, rowsFor(r.bookKey)));
+      const target = oneTap || results[0];
+      const targetStyle = bookStyleFor(target.bookKey);
+      html += placeButtonsHtml(target.bookKey, targetStyle ? targetStyle.name : target.bookKey, rowsFor(target.bookKey));
+
       html += `<div class="copy-block">${buildCopyText(bestBookKey, bestBookName)}</div>
         <button type="button" class="ghost copy-btn" data-book-key="${escapeHtml(bestBookKey)}" data-book-name="${escapeHtml(bestBookName)}" style="margin-top:6px; font-size:11.5px; padding:6px 10px;">Copy</button>`;
     } else {
