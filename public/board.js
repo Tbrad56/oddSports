@@ -486,7 +486,7 @@
       head.className = 'game-head';
       const when = new Date(game.commence_time);
       head.innerHTML = `
-        <div class="game-teams">${escapeHtml(game.away_team)}<span class="vs">@</span>${escapeHtml(game.home_team)}</div>
+        <div class="game-teams">${teamLogoImg(sportKey, game.away_team)}${escapeHtml(game.away_team)}<span class="vs">@</span>${teamLogoImg(sportKey, game.home_team)}${escapeHtml(game.home_team)}</div>
         <div class="game-time">${when.toLocaleDateString(undefined,{month:'short',day:'numeric'})} · ${when.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'})}</div>
       `;
       card.appendChild(head);
