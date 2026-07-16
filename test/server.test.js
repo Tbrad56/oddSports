@@ -47,6 +47,24 @@ test('proxies a valid sport, appends key upstream, passes body and quota header 
   assert.match(f.calls[0], /^https:\/\/api\.the-odds-api\.com\/v4\/sports\/basketball_nba\/odds\/\?regions=us,us2&markets=h2h&oddsFormat=american&includeLinks=true&includeSids=true&apiKey=sekret$/);
 });
 
+test('MLB odds request includes F5 markets in the same single upstream call', async () => {
+  const f = fakeFetch(() => okResponse([]));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/odds/baseball_mlb');
+  assert.equal(res.status, 200);
+  assert.equal(f.calls.length, 1, 'F5 markets must not cost a second upstream request');
+  assert.match(f.calls[0], /markets=h2h,h2h_1st_5_innings,totals_1st_5_innings,spreads_1st_5_innings&/);
+});
+
+test('non-MLB odds request does not include F5 markets', async () => {
+  const f = fakeFetch(() => okResponse([]));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/odds/basketball_nba');
+  assert.equal(res.status, 200);
+  assert.match(f.calls[0], /markets=h2h&/);
+  assert.doesNotMatch(f.calls[0], /1st_5_innings/);
+});
+
 test('second request within TTL is served from cache', async () => {
   let t = 1000000;
   const f = fakeFetch(() => okResponse([{ id: 'x' }]));

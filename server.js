@@ -22,6 +22,11 @@ const PROP_MARKETS = {
   icehockey_nhl: ['player_points', 'player_assists', 'player_shots_on_goal', 'player_goal_scorer_anytime']
 };
 
+// MLB "first 5 innings" alternate-period markets, requested alongside h2h in
+// the same /odds call (comma-separated markets param) so this doesn't cost a
+// second upstream request — see The Odds API's Game Period Markets list.
+const MLB_F5_MARKETS = ['h2h_1st_5_innings', 'totals_1st_5_innings', 'spreads_1st_5_innings'];
+
 const STATSAPI = 'https://statsapi.mlb.com';
 const SCORES_TTL_MS = 30 * 1000;
 const LIVE_TTL_MS = 20 * 1000;
@@ -146,7 +151,8 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
   app.get('/api/odds/:sport', (req, res) => {
     const { sport } = req.params;
     if (!SPORTS.has(sport)) return res.status(400).json({ error: 'Unknown sport' });
-    proxy(`/v4/sports/${sport}/odds/?regions=us,us2&markets=h2h&oddsFormat=american&includeLinks=true&includeSids=true`, res);
+    const markets = sport === 'baseball_mlb' ? ['h2h', ...MLB_F5_MARKETS] : ['h2h'];
+    proxy(`/v4/sports/${sport}/odds/?regions=us,us2&markets=${markets.join(',')}&oddsFormat=american&includeLinks=true&includeSids=true`, res);
   });
 
   // Live/recent scores. Cached on a much shorter TTL than odds (SCORES_TTL_MS)

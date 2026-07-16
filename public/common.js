@@ -645,6 +645,65 @@ function buildWeatherStrip(game){
   </div>`;
 }
 
+// ---------- MLB park factors ----------
+// Runs/HR park factors, 100 = league average. Source: FanGraphs Guts! Park
+// Factors (fangraphs.com/guts.aspx?type=pf), most recent published full
+// season as of this build — in line with the stable multi-year pattern
+// widely cited from Statcast (Coors ~112-113 runs at the extreme; Petco,
+// Oracle, T-Mobile suppressed; most parks 96-104). Geometry-driven, so domes
+// and retractable roofs get a real factor too, same as open-air parks.
+// Athletics/Sacramento note: Sutter Health Park is a new, small-sample venue
+// as a temporary MLB home — this figure still reflects the prior Oakland
+// Coliseum era and should be treated as provisional until enough games at
+// the new park exist to compute a real factor.
+const PARK_FACTORS = {
+  "Arizona Diamondbacks":{runs:101,hr:91},
+  "Atlanta Braves":{runs:100,hr:99},
+  "Baltimore Orioles":{runs:99,hr:99},
+  "Boston Red Sox":{runs:104,hr:98},
+  "Chicago Cubs":{runs:98,hr:98},
+  "Chicago White Sox":{runs:100,hr:105},
+  "Cincinnati Reds":{runs:105,hr:114},
+  "Cleveland Guardians":{runs:99,hr:98},
+  "Colorado Rockies":{runs:113,hr:107},
+  "Detroit Tigers":{runs:100,hr:96},
+  "Houston Astros":{runs:99,hr:102},
+  "Kansas City Royals":{runs:103,hr:95},
+  "Los Angeles Angels":{runs:101,hr:105},
+  "Los Angeles Dodgers":{runs:99,hr:110},
+  "Miami Marlins":{runs:101,hr:97},
+  "Milwaukee Brewers":{runs:99,hr:104},
+  "Minnesota Twins":{runs:101,hr:99},
+  "New York Mets":{runs:96,hr:99},
+  "New York Yankees":{runs:99,hr:104},
+  "Athletics":{runs:96,hr:90},
+  "Oakland Athletics":{runs:96,hr:90},
+  "Philadelphia Phillies":{runs:101,hr:105},
+  "Pittsburgh Pirates":{runs:102,hr:93},
+  "San Diego Padres":{runs:96,hr:101},
+  "San Francisco Giants":{runs:97,hr:91},
+  "Seattle Mariners":{runs:94,hr:96},
+  "St. Louis Cardinals":{runs:98,hr:94},
+  "Tampa Bay Rays":{runs:96,hr:96},
+  "Texas Rangers":{runs:99,hr:102},
+  "Toronto Blue Jays":{runs:99,hr:103},
+  "Washington Nationals":{runs:100,hr:100}
+};
+
+function parkFactorClass(n){
+  if(n >= 105) return 'good';
+  if(n <= 95) return 'bad';
+  return 'neutral';
+}
+
+// Compact badge for the board's MLB game cards — context only, not a pick.
+function buildParkFactorBadge(game){
+  const pf = PARK_FACTORS[game.home_team];
+  if(!pf) return '';
+  const cls = parkFactorClass(pf.runs);
+  return `<span class="park-factor-badge pf-${cls}" title="Multi-year park factor, 100 = league average. Context, not a pick.">Park: Runs ${pf.runs} · HR ${pf.hr}</span>`;
+}
+
 // ---------- team logos ----------
 // ESPN's public logo CDN, keyed by the exact team-name strings The Odds API
 // returns. Only the four major pro leagues are mapped — NCAA football/
