@@ -11,7 +11,8 @@
     scores: [], mlbLive: [], scoresTimer: null,
     hrCache: {},   // gameId -> hr-matchups API response
     statcast: undefined, // batters map from /statcast/statcast.json, or null if unavailable
-    oddsView: {}   // gameId -> 'full' | 'f5', survives re-renders like propsOpen
+    oddsView: {},  // gameId -> 'full' | 'f5', survives re-renders like propsOpen
+    pitchers: {}   // gameId -> {matched, home:{id,name}|null, away:{id,name}|null}
   };
   let renderScheduled = false;
   // Coalesces multiple renderGames() requests (weather + Kalshi post-fetches, audit 6.2)
@@ -47,6 +48,7 @@
       // MLB: pull hourly stadium forecasts (free Open-Meteo, no key), re-render with weather strips
       if(sport === 'baseball_mlb' && games.length){
         fetchStadiumWeather(games).then(scheduleRender).catch(()=>{});
+        fetchStartingPitchers(games).then(scheduleRender).catch(()=>{});
       }
       // Kalshi reference prices (public market data, no key) for supported sports
       kalshiEventsCache = [];
@@ -321,6 +323,39 @@
     return `<span class="player-avatar player-avatar-empty" style="width:${size}px; height:${size}px;"></span>`;
   }
 
+  // Both starting pitchers, one request per game (server-cached per date so
+  // every card sharing a slate hits the same cached StatsAPI schedule fetch,
+  // not a fresh one). Best-effort — a miss just means the card shows nothing.
+  async function fetchStartingPitchers(games){
+    await Promise.all(games.map(async game=>{
+      if(state.pitchers[game.id]) return;
+      const dateStr = new Date(game.commence_time).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+      try{
+        const res = await fetch(`/api/pitchers/mlb?home=${encodeURIComponent(game.home_team)}&away=${encodeURIComponent(game.away_team)}&date=${dateStr}`);
+        if(!res.ok) return;
+        state.pitchers[game.id] = await res.json();
+      }catch(e){ /* best-effort */ }
+    }));
+  }
+
+  function buildStartingPitchersHtml(game){
+    const info = state.pitchers[game.id];
+    if(!info || !info.matched) return '';
+    const side = (p, team) => `
+      <div class="pitcher-card">
+        ${p ? playerAvatarHtml(p.id, 36) : emptyAvatarHtml(36)}
+        <div>
+          <div class="pitcher-name">${p ? escapeHtml(p.name) : 'TBD'}</div>
+          <div class="pitcher-team">${escapeHtml(team)}</div>
+        </div>
+      </div>`;
+    return `<div class="pitchers-strip">
+      ${side(info.away, game.away_team)}
+      <div class="pitcher-vs">vs</div>
+      ${side(info.home, game.home_team)}
+    </div>`;
+  }
+
   function pitcherTableHtml(pitcher){
     if(!pitcher){
       return `<div class="hr-note">Probable pitcher not announced yet.</div>`;
@@ -502,7 +537,7 @@
       scoreSlot.innerHTML = buildScoreBadgeHtml(game, scoreEntry, liveDetail);
       card.appendChild(scoreSlot);
 
-      // MLB: stadium weather strip sits above the odds, park factor badge next to it
+      // MLB: stadium weather strip, then both starting pitchers with photos
       if(sportKey === 'baseball_mlb'){
         const weatherHtml = buildWeatherStrip(game);
         if(weatherHtml){
@@ -510,10 +545,10 @@
           w.innerHTML = weatherHtml;
           card.appendChild(w.firstElementChild);
         }
-        const pfHtml = buildParkFactorBadge(game);
-        if(pfHtml){
+        const pitchersHtml = buildStartingPitchersHtml(game);
+        if(pitchersHtml){
           const p = document.createElement('div');
-          p.innerHTML = pfHtml;
+          p.innerHTML = pitchersHtml;
           card.appendChild(p.firstElementChild);
         }
       }

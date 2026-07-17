@@ -695,3 +695,58 @@ test('hr-matchups: schedule StatsAPI failure -> 502 Stats service unavailable', 
   assert.equal(res.status, 502);
   assert.equal(res.body.error, 'Stats service unavailable');
 });
+
+// ---------- /api/pitchers/mlb ----------
+test('pitchers: missing home/away/date -> 400, nothing fetched', async () => {
+  const { app, f } = hrApp();
+  const res = await request(app).get('/api/pitchers/mlb').query({ home: 'Home Nine' });
+  assert.equal(res.status, 400);
+  assert.equal(f.calls.length, 0);
+});
+
+test('pitchers: malformed date -> 400, nothing fetched', async () => {
+  const { app, f } = hrApp();
+  const res = await request(app).get('/api/pitchers/mlb').query({ home: 'Home Nine', away: 'Away Nine', date: '07/12/2026' });
+  assert.equal(res.status, 400);
+  assert.equal(f.calls.length, 0);
+});
+
+test('pitchers: no schedule match -> matched:false, no error', async () => {
+  const { app } = hrApp({ routes: [['/api/v1/schedule', okResponse({ dates: [] })]] });
+  const res = await request(app).get('/api/pitchers/mlb').query(HR_QUERY);
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, { matched: false });
+});
+
+test('pitchers: matched game returns both starting pitchers by id/name, no splits fetched', async () => {
+  const { app, f } = hrApp();
+  const res = await request(app).get('/api/pitchers/mlb').query(HR_QUERY);
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, {
+    matched: true,
+    home: { id: 501, name: 'Home Ace' },
+    away: { id: 502, name: 'Away Ace' }
+  });
+  // lighter than hr-matchups: only the schedule call, never /api/v1/people
+  assert.ok(!f.calls.some(u => u.includes('/api/v1/people')), 'must not fetch splits for this endpoint');
+});
+
+test('pitchers: probable pitcher not yet announced -> that side is null, not an error', async () => {
+  const { app } = hrApp({ routes: [['/api/v1/schedule', okResponse({ dates: [{ games: [{
+    teams: {
+      home: { team: { name: 'Home Nine' }, probablePitcher: null },
+      away: { team: { name: 'Away Nine' }, probablePitcher: { id: 502, fullName: 'Away Ace' } }
+    },
+    lineups: {}
+  }] }] })]] });
+  const res = await request(app).get('/api/pitchers/mlb').query(HR_QUERY);
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, { matched: true, home: null, away: { id: 502, name: 'Away Ace' } });
+});
+
+test('pitchers: schedule StatsAPI failure -> 502 Stats service unavailable', async () => {
+  const { app } = hrApp({ routes: [['/api/v1/schedule', errResponse(500)]] });
+  const res = await request(app).get('/api/pitchers/mlb').query(HR_QUERY);
+  assert.equal(res.status, 502);
+  assert.equal(res.body.error, 'Stats service unavailable');
+});

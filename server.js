@@ -391,6 +391,38 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     });
   }
 
+  // Both starting pitchers for a scheduled MLB game — a lighter sibling of
+  // /api/hr-matchups/mlb (no splits/lineups), shown automatically on every
+  // MLB board card rather than opt-in. Shares getMlbScheduleGame's cached
+  // schedule fetch, so this doesn't cost an extra StatsAPI call per card.
+  app.get('/api/pitchers/mlb', (req, res) => {
+    handlePitchers(req, res).catch(err => {
+      console.error(`Pitchers failed: ${err && err.message || err}`);
+      if (!res.headersSent) res.status(502).json({ error: 'Stats service unavailable' });
+    });
+  });
+
+  async function handlePitchers(req, res){
+    const { home, away, date } = req.query;
+    if (!home || !away || !date) return res.status(400).json({ error: 'home, away, and date are required' });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'Bad date' });
+
+    let mg;
+    try {
+      mg = await getMlbScheduleGame(date, home, away);
+    } catch (err) {
+      return sendUpstreamError(res, err);
+    }
+    if (!mg) return res.json({ matched: false });
+
+    const toPitcher = p => (p && p.id) ? { id: p.id, name: p.fullName || null } : null;
+    res.json({
+      matched: true,
+      home: toPitcher(mg.teams.home.probablePitcher),
+      away: toPitcher(mg.teams.away.probablePitcher)
+    });
+  }
+
   app.get('/api/analyze/mlb/:eventId', (req, res) => {
     handleAnalyze(req, res).catch(err => {
       console.error(`Analyze failed: ${err && err.message || err}`);
