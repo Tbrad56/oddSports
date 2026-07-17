@@ -548,6 +548,100 @@
         }
       }
 
+      // MLB only: Spread/Total/Moneyline grid like a sportsbook's own game-lines
+      // page, one row per team. Each cell is the best price across whichever
+      // pool applies (My Books if set, else all tracked books) — same rule the
+      // rest of Board already uses, just one number per cell instead of a list.
+      // Returns true if at least one cell had data.
+      function renderGameLinesGrid(view){
+        const suffix = view === 'f5' ? '_1st_5_innings' : '';
+        const tag = view === 'f5' ? ' (F5)' : '';
+        const [awayTeam, homeTeam] = [game.away_team, game.home_team];
+        const trackedBookmakers = game.bookmakers.filter(b => TRACKED_KEYS.includes(b.key.toLowerCase()));
+        const bookmakersToUse = trackedBookmakers.length ? trackedBookmakers : game.bookmakers;
+        const myBooks = getMyBooks();
+        const scoped = myBooks.length ? bookmakersToUse.filter(b=>myBooks.includes(b.key.toLowerCase())) : [];
+        const pool = scoped.length ? scoped : bookmakersToUse;
+
+        function rowsFor(marketKey, outcomeName){
+          const rows = [];
+          pool.forEach(bm=>{
+            const market = bm.markets.find(m=>m.key===marketKey);
+            if(!market) return;
+            const outcome = market.outcomes.find(o=>o.name===outcomeName);
+            if(!outcome) return;
+            rows.push({bookKey:bm.key, bookTitle:bm.title, odds:outcome.price, point:outcome.point, link:outcome.link||bm.link||null, sid:outcome.sid||null, marketSid:market.sid||null});
+          });
+          rows.sort((a,b)=>americanToDecimal(b.odds)-americanToDecimal(a.odds));
+          return rows;
+        }
+        // Books can quote slightly different lines (mostly totals) — group by
+        // point, keep whichever point the most tracked books share, best price within it.
+        function modalPointRows(marketKey, outcomeName){
+          const all = rowsFor(marketKey, outcomeName);
+          if(!all.length) return [];
+          const byPoint = {};
+          all.forEach(r=>{ const k=String(r.point); (byPoint[k]=byPoint[k]||[]).push(r); });
+          const bestKey = Object.keys(byPoint).sort((a,b)=>byPoint[b].length-byPoint[a].length)[0];
+          return byPoint[bestKey];
+        }
+
+        const ml = { away: rowsFor('h2h'+suffix, awayTeam), home: rowsFor('h2h'+suffix, homeTeam) };
+        const spread = { away: modalPointRows('spreads'+suffix, awayTeam), home: modalPointRows('spreads'+suffix, homeTeam) };
+        const total = { over: modalPointRows('totals'+suffix, 'Over'), under: modalPointRows('totals'+suffix, 'Under') };
+
+        if(![ml.away, ml.home, spread.away, spread.home, total.over, total.under].some(r=>r.length)) return false;
+
+        const addLeg = (side, rows, cellEl)=>{
+          if(!rows.length) return;
+          addLegToSlip({ id: Date.now()+Math.random(), matchup: `${awayTeam} @ ${homeTeam}`, side, rows });
+          showToast('Added ✓');
+          flashEl(cellEl);
+        };
+
+        function cell(rows, lineLabel, side){
+          const div = document.createElement('div');
+          if(!rows.length){
+            div.className = 'gl-cell gl-empty';
+            div.textContent = '—';
+            return div;
+          }
+          div.className = 'gl-cell';
+          div.title = 'Tap to add to Slip';
+          const best = rows[0];
+          div.innerHTML = `${lineLabel ? `<div class="gl-line">${escapeHtml(lineLabel)}</div>` : ''}<div class="gl-price ${Number(best.odds)>0?'pos':''}">${fmtAmerican(best.odds)}</div>`;
+          div.addEventListener('click', ()=>addLeg(side, rows, div));
+          return div;
+        }
+
+        const grid = document.createElement('div');
+        grid.className = 'gl-grid';
+        grid.appendChild(document.createElement('div'));
+        ['Spread','Total','Money'].forEach(label=>{
+          const h = document.createElement('div');
+          h.className = 'gl-head';
+          h.textContent = label;
+          grid.appendChild(h);
+        });
+
+        function teamRow(team, spreadRows, totalRows, totalSide, mlRows){
+          const name = document.createElement('div');
+          name.className = 'gl-team';
+          name.textContent = team;
+          grid.appendChild(name);
+          const spreadLabel = spreadRows.length ? fmtAmerican(spreadRows[0].point) : '';
+          grid.appendChild(cell(spreadRows, spreadLabel, `${team}${tag} ${spreadLabel}`.trim()));
+          const totalLabel = totalRows.length ? (totalSide === 'Over' ? 'O ' : 'U ') + totalRows[0].point : '';
+          grid.appendChild(cell(totalRows, totalLabel, `${totalSide} ${totalRows.length ? totalRows[0].point : ''}${tag}`.trim()));
+          grid.appendChild(cell(mlRows, '', `${team}${tag}`));
+        }
+        teamRow(awayTeam, spread.away, total.over, 'Over', ml.away);
+        teamRow(homeTeam, spread.home, total.under, 'Under', ml.home);
+
+        card.appendChild(grid);
+        return true;
+      }
+
       // Renders the per-team moneyline grid for a given market key (full-game
       // 'h2h' or MLB's 'h2h_1st_5_innings'). Same best-price/My Books logic
       // either way — only which market's outcomes get gathered changes.
@@ -672,16 +766,12 @@
         });
         card.appendChild(tabs);
 
-        if(view === 'f5'){
-          const renderedAny = renderOddsBlocks('h2h_1st_5_innings');
-          if(!renderedAny){
-            const note = document.createElement('div');
-            note.className = 'empty-state f5-empty';
-            note.innerHTML = '<p>F5 lines not posted yet.</p>';
-            card.appendChild(note);
-          }
-        } else {
-          renderOddsBlocks('h2h');
+        const renderedAny = renderGameLinesGrid(view);
+        if(!renderedAny){
+          const note = document.createElement('div');
+          note.className = 'empty-state f5-empty';
+          note.innerHTML = `<p>${view === 'f5' ? 'F5 lines not posted yet.' : 'Odds not posted yet.'}</p>`;
+          card.appendChild(note);
         }
       } else {
         renderOddsBlocks('h2h');

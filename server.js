@@ -151,7 +151,10 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
   app.get('/api/odds/:sport', (req, res) => {
     const { sport } = req.params;
     if (!SPORTS.has(sport)) return res.status(400).json({ error: 'Unknown sport' });
-    const markets = sport === 'baseball_mlb' ? ['h2h', ...MLB_F5_MARKETS] : ['h2h'];
+    // MLB only: full-game spreads/totals alongside moneyline, in the same call
+    // as the F5 markets — Board's Game Lines grid needs Spread/Total/Money for
+    // MLB specifically (matches the F5 toggle, which is also MLB-only).
+    const markets = sport === 'baseball_mlb' ? ['h2h', 'spreads', 'totals', ...MLB_F5_MARKETS] : ['h2h'];
     proxy(`/v4/sports/${sport}/odds/?regions=us,us2&markets=${markets.join(',')}&oddsFormat=american&includeLinks=true&includeSids=true`, res);
   });
 
