@@ -27,6 +27,15 @@
     slip.forEach(leg=>{
       const best = leg.rows[0];
       const style = bookStyleFor(best.bookKey);
+      // Full line shop for this leg, best → worst — the ranking the board
+      // no longer shows lives here, once a pick is actually on the slip.
+      const shopChips = leg.rows.map((r,idx)=>{
+        const rStyle = bookStyleFor(r.bookKey);
+        const rName = rStyle ? rStyle.name : r.bookTitle;
+        const chip = `<span class="odds-chip${idx===0?' best':''}" title="${escapeHtml(rName)}">${escapeHtml(rName)} ${fmtAmerican(r.odds)}</span>`;
+        const rLink = BOOK_LINKS[r.bookKey.toLowerCase()];
+        return rLink ? `<a href="${rLink}" target="_blank" rel="noopener" style="text-decoration:none;">${chip}</a>` : chip;
+      }).join('');
       const div = document.createElement('div');
       div.className = 'leg-item';
       div.innerHTML = `
@@ -42,6 +51,7 @@
             ? `<a href="${BOOK_LINKS[best.bookKey.toLowerCase()]}" target="_blank" rel="noopener">${escapeHtml(style ? style.name : best.bookTitle)} ↗</a>`
             : escapeHtml(style ? style.name : best.bookTitle)
         }</div>
+        ${leg.rows.length > 1 ? `<div class="leg-shop">${shopChips}</div>` : ''}
       `;
       div.querySelector('.remove-btn').addEventListener('click', ()=>{
         div.classList.add('removing');

@@ -146,7 +146,7 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
   app.get('/api/odds/:sport', (req, res) => {
     const { sport } = req.params;
     if (!SPORTS.has(sport)) return res.status(400).json({ error: 'Unknown sport' });
-    proxy(`/v4/sports/${sport}/odds/?regions=us,us2&markets=h2h&oddsFormat=american&includeLinks=true&includeSids=true`, res);
+    proxy(`/v4/sports/${sport}/odds/?regions=us,us2&markets=h2h,spreads,totals&oddsFormat=american&includeLinks=true&includeSids=true`, res);
   });
 
   // Live/recent scores. Cached on a much shorter TTL than odds (SCORES_TTL_MS)

@@ -511,119 +511,113 @@
         }
       }
 
-      // gather per-outcome (team) prices across bookmakers, tracked books only, fallback to all if none tracked found
-      const teams = [game.away_team, game.home_team];
+      // Three markets per game, one compact row per outcome: label + best price
+      // + "+ Slip". No best→worst list here — the full ranked line shop lives
+      // on the slip page once a leg is added (every book's row rides along).
       const trackedBookmakers = game.bookmakers.filter(b => TRACKED_KEYS.includes(b.key.toLowerCase()));
       const bookmakersToUse = trackedBookmakers.length ? trackedBookmakers : game.bookmakers;
       const myBooks = getMyBooks();
+      const fmtPoint = p => (p > 0 ? '+' + p : String(p));
 
-      const rowsByTeam = {};
-      teams.forEach(team=>{
-        const rows = [];
+      // Collect rows per outcome for one market key, grouped on the consensus
+      // point (books quoting an alt line are left out of that outcome's rows so
+      // prices stay comparable; h2h has no point so everything groups together).
+      function outcomeRowsFor(marketKey){
+        const byOutcome = {}; // name -> point -> rows[]
         bookmakersToUse.forEach(bm=>{
-          const market = bm.markets.find(m=>m.key === 'h2h');
+          const market = bm.markets.find(m=>m.key === marketKey);
           if(!market) return;
-          const outcome = market.outcomes.find(o=>o.name === team);
-          if(!outcome) return;
-          rows.push({bookKey: bm.key, bookTitle: bm.title, odds: outcome.price, link: outcome.link || bm.link || null, sid: outcome.sid || null, marketSid: market.sid || null});
+          market.outcomes.forEach(o=>{
+            const pt = o.point ?? '';
+            byOutcome[o.name] = byOutcome[o.name] || {};
+            byOutcome[o.name][pt] = byOutcome[o.name][pt] || [];
+            byOutcome[o.name][pt].push({bookKey: bm.key, bookTitle: bm.title, odds: o.price, point: o.point, link: o.link || bm.link || null, sid: o.sid || null, marketSid: market.sid || null});
+          });
         });
-        rows.sort((a,b)=> americanToDecimal(b.odds) - americanToDecimal(a.odds));
-        rowsByTeam[team] = rows;
+        return Object.entries(byOutcome).map(([name, byPoint])=>{
+          const consensus = Object.entries(byPoint).sort((a,b)=>b[1].length-a[1].length)[0];
+          const rows = consensus[1].sort((a,b)=> americanToDecimal(b.odds) - americanToDecimal(a.odds));
+          return { name, point: rows[0].point, rows };
+        });
+      }
+
+      // Sportsbook-style grid: one row per team, one tappable price cell per
+      // market (Spread / Total / Moneyline). No book names here — tapping a
+      // cell adds the leg with every book's price riding along, and the full
+      // line shop shows on the slip.
+      const spreads = outcomeRowsFor('spreads');
+      const totals = outcomeRowsFor('totals');
+      const h2h = outcomeRowsFor('h2h');
+      const findOutcome = (list, name) => list.find(o=>o.name === name) || null;
+
+      function bestRowOf(oc){
+        if(!oc) return null;
+        const myRows = myBooks.length ? filterToMyBooks(oc.rows, r=>r.bookKey) : [];
+        return (myRows.length ? myRows : oc.rows)[0];
+      }
+
+      function priceCell(oc, topLine, side){
+        const shown = bestRowOf(oc);
+        if(!shown) return '<div class="line-cell empty">—</div>';
+        return `<button type="button" class="line-cell" data-side="${escapeHtml(side)}">
+          ${topLine ? `<span class="cell-line">${escapeHtml(topLine)}</span>` : ''}
+          <span class="cell-odds ${Number(shown.odds)>0?'pos':'neg'}">${fmtAmerican(shown.odds)}</span>
+        </button>`;
+      }
+
+      const grid = document.createElement('div');
+      grid.className = 'lines-grid';
+      let gridHtml = `<div class="lines-head"><span></span><span>Spread</span><span>Total</span><span>Money</span></div>`;
+      [[game.away_team, 'Over'], [game.home_team, 'Under']].forEach(([team, ouName])=>{
+        const sp = findOutcome(spreads, team);
+        const tot = findOutcome(totals, ouName);
+        const ml = findOutcome(h2h, team);
+        gridHtml += `<div class="lines-row">
+          <span class="lines-team">${teamLogoImg(sportKey, team)}${escapeHtml(team)}</span>
+          ${priceCell(sp, sp ? fmtPoint(sp.point) : '', sp ? `${team} ${fmtPoint(sp.point)}` : '')}
+          ${priceCell(tot, tot ? `${ouName === 'Over' ? 'O' : 'U'} ${tot.point}` : '', tot ? `${ouName} ${tot.point}` : '')}
+          ${priceCell(ml, '', ml ? `${team} to win` : '')}
+        </div>`;
       });
+      grid.innerHTML = gridHtml;
 
-      teams.forEach(team=>{
-        const rows = rowsByTeam[team];
-        if(!rows.length) return;
-        const otherTeam = teams.find(t=>t!==team);
-        const fairDecimal = computeFairDecimal(rows, rowsByTeam[otherTeam] || []);
-
-        const block = document.createElement('div');
-        block.className = 'outcome-block';
-        const label = document.createElement('div');
-        label.className = 'outcome-label';
-        label.textContent = team + ' to win';
-        block.appendChild(label);
-
-        const addLeg = (rowEl)=>{
+      // Tap a cell = add that leg (all books' rows ride along to the slip)
+      const cellSources = { };
+      [[game.away_team, 'Over'], [game.home_team, 'Under']].forEach(([team, ouName])=>{
+        const sp = findOutcome(spreads, team);
+        const tot = findOutcome(totals, ouName);
+        const ml = findOutcome(h2h, team);
+        if(sp) cellSources[`${team} ${fmtPoint(sp.point)}`] = sp;
+        if(tot) cellSources[`${ouName} ${tot.point}`] = tot;
+        if(ml) cellSources[`${team} to win`] = ml;
+      });
+      grid.querySelectorAll('.line-cell[data-side]').forEach(cell=>{
+        cell.addEventListener('click', ()=>{
+          const oc = cellSources[cell.dataset.side];
+          if(!oc) return;
           addLegToSlip({
             id: Date.now()+Math.random(),
             matchup: `${game.away_team} @ ${game.home_team}`,
-            side: team,
-            rows: rows
+            side: cell.dataset.side,
+            rows: oc.rows
           });
           showToast('Added ✓');
-          if(rowEl) flashEl(rowEl);
-        };
-
-        const myRows = myBooks.length ? filterToMyBooks(rows, r=>r.bookKey) : [];
-        const otherRows = myBooks.length ? rows.filter(r=>!myBooks.includes(r.bookKey.toLowerCase())) : [];
-
-        if(myBooks.length && myRows.length){
-          // Clean grid of just the user's books — no Best/Value ranking noise
-          const grid = document.createElement('div');
-          grid.className = 'mybook-grid';
-          myRows.forEach(r=>{
-            const style = bookStyleFor(r.bookKey);
-            const link = BOOK_LINKS[r.bookKey.toLowerCase()];
-            const cell = document.createElement('div');
-            cell.className = 'mybook-cell';
-            cell.innerHTML = `
-              <div class="book-badge" style="background:${style?style.color:'var(--bg-raised)'}; color:${style?badgeTextColor(style.color):'#F5F5F5'};">${escapeHtml(style?style.name:r.bookTitle)}</div>
-              <span class="book-odds ${Number(r.odds)>0?'pos':'neg'}">${fmtAmerican(r.odds)}</span>
-              <button class="add-leg-btn">+ Slip</button>
-              ${link ? `<a class="book-link-btn" href="${link}" target="_blank" rel="noopener" title="Open ${escapeHtml(style?style.name:r.bookTitle)}">↗</a>` : ''}
-            `;
-            cell.querySelector('.add-leg-btn').addEventListener('click', ()=>addLeg(cell));
-            grid.appendChild(cell);
-          });
-          block.appendChild(grid);
-          const bestMine = myRows[0], bestOther = otherRows[0];
-          if(bestOther && americanToDecimal(bestOther.odds) > americanToDecimal(bestMine.odds)){
-            const oStyle = bookStyleFor(bestOther.bookKey);
-            const oLink = BOOK_LINKS[bestOther.bookKey.toLowerCase()];
-            const hint = document.createElement('div');
-            hint.className = 'elsewhere-hint';
-            hint.innerHTML = `Better elsewhere: ${escapeHtml(oStyle?oStyle.name:bestOther.bookTitle)} ${fmtAmerican(bestOther.odds)}${oLink?` <a href="${oLink}" target="_blank" rel="noopener">↗</a>`:''}`;
-            block.appendChild(hint);
-          }
-        } else {
-          rows.forEach((r, idx)=>{
-            const row = document.createElement('div');
-            const isValue = fairDecimal && americanToDecimal(r.odds) > fairDecimal * 1.015;
-            row.className = 'book-row' + (idx===0 ? ' best' : '');
-            const style = bookStyleFor(r.bookKey);
-            const badgeHtml = style
-              ? `<div class="book-badge" style="background:${style.color}; color:${badgeTextColor(style.color)};">${escapeHtml(style.name)}</div>`
-              : `<div class="book-name-fallback">${escapeHtml(r.bookTitle)}</div>`;
-            const link = BOOK_LINKS[r.bookKey.toLowerCase()];
-            row.innerHTML = `
-              ${badgeHtml}
-              ${idx===0 ? '<span class="best-tag">Best</span>' : ''}
-              ${isValue ? '<span class="value-tag" title="Pays better than the market-consensus fair line">Value</span>' : ''}
-              <span class="book-odds ${Number(r.odds)>0?'pos':'neg'}">${fmtAmerican(r.odds)}</span>
-              <button class="add-leg-btn">+ Slip</button>
-              ${link ? `<a class="book-link-btn" href="${link}" target="_blank" rel="noopener" title="Open ${escapeHtml(style?style.name:r.bookTitle)}">↗</a>` : ''}
-            `;
-            row.querySelector('.add-leg-btn').addEventListener('click', ()=>addLeg(row));
-            block.appendChild(row);
-          });
-        }
-
-        // Kalshi reference row (prediction market, not a licensed book; excluded from Best/Value ranking)
-        const kRow = kalshiRowFor(game, team);
-        if(kRow){
-          const kr = document.createElement('div');
-          kr.className = 'book-row kalshi-row';
-          kr.innerHTML = `
-            <div class="kalshi-badge">Kalshi</div>
-            <span class="kalshi-note">prediction market · ${kRow.cents}¢</span>
-            <span class="book-odds ${kRow.american>0?'pos':'neg'}">${fmtAmerican(kRow.american)}</span>
-            <a class="book-link-btn" href="${kRow.link}" target="_blank" rel="noopener" title="Open this market on Kalshi">↗</a>
-          `;
-          block.appendChild(kr);
-        }
-        card.appendChild(block);
+          flashEl(cell);
+        });
       });
+      card.appendChild(grid);
+
+      // Kalshi reference strip (prediction market) — kept, one compact line
+      const kalshiParts = [game.away_team, game.home_team].map(team=>{
+        const kRow = kalshiRowFor(game, team);
+        return kRow ? `${escapeHtml(team)} ${fmtAmerican(kRow.american)} <a class="book-link-btn" href="${kRow.link}" target="_blank" rel="noopener">↗</a>` : null;
+      }).filter(Boolean);
+      if(kalshiParts.length){
+        const ks = document.createElement('div');
+        ks.className = 'kalshi-strip';
+        ks.innerHTML = `<span class="kalshi-badge">Kalshi</span><span class="kalshi-note">prediction market</span> ${kalshiParts.join(' · ')}`;
+        card.appendChild(ks);
+      }
 
       // ---- player props (opt-in per game, protects API quota) ----
       if(PROP_MARKETS[sportKey]){

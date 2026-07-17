@@ -44,7 +44,7 @@ test('proxies a valid sport, appends key upstream, passes body and quota header 
   assert.equal(res.headers['x-requests-remaining'], '123');
   assert.equal(res.headers['x-cache-age-seconds'], '0');
   assert.equal(f.calls.length, 1);
-  assert.match(f.calls[0], /^https:\/\/api\.the-odds-api\.com\/v4\/sports\/basketball_nba\/odds\/\?regions=us,us2&markets=h2h&oddsFormat=american&includeLinks=true&includeSids=true&apiKey=sekret$/);
+  assert.match(f.calls[0], /^https:\/\/api\.the-odds-api\.com\/v4\/sports\/basketball_nba\/odds\/\?regions=us,us2&markets=h2h,spreads,totals&oddsFormat=american&includeLinks=true&includeSids=true&apiKey=sekret$/);
 });
 
 test('second request within TTL is served from cache', async () => {
