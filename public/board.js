@@ -15,7 +15,7 @@
     pitchers: {}   // gameId -> {matched, home:{id,name}|null, away:{id,name}|null}
   };
   let renderScheduled = false;
-  // Coalesces multiple renderGames() requests (weather + Kalshi post-fetches, audit 6.2)
+  // Coalesces multiple renderGames() requests (weather/pitchers post-fetches, audit 6.2)
   // into a single call per animation frame, instead of re-rendering the whole board twice more.
   function scheduleRender(){
     if(renderScheduled) return;
@@ -49,11 +49,6 @@
       if(sport === 'baseball_mlb' && games.length){
         fetchStadiumWeather(games).then(scheduleRender).catch(()=>{});
         fetchStartingPitchers(games).then(scheduleRender).catch(()=>{});
-      }
-      // Kalshi reference prices (public market data, no key) for supported sports
-      kalshiEventsCache = [];
-      if(KALSHI_SERIES[sport] && games.length){
-        fetchKalshi(sport).then(scheduleRender).catch(()=>{});
       }
       // Live scores: fetch now, then keep polling every 30s while this sport is loaded
       state.scores = []; state.mlbLive = [];
@@ -607,6 +602,10 @@
           const myRows = myBooks.length ? filterToMyBooks(rows, r=>r.bookKey) : [];
           const otherRows = myBooks.length ? rows.filter(r=>!myBooks.includes(r.bookKey.toLowerCase())) : [];
 
+          // Board never names the book — just the price. The link icon still
+          // opens the right book (its title attr carries the name for hover/
+          // screen readers); picking which book to actually bet with happens
+          // on the Slip page's book selector instead.
           if(myBooks.length && myRows.length){
             // Clean grid of just the user's books — no Best/Value ranking noise
             const grid = document.createElement('div');
@@ -617,7 +616,6 @@
               const cell = document.createElement('div');
               cell.className = 'mybook-cell';
               cell.innerHTML = `
-                <div class="book-badge" style="background:${style?style.color:'var(--bg-raised)'}; color:${style?badgeTextColor(style.color):'#F5F5F5'};">${escapeHtml(style?style.name:r.bookTitle)}</div>
                 <span class="book-odds ${Number(r.odds)>0?'pos':'neg'}">${fmtAmerican(r.odds)}</span>
                 <button class="add-leg-btn">+ Slip</button>
                 ${link ? `<a class="book-link-btn" href="${link}" target="_blank" rel="noopener" title="Open ${escapeHtml(style?style.name:r.bookTitle)}">↗</a>` : ''}
@@ -628,11 +626,10 @@
             block.appendChild(grid);
             const bestMine = myRows[0], bestOther = otherRows[0];
             if(bestOther && americanToDecimal(bestOther.odds) > americanToDecimal(bestMine.odds)){
-              const oStyle = bookStyleFor(bestOther.bookKey);
               const oLink = BOOK_LINKS[bestOther.bookKey.toLowerCase()];
               const hint = document.createElement('div');
               hint.className = 'elsewhere-hint';
-              hint.innerHTML = `Better elsewhere: ${escapeHtml(oStyle?oStyle.name:bestOther.bookTitle)} ${fmtAmerican(bestOther.odds)}${oLink?` <a href="${oLink}" target="_blank" rel="noopener">↗</a>`:''}`;
+              hint.innerHTML = `A better price is available elsewhere: ${fmtAmerican(bestOther.odds)}${oLink?` <a href="${oLink}" target="_blank" rel="noopener">↗</a>`:''}`;
               block.appendChild(hint);
             }
           } else {
@@ -641,12 +638,8 @@
               const isValue = fairDecimal && americanToDecimal(r.odds) > fairDecimal * 1.015;
               row.className = 'book-row' + (idx===0 ? ' best' : '');
               const style = bookStyleFor(r.bookKey);
-              const badgeHtml = style
-                ? `<div class="book-badge" style="background:${style.color}; color:${badgeTextColor(style.color)};">${escapeHtml(style.name)}</div>`
-                : `<div class="book-name-fallback">${escapeHtml(r.bookTitle)}</div>`;
               const link = BOOK_LINKS[r.bookKey.toLowerCase()];
               row.innerHTML = `
-                ${badgeHtml}
                 ${idx===0 ? '<span class="best-tag">Best</span>' : ''}
                 ${isValue ? '<span class="value-tag" title="Pays better than the market-consensus fair line">Value</span>' : ''}
                 <span class="book-odds ${Number(r.odds)>0?'pos':'neg'}">${fmtAmerican(r.odds)}</span>
@@ -656,22 +649,6 @@
               row.querySelector('.add-leg-btn').addEventListener('click', ()=>addLeg(row));
               block.appendChild(row);
             });
-          }
-
-          // Kalshi reference row is full-game only — not offered for F5 periods.
-          if(marketKey === 'h2h'){
-            const kRow = kalshiRowFor(game, team);
-            if(kRow){
-              const kr = document.createElement('div');
-              kr.className = 'book-row kalshi-row';
-              kr.innerHTML = `
-                <div class="kalshi-badge">Kalshi</div>
-                <span class="kalshi-note">prediction market · ${kRow.cents}¢</span>
-                <span class="book-odds ${kRow.american>0?'pos':'neg'}">${fmtAmerican(kRow.american)}</span>
-                <a class="book-link-btn" href="${kRow.link}" target="_blank" rel="noopener" title="Open this market on Kalshi">↗</a>
-              `;
-              block.appendChild(kr);
-            }
           }
           card.appendChild(block);
         });
@@ -717,7 +694,7 @@
         const alreadyLoaded = !!state.propsCache[game.id];
         const unavailableMsg = state.propsUnavailable[game.id];
         // Props open/closed state lives in state.propsOpen so it survives re-renders
-        // triggered by the weather/Kalshi batch or a fallback score render (audit 6.1a).
+        // triggered by the weather/pitchers batch or a fallback score render (audit 6.1a).
         const isOpen = !!state.propsOpen[game.id];
         const toggleBtn = document.createElement('button');
         toggleBtn.className = 'ghost';

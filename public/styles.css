@@ -210,7 +210,6 @@
     padding:4px 10px; border-radius:5px; letter-spacing:.3px;
     min-width:88px; text-align:center; flex-shrink:0;
   }
-  .book-name-fallback{font-size:12px; font-weight:600; color:var(--text-dim); min-width:88px;}
   .book-odds{
     font-family:var(--font-mono); font-weight:600; font-size:15px;
     margin-left:auto;
@@ -468,18 +467,6 @@
 }
 .flag-chip.warn{background:var(--warn); color:#1B1B1B;}
 .flag-chip.info{background:var(--bg-raised); color:var(--text-dim); border:1px solid var(--border);}
-
-/* ---------- Kalshi reference row ---------- */
-.book-row.kalshi-row{
-  border:1px dashed var(--border); background:transparent; margin-top:8px;
-}
-.kalshi-badge{
-  font-family:var(--font-display); font-weight:600; font-size:15px;
-  padding:4px 10px; border-radius:5px; letter-spacing:.3px;
-  min-width:88px; text-align:center; flex-shrink:0;
-  background:transparent; border:1.5px solid var(--good); color:var(--good);
-}
-.kalshi-note{font-size:10px; color:var(--text-faint); margin-left:4px;}
 
 /* ---------- My books ---------- */
 .mybook-grid{display:flex; flex-wrap:wrap; gap:8px;}
