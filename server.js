@@ -22,6 +22,11 @@ const PROP_MARKETS = {
   icehockey_nhl: ['player_points', 'player_assists', 'player_shots_on_goal', 'player_goal_scorer_anytime']
 };
 
+// MLB "first 5 innings" alternate-period markets, requested alongside h2h in
+// the same /odds call (comma-separated markets param) so this doesn't cost a
+// second upstream request — see The Odds API's Game Period Markets list.
+const MLB_F5_MARKETS = ['h2h_1st_5_innings', 'totals_1st_5_innings', 'spreads_1st_5_innings'];
+
 const STATSAPI = 'https://statsapi.mlb.com';
 const SCORES_TTL_MS = 30 * 1000;
 const LIVE_TTL_MS = 20 * 1000;
@@ -146,7 +151,11 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
   app.get('/api/odds/:sport', (req, res) => {
     const { sport } = req.params;
     if (!SPORTS.has(sport)) return res.status(400).json({ error: 'Unknown sport' });
-    proxy(`/v4/sports/${sport}/odds/?regions=us,us2&markets=h2h&oddsFormat=american&includeLinks=true&includeSids=true`, res);
+    // MLB only: full-game spreads/totals alongside moneyline, in the same call
+    // as the F5 markets — Board's Game Lines grid needs Spread/Total/Money for
+    // MLB specifically (matches the F5 toggle, which is also MLB-only).
+    const markets = sport === 'baseball_mlb' ? ['h2h', 'spreads', 'totals', ...MLB_F5_MARKETS] : ['h2h'];
+    proxy(`/v4/sports/${sport}/odds/?regions=us,us2&markets=${markets.join(',')}&oddsFormat=american&includeLinks=true&includeSids=true`, res);
   });
 
   // Live/recent scores. Cached on a much shorter TTL than odds (SCORES_TTL_MS)
@@ -382,6 +391,38 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
         lineupPosted: awayBatIds.length > 0,
         batters: battersPayload(awayBatIds, awayHit, homePitcherHand)
       }
+    });
+  }
+
+  // Both starting pitchers for a scheduled MLB game — a lighter sibling of
+  // /api/hr-matchups/mlb (no splits/lineups), shown automatically on every
+  // MLB board card rather than opt-in. Shares getMlbScheduleGame's cached
+  // schedule fetch, so this doesn't cost an extra StatsAPI call per card.
+  app.get('/api/pitchers/mlb', (req, res) => {
+    handlePitchers(req, res).catch(err => {
+      console.error(`Pitchers failed: ${err && err.message || err}`);
+      if (!res.headersSent) res.status(502).json({ error: 'Stats service unavailable' });
+    });
+  });
+
+  async function handlePitchers(req, res){
+    const { home, away, date } = req.query;
+    if (!home || !away || !date) return res.status(400).json({ error: 'home, away, and date are required' });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'Bad date' });
+
+    let mg;
+    try {
+      mg = await getMlbScheduleGame(date, home, away);
+    } catch (err) {
+      return sendUpstreamError(res, err);
+    }
+    if (!mg) return res.json({ matched: false });
+
+    const toPitcher = p => (p && p.id) ? { id: p.id, name: p.fullName || null } : null;
+    res.json({
+      matched: true,
+      home: toPitcher(mg.teams.home.probablePitcher),
+      away: toPitcher(mg.teams.away.probablePitcher)
     });
   }
 
