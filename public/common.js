@@ -227,6 +227,14 @@ function removeLegFromSlip(id){
   saveSlip(getSlip().filter(l=>l.id!==id));
   updateSlipBadge();
 }
+// Records which of a leg's books the user picked to bet with — the slip page
+// no longer auto-picks "best price"; the ranking of the rest lives on Cheatsheet.
+function updateLegBook(id, bookKey){
+  const s = getSlip();
+  const leg = s.find(l=>l.id===id);
+  if(leg) leg.selectedBookKey = bookKey;
+  saveSlip(s);
+}
 
 // ---------- sport persistence ----------
 const SPORT_KEY = 'lw_sport';
@@ -247,6 +255,7 @@ function renderNav(activePage){
     ['home','/','🏠','Home'],
     ['board','/board.html','📊','Board'],
     ['getprops','/getprops.html','🎯','Get Props'],
+    ['cheatsheet','/cheatsheet.html','📋','Cheatsheet'],
     ['record','/record.html','📈','Record'],
     ['slip','/slip.html','🎟️','Slip']
   ];
