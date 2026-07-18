@@ -22,9 +22,13 @@ const PROP_MARKETS = {
   icehockey_nhl: ['player_points', 'player_assists', 'player_shots_on_goal', 'player_goal_scorer_anytime']
 };
 
-// MLB "first 5 innings" alternate-period markets, requested alongside h2h in
-// the same /odds call (comma-separated markets param) so this doesn't cost a
-// second upstream request — see The Odds API's Game Period Markets list.
+// MLB "first 5 innings" alternate-period markets. NOTE: the bulk /odds
+// endpoint used below only serves h2h/spreads/totals — asking it for these
+// period markets returns 422 INVALID_MARKET for the *entire* request, which
+// silently kills the full-game odds too. Period markets are only available
+// per event via /v4/sports/{sport}/events/{eventId}/odds (one extra upstream
+// call per game), which isn't wired up yet — so these are unused for now and
+// the F5 tab just shows its "not posted yet" empty state.
 const MLB_F5_MARKETS = ['h2h_1st_5_innings', 'totals_1st_5_innings', 'spreads_1st_5_innings'];
 
 const STATSAPI = 'https://statsapi.mlb.com';
@@ -151,10 +155,10 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
   app.get('/api/odds/:sport', (req, res) => {
     const { sport } = req.params;
     if (!SPORTS.has(sport)) return res.status(400).json({ error: 'Unknown sport' });
-    // MLB only: full-game spreads/totals alongside moneyline, in the same call
-    // as the F5 markets — Board's Game Lines grid needs Spread/Total/Money for
-    // MLB specifically (matches the F5 toggle, which is also MLB-only).
-    const markets = sport === 'baseball_mlb' ? ['h2h', 'spreads', 'totals', ...MLB_F5_MARKETS] : ['h2h'];
+    // MLB only: full-game spreads/totals alongside moneyline — Board's Game
+    // Lines grid needs Spread/Total/Money for MLB specifically. F5 markets
+    // are deliberately NOT requested here (see MLB_F5_MARKETS above).
+    const markets = sport === 'baseball_mlb' ? ['h2h', 'spreads', 'totals'] : ['h2h'];
     proxy(`/v4/sports/${sport}/odds/?regions=us,us2&markets=${markets.join(',')}&oddsFormat=american&includeLinks=true&includeSids=true`, res);
   });
 
