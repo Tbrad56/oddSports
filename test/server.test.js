@@ -47,13 +47,20 @@ test('proxies a valid sport, appends key upstream, passes body and quota header 
   assert.match(f.calls[0], /^https:\/\/api\.the-odds-api\.com\/v4\/sports\/basketball_nba\/odds\/\?regions=us,us2&markets=h2h&oddsFormat=american&includeLinks=true&includeSids=true&apiKey=sekret$/);
 });
 
-test('MLB odds request includes full-game spreads/totals and F5 markets in one call', async () => {
+test('MLB odds request includes full-game spreads/totals in one call', async () => {
   const f = fakeFetch(() => okResponse([]));
   const app = createApp({ apiKey: 'k', fetchFn: f });
   const res = await request(app).get('/api/odds/baseball_mlb');
   assert.equal(res.status, 200);
-  assert.equal(f.calls.length, 1, 'extra markets must not cost a second upstream request');
-  assert.match(f.calls[0], /markets=h2h,spreads,totals,h2h_1st_5_innings,totals_1st_5_innings,spreads_1st_5_innings&/);
+  assert.equal(f.calls.length, 1);
+  assert.match(f.calls[0], /markets=h2h,spreads,totals&/);
+});
+
+test('MLB odds request omits F5 markets (bulk endpoint 422s the whole request if asked for them)', async () => {
+  const f = fakeFetch(() => okResponse([]));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  await request(app).get('/api/odds/baseball_mlb');
+  assert.doesNotMatch(f.calls[0], /1st_5_innings/);
 });
 
 test('non-MLB odds request does not include F5 markets', async () => {
