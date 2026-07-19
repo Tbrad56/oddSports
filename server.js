@@ -129,6 +129,33 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     return body;
   }
 
+  // Generic cached JSON fetch for the other free public stat hosts (ESPN's
+  // site API, NHL's api-web). Same cache map and error shape as fetchStats.
+  async function fetchExternal(url, ttlMs){
+    const hit = statsCache.get(url);
+    if (hit && now() < hit.expires) return hit.body;
+    let resp;
+    try {
+      resp = await fetchFn(url);
+    } catch (e) {
+      console.error(`External fetch failed for ${url}: ${e.message}`);
+      throw { kind: 'stats' };
+    }
+    if (!resp.ok) {
+      console.error(`External ${resp.status} for ${url}`);
+      throw { kind: 'stats' };
+    }
+    let body;
+    try {
+      body = await resp.json();
+    } catch (e) {
+      console.error(`External returned unparseable JSON for ${url}`);
+      throw { kind: 'stats' };
+    }
+    statsCache.set(url, { body, expires: now() + ttlMs });
+    return body;
+  }
+
   function normName(s){
     return String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\./g, '').trim();
   }
@@ -151,6 +178,110 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
       date: s.date
     }));
   }
+
+  // ---------- Player stat search (all free, keyless public APIs) ----------
+  // ESPN's search covers every league we track and returns headshots;
+  // stats come from ESPN's athlete overview, except MLB which gets the far
+  // richer StatsAPI treatment (plus Statcast via the static JSON on the page).
+  const ESPN_LEAGUES = {
+    // ESPN league label (from search results) -> [espn sport path, espn league path, our display tag]
+    'NBA':   ['basketball', 'nba', 'NBA'],
+    'WNBA':  ['basketball', 'wnba', 'WNBA'],
+    'NFL':   ['football', 'nfl', 'NFL'],
+    'NHL':   ['hockey', 'nhl', 'NHL'],
+    'MLB':   ['baseball', 'mlb', 'MLB'],
+    'NCAAM': ['basketball', 'mens-college-basketball', 'NCAAM'],
+    'NCAAF': ['football', 'college-football', 'NCAAF'],
+    'UFC':   ['mma', 'ufc', 'UFC'],
+    'English Premier League': ['soccer', 'eng.1', 'EPL'],
+    'Premier League': ['soccer', 'eng.1', 'EPL']
+  };
+  const STATS_TTL_MS = 6 * 60 * 60 * 1000;
+
+  app.get('/api/stats/search', (req, res) => {
+    (async () => {
+      const q = String(req.query.q || '').trim();
+      if (q.length < 2) return res.json({ results: [] });
+      if (q.length > 60) return res.status(400).json({ error: 'Query too long' });
+      const data = await fetchExternal(
+        `https://site.web.api.espn.com/apis/search/v2?query=${encodeURIComponent(q)}&limit=40`,
+        30 * 60 * 1000
+      );
+      const results = [];
+      (data.results || []).forEach(r => {
+        if (r.type !== 'player') return;
+        (r.contents || []).forEach(c => {
+          const league = ESPN_LEAGUES[c.description];
+          if (!league) return; // league we don't track
+          // uid like "s:40~l:46~a:1966" — the athlete id is the a: part
+          const m = /~a:(\d+)/.exec(c.uid || '');
+          if (!m) return;
+          results.push({
+            name: c.displayName,
+            league: league[2],
+            leagueKey: `${league[0]}/${league[1]}`,
+            athleteId: m[1],
+            headshot: (c.image && c.image.default) || null
+          });
+        });
+      });
+      res.json({ results: results.slice(0, 25) });
+    })().catch(err => sendUpstreamError(res, err));
+  });
+
+  app.get('/api/stats/player', (req, res) => {
+    (async () => {
+      const { leagueKey, id, name } = req.query;
+      if (!/^\d{1,10}$/.test(String(id || ''))) return res.status(400).json({ error: 'Bad athlete id' });
+      const known = Object.values(ESPN_LEAGUES).some(([s, l]) => `${s}/${l}` === leagueKey);
+      if (!known) return res.status(400).json({ error: 'Unknown league' });
+
+      const out = { espn: null, mlb: null };
+      try {
+        const ov = await fetchExternal(
+          `https://site.web.api.espn.com/apis/common/v3/sports/${leagueKey}/athletes/${id}/overview`,
+          STATS_TTL_MS
+        );
+        const st = ov.statistics || {};
+        out.espn = {
+          labels: st.labels || [],
+          splits: (st.splits || []).map(s => ({ name: s.displayName, stats: s.stats || [] }))
+        };
+      } catch (e) { /* stat block just stays empty for this league */ }
+
+      // MLB bonus: season hitting/pitching from StatsAPI, matched by name
+      if (leagueKey === 'baseball/mlb' && name) {
+        try {
+          const season = new Date(now()).getFullYear();
+          const pid = await mlbPlayerId(name, season);
+          if (pid) {
+            const data = await fetchStats(
+              `/api/v1/people/${pid}?hydrate=stats(group=[hitting,pitching],type=[season],season=${season}),currentTeam`,
+              STATS_TTL_MS
+            );
+            const person = (data.people || [])[0];
+            if (person) {
+              const groups = {};
+              (person.stats || []).forEach(sg => {
+                const grp = sg.group && sg.group.displayName;
+                const split = (sg.splits || [])[0];
+                if (grp && split && split.stat) groups[grp] = split.stat;
+              });
+              out.mlb = {
+                mlbId: pid,
+                team: person.currentTeam ? person.currentTeam.name : null,
+                position: person.primaryPosition ? person.primaryPosition.abbreviation : null,
+                season,
+                hitting: groups.hitting || null,
+                pitching: groups.pitching || null
+              };
+            }
+          }
+        } catch (e) { /* MLB enrichment is a bonus */ }
+      }
+      res.json(out);
+    })().catch(err => sendUpstreamError(res, err));
+  });
 
   app.get('/api/odds/:sport', (req, res) => {
     const { sport } = req.params;
