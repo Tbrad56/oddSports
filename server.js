@@ -339,12 +339,38 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     const pitcherIds = [homeP, awayP].filter(Boolean).map(p => p.id);
     const season = date.slice(0, 4);
 
-    let pitchers, homeHit, awayHit;
+    // Career batter-vs-pitcher numbers (one batched call per lineup).
+    // Best-effort: a miss just means no "vs this pitcher" column data.
+    async function getBvp(batterIds, pitcherId){
+      if (!batterIds.length || !pitcherId) return {};
+      const path = `/api/v1/people?personIds=${batterIds.join(',')}&hydrate=stats(group=[hitting],type=[vsPlayerTotal],opposingPlayerId=${pitcherId})`;
+      const out = {};
+      try {
+        const data = await fetchStats(path, 6 * 60 * 60 * 1000);
+        (data.people || []).forEach(p => {
+          const split = (((p.stats || [])[0] || {}).splits || [])[0];
+          if (!split || !split.stat) return;
+          const st = split.stat;
+          out[p.id] = {
+            ab: Number(st.atBats) || 0,
+            hits: Number(st.hits) || 0,
+            hr: Number(st.homeRuns) || 0,
+            avg: st.avg || null,
+            ops: st.ops || null
+          };
+        });
+      } catch (e) { /* column simply stays empty */ }
+      return out;
+    }
+
+    let pitchers, homeHit, awayHit, homeBvp, awayBvp;
     try {
-      [pitchers, homeHit, awayHit] = await Promise.all([
+      [pitchers, homeHit, awayHit, homeBvp, awayBvp] = await Promise.all([
         getPeopleSplits(pitcherIds, 'pitching', season),
         getPeopleSplits(homeBatIds, 'hitting', season),
-        getPeopleSplits(awayBatIds, 'hitting', season)
+        getPeopleSplits(awayBatIds, 'hitting', season),
+        getBvp(homeBatIds, awayP && awayP.id),   // home batters face the away pitcher
+        getBvp(awayBatIds, homeP && homeP.id)    // away batters face the home pitcher
       ]);
     } catch (err) {
       return sendUpstreamError(res, err);
@@ -365,7 +391,7 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
       return { id: pObj.id, name: pd.name, hand: pd.hand, rows };
     }
 
-    function battersPayload(batterIds, batterMap, oppHand){
+    function battersPayload(batterIds, batterMap, oppHand, bvpMap){
       const sitCode = oppHand === 'L' ? 'vl' : oppHand === 'R' ? 'vr' : null;
       return batterIds.map(id => {
         const b = batterMap[id];
@@ -376,7 +402,7 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
         const slg = st.slg !== undefined ? Number(st.slg) : null;
         const hr = st.homeRuns !== undefined ? Number(st.homeRuns) : null;
         const iso = (slg !== null && ba !== null) ? Math.round((slg - ba) * 1000) / 1000 : null;
-        return { id, name: b.name, hand: b.hand, hr, ba, obp, slg, iso };
+        return { id, name: b.name, hand: b.hand, hr, ba, obp, slg, iso, bvp: (bvpMap && bvpMap[id]) || null };
       }).filter(Boolean);
     }
 
@@ -388,12 +414,12 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
       home: {
         pitcher: pitcherPayload(homeP),
         lineupPosted: homeBatIds.length > 0,
-        batters: battersPayload(homeBatIds, homeHit, awayPitcherHand)
+        batters: battersPayload(homeBatIds, homeHit, awayPitcherHand, homeBvp)
       },
       away: {
         pitcher: pitcherPayload(awayP),
         lineupPosted: awayBatIds.length > 0,
-        batters: battersPayload(awayBatIds, awayHit, homePitcherHand)
+        batters: battersPayload(awayBatIds, awayHit, homePitcherHand, awayBvp)
       }
     });
   }

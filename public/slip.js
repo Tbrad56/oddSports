@@ -82,36 +82,56 @@
     renderParlay();
   }
 
-  // One URL that lands the whole slip pre-filled in the book. FanDuel supports
-  // multi-leg addToBetslip built from the sids The Odds API returns; other books
-  // only take one selection per link, so they fall back to per-leg buttons.
+  // One URL that lands the whole slip pre-filled in the book, built from the
+  // sids The Odds API returns. FanDuel's addToBetslip format is stable and
+  // documented in the wild; DraftKings and BetMGM use best-effort community
+  // patterns — worst case the book opens without the slip and the per-leg
+  // buttons below still work. Other books only take one selection per link.
   function multiLegUrlFor(bookKey, rowsPerLeg){
-    if(bookKey.toLowerCase() === 'fanduel' && rowsPerLeg.length && rowsPerLeg.every(r => r.sid && r.marketSid)){
+    const key = bookKey.toLowerCase();
+    if(!rowsPerLeg.length || !rowsPerLeg.every(r => r && r.sid)) return null;
+    if(key === 'fanduel' && rowsPerLeg.every(r => r.marketSid)){
       const params = rowsPerLeg.map((r,i)=>`marketId[${i}]=${encodeURIComponent(r.marketSid)}&selectionId[${i}]=${encodeURIComponent(r.sid)}`).join('&');
       return `https://sportsbook.fanduel.com/addToBetslip?${params}`;
     }
+    if(key === 'draftkings'){
+      // DK event pages accept +-chained outcome ids in one ?outcomes= param.
+      // Reuse the first leg's own event link as the base so the page is real.
+      const base = rowsPerLeg[0].link ? rowsPerLeg[0].link.split('?')[0] : null;
+      if(!base || !/^https:\/\/sportsbook\.draftkings\.com\//.test(base)) return null;
+      return `${base}?outcomes=${rowsPerLeg.map(r=>encodeURIComponent(r.sid)).join('+')}`;
+    }
+    if(key === 'betmgm'){
+      return `https://sports.betmgm.com/en/sports?options=${rowsPerLeg.map(r=>encodeURIComponent(r.sid)).join('-')}&type=Multi`;
+    }
     return null;
   }
+
+  // Books where the combined URL is a community pattern, not an official one.
+  const BEST_EFFORT_MULTI = new Set(['draftkings', 'betmgm']);
 
   // The Gambly-style handoff block: one tap opens the book with the slip loaded.
   function placeButtonsHtml(bookKey, bookName, rowsPerLeg){
     const n = rowsPerLeg.length;
     const multiUrl = multiLegUrlFor(bookKey, rowsPerLeg);
+    let html = '';
     if(multiUrl){
-      return `<a class="place-all-btn" href="${escapeHtml(multiUrl)}" target="_blank" rel="noopener">
+      const beta = BEST_EFFORT_MULTI.has(bookKey.toLowerCase());
+      html += `<a class="place-all-btn" href="${escapeHtml(multiUrl)}" target="_blank" rel="noopener">
           Place all ${n} bet${n===1?'':'s'} on ${escapeHtml(bookName)} ↗
         </a>
-        <div class="place-note">Opens ${escapeHtml(bookName)} with your slip pre-filled — set your wager there.</div>`;
+        <div class="place-note">Opens ${escapeHtml(bookName)} with your slip pre-filled — set your wager there.${beta ? ' If the slip arrives empty, use the per-leg buttons below.' : ''}</div>`;
+      if(!beta) return html;
     }
     if(rowsPerLeg.every(r => r.link)){
       const slip = getSlip();
       const btns = rowsPerLeg.map((r,i)=>
         `<a class="place-leg-btn" href="${escapeHtml(r.link)}" target="_blank" rel="noopener">${escapeHtml(slip[i] ? slip[i].side : 'Leg '+(i+1))} ↗</a>`
       ).join('');
-      return `<div class="place-note" style="margin-top:8px;">${escapeHtml(bookName)} takes one leg per link — tap each to add it to your slip:</div>
+      html += `<div class="place-note" style="margin-top:8px;">${multiUrl ? 'Backup — add ' : escapeHtml(bookName) + ' takes '}one leg per link${multiUrl ? '' : ' — tap each to add it to your slip'}:</div>
         <div class="place-leg-list">${btns}</div>`;
     }
-    return '';
+    return html;
   }
 
   function renderParlay(){
