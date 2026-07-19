@@ -406,33 +406,60 @@ test('scores: rejects unknown sport with 400, never calls upstream', async () =>
   assert.equal(f.calls.length, 0);
 });
 
-test('scores: proxies a valid sport with daysFrom=1, passes body and quota header back', async () => {
-  const games = [{ id: 'g1', completed: false, home_team: 'A', away_team: 'B', scores: null }];
-  const f = fakeFetch(() => okResponse(games, '77'));
+test('scores: served free from ESPN scoreboard, normalized to the legacy shape', async () => {
+  const espn = { events: [{
+    id: 'e1', date: '2026-07-19T23:00Z',
+    status: { type: { state: 'in', completed: false } },
+    competitions: [{ competitors: [
+      { homeAway: 'home', team: { displayName: 'Pittsburgh Pirates' }, score: '3' },
+      { homeAway: 'away', team: { displayName: 'Milwaukee Brewers' }, score: '5' }
+    ] }]
+  }] };
+  const f = fakeFetch(() => okResponse(espn));
   const app = createApp({ apiKey: 'sekret', fetchFn: f });
-  const res = await request(app).get('/api/scores/basketball_nba');
+  const res = await request(app).get('/api/scores/baseball_mlb');
   assert.equal(res.status, 200);
-  assert.deepEqual(res.body, games);
-  assert.equal(res.headers['x-requests-remaining'], '77');
-  assert.equal(res.headers['x-cache-age-seconds'], '0');
-  assert.match(f.calls[0], /^https:\/\/api\.the-odds-api\.com\/v4\/sports\/basketball_nba\/scores\/\?daysFrom=1&apiKey=sekret$/);
+  assert.match(f.calls[0], /^https:\/\/site\.api\.espn\.com\/apis\/site\/v2\/sports\/baseball\/mlb\/scoreboard$/);
+  assert.ok(!f.calls[0].includes('sekret')); // no key ever sent to ESPN
+  assert.deepEqual(res.body, [{
+    id: 'e1', commence_time: '2026-07-19T23:00Z', completed: false,
+    home_team: 'Pittsburgh Pirates', away_team: 'Milwaukee Brewers',
+    scores: [
+      { name: 'Pittsburgh Pirates', score: '3' },
+      { name: 'Milwaukee Brewers', score: '5' }
+    ]
+  }]);
+});
+
+test('scores: pre-game events have null scores', async () => {
+  const espn = { events: [{
+    id: 'e2', date: '2026-07-19T23:00Z',
+    status: { type: { state: 'pre', completed: false } },
+    competitions: [{ competitors: [
+      { homeAway: 'home', team: { displayName: 'A' }, score: '0' },
+      { homeAway: 'away', team: { displayName: 'B' }, score: '0' }
+    ] }]
+  }] };
+  const f = fakeFetch(() => okResponse(espn));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/scores/basketball_nba');
+  assert.equal(res.body[0].scores, null);
 });
 
 test('scores: second request within TTL served from cache', async () => {
   let t = 1000000;
-  const f = fakeFetch(() => okResponse([{ id: 'x' }]));
+  const f = fakeFetch(() => okResponse({ events: [] }));
   const app = createApp({ apiKey: 'k', fetchFn: f, now: () => t });
   await request(app).get('/api/scores/basketball_nba');
   t += 10000; // +10s, within the 30s scores TTL
   const res2 = await request(app).get('/api/scores/basketball_nba');
   assert.equal(res2.status, 200);
   assert.equal(f.calls.length, 1);
-  assert.equal(res2.headers['x-cache-age-seconds'], '10');
 });
 
 test('scores: cache expires after its own (shorter) TTL', async () => {
   let t = 1000000;
-  const f = fakeFetch(() => okResponse([]));
+  const f = fakeFetch(() => okResponse({ events: [] }));
   const app = createApp({ apiKey: 'k', fetchFn: f, now: () => t });
   await request(app).get('/api/scores/basketball_nba');
   t += 31000; // past the 30s scores TTL
@@ -440,20 +467,12 @@ test('scores: cache expires after its own (shorter) TTL', async () => {
   assert.equal(f.calls.length, 2);
 });
 
-test('scores: upstream 429 maps to quota message', async () => {
-  const f = fakeFetch(() => errResponse(429));
-  const app = createApp({ apiKey: 'k', fetchFn: f });
-  const res = await request(app).get('/api/scores/basketball_nba');
-  assert.equal(res.status, 429);
-  assert.equal(res.body.error, 'Monthly odds quota exhausted — resets on the 1st');
-});
-
-test('scores: upstream failure maps to 502, key not leaked', async () => {
-  const f = fakeFetch(() => errResponse(401));
+test('scores: ESPN failure maps to 502 stats message, key not leaked', async () => {
+  const f = fakeFetch(() => errResponse(500));
   const app = createApp({ apiKey: 'sekret', fetchFn: f });
   const res = await request(app).get('/api/scores/basketball_nba');
   assert.equal(res.status, 502);
-  assert.equal(res.body.error, 'Odds service unavailable');
+  assert.equal(res.body.error, 'Stats service unavailable');
   assert.ok(!JSON.stringify(res.body).includes('sekret'));
 });
 

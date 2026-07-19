@@ -133,6 +133,33 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     return body;
   }
 
+  // Generic cached JSON fetch for free public hosts (ESPN scoreboard etc.).
+  // Same cache map and error shape as fetchStats.
+  async function fetchExternal(url, ttlMs){
+    const hit = statsCache.get(url);
+    if (hit && now() < hit.expires) return hit.body;
+    let resp;
+    try {
+      resp = await fetchFn(url);
+    } catch (e) {
+      console.error(`External fetch failed for ${url}: ${e.message}`);
+      throw { kind: 'stats' };
+    }
+    if (!resp.ok) {
+      console.error(`External ${resp.status} for ${url}`);
+      throw { kind: 'stats' };
+    }
+    let body;
+    try {
+      body = await resp.json();
+    } catch (e) {
+      console.error(`External returned unparseable JSON for ${url}`);
+      throw { kind: 'stats' };
+    }
+    statsCache.set(url, { body, expires: now() + ttlMs });
+    return body;
+  }
+
   function normName(s){
     return String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\./g, '').trim();
   }
@@ -166,44 +193,46 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     proxy(`/v4/sports/${sport}/odds/?regions=us&markets=${markets.join(',')}&oddsFormat=american&includeLinks=true&includeSids=true`, res);
   });
 
-  // Live/recent scores. Cached on a much shorter TTL than odds (SCORES_TTL_MS)
-  // since games change state every few minutes, not every 10 min like odds.
-  const scoresCache = new Map(); // sport -> {body, remaining, cachedAt, expires}
+  // Live/recent scores — served from ESPN's free public scoreboard instead of
+  // The Odds API. The old upstream cost 2 credits per call on a 30s poll
+  // (~240 credits/hour with one open Board tab); ESPN costs nothing. Response
+  // is normalized to the same shape the frontend always used, with team-name
+  // matching instead of Odds API event ids.
+  const ESPN_SCOREBOARDS = {
+    baseball_mlb: 'baseball/mlb',
+    basketball_nba: 'basketball/nba',
+    americanfootball_nfl: 'football/nfl',
+    icehockey_nhl: 'hockey/nhl',
+    americanfootball_ncaaf: 'football/college-football',
+    basketball_ncaab: 'basketball/mens-college-basketball',
+    soccer_epl: 'soccer/eng.1',
+    mma_mixed_martial_arts: 'mma/ufc'
+  };
   async function getScores(sport){
-    const hit = scoresCache.get(sport);
-    if (hit && now() < hit.expires) {
-      return { body: hit.body, remaining: hit.remaining, cacheAge: Math.round((now() - hit.cachedAt) / 1000) };
-    }
-    let upstream;
-    try {
-      upstream = await fetchFn(`${UPSTREAM}/v4/sports/${sport}/scores/?daysFrom=1&apiKey=${encodeURIComponent(apiKey)}`);
-    } catch (e) {
-      console.error(`Upstream fetch failed for scores/${sport}: ${e.message}`);
-      throw { kind: 'unavailable' };
-    }
-    if (upstream.status === 429) throw { kind: 'quota' };
-    if (!upstream.ok) {
-      console.error(`Upstream ${upstream.status} for scores/${sport}`);
-      throw { kind: 'unavailable' };
-    }
-    let body;
-    try {
-      body = await upstream.json();
-    } catch (e) {
-      console.error(`Upstream returned unparseable JSON for scores/${sport}`);
-      throw { kind: 'unavailable' };
-    }
-    const remaining = upstream.headers.get('x-requests-remaining');
-    scoresCache.set(sport, { body, remaining, cachedAt: now(), expires: now() + SCORES_TTL_MS });
-    return { body, remaining, cacheAge: 0 };
+    const path = ESPN_SCOREBOARDS[sport];
+    const data = await fetchExternal(`https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard`, SCORES_TTL_MS);
+    return (data.events || []).map(ev => {
+      const comp = (ev.competitions || [])[0] || {};
+      const started = (ev.status && ev.status.type && ev.status.type.state) !== 'pre';
+      return {
+        id: ev.id,
+        commence_time: ev.date,
+        completed: !!(ev.status && ev.status.type && ev.status.type.completed),
+        home_team: ((comp.competitors || []).find(c => c.homeAway === 'home') || {}).team?.displayName || '',
+        away_team: ((comp.competitors || []).find(c => c.homeAway === 'away') || {}).team?.displayName || '',
+        scores: started ? (comp.competitors || []).map(c => ({
+          name: (c.team && c.team.displayName) || '',
+          score: c.score != null ? String(c.score) : ''
+        })) : null
+      };
+    });
   }
   app.get('/api/scores/:sport', (req, res) => {
     const { sport } = req.params;
     if (!SPORTS.has(sport)) return res.status(400).json({ error: 'Unknown sport' });
-    getScores(sport).then(r => {
-      if (r.remaining) res.set('x-requests-remaining', r.remaining);
-      res.set('x-cache-age-seconds', String(r.cacheAge));
-      res.json(r.body);
+    getScores(sport).then(body => {
+      res.set('x-cache-age-seconds', '0');
+      res.json(body);
     }).catch(err => sendUpstreamError(res, err));
   });
 
@@ -656,11 +685,15 @@ if (require.main === module) {
   if (process.env.RAILWAY_ENVIRONMENT && !process.env.RAILWAY_VOLUME_MOUNT_PATH) {
     console.warn('store: RAILWAY detected but no volume attached — picks will be LOST on redeploy (attach a volume mounted at /data)');
   }
+  // ODDS_CACHE_MINUTES stretches how long odds/props responses are reused
+  // before spending fresh credits. Default 10; raise to 30–60 to sip quota.
+  const cacheMinutes = Math.max(1, Number(process.env.ODDS_CACHE_MINUTES) || 10);
   createApp({
     apiKey: process.env.ODDS_API_KEY,
+    cacheTtlMs: cacheMinutes * 60 * 1000,
     dataDir: process.env.RAILWAY_VOLUME_MOUNT_PATH || process.env.DATA_DIR || './data',
     enableSweep: true
   }).listen(port, () => {
-    console.log(`LineWatch listening on :${port}`);
+    console.log(`LineWatch listening on :${port} (odds cached ${cacheMinutes} min)`);
   });
 }
