@@ -868,3 +868,153 @@ test('NFL props: Sleeper dump is fetched once across requests (24h cache)', asyn
   assert.equal(f.calls.filter(u => u.includes('api.sleeper.app')).length, 1);
   assert.equal(f.calls.filter(u => u.includes('api.the-odds-api.com')).length, 2);
 });
+
+// ---------- /api/matchups/nfl ----------
+
+const MATCHUP_DUMP = {
+  // Bengals
+  'qb1': { full_name: 'Joe Burrow', position: 'QB', team: 'CIN', status: 'Active', depth_chart_order: 1 },
+  'qb2': { full_name: 'Backup Guy', position: 'QB', team: 'CIN', status: 'Active', depth_chart_order: 2 },
+  'rb1': { full_name: 'Chase Brown', position: 'RB', team: 'CIN', status: 'Active', depth_chart_order: 1 },
+  'rb2': { full_name: 'Second Back', position: 'RB', team: 'CIN', status: 'Active', depth_chart_order: 2 },
+  'rb3': { full_name: 'Third Back', position: 'RB', team: 'CIN', status: 'Active', depth_chart_order: 3 },
+  'wr1': { full_name: 'Top Wideout', position: 'WR', team: 'CIN', status: 'Active', depth_chart_order: 1 },
+  'wr2': { full_name: 'Deep Threat', position: 'WR', team: 'CIN', status: 'Active', depth_chart_order: 2 },
+  'te1': { full_name: 'Tight Endman', position: 'TE', team: 'CIN', status: 'Active', depth_chart_order: 1 },
+  'wr3': { full_name: 'Fourth Option', position: 'WR', team: 'CIN', status: 'Active', depth_chart_order: 3 },
+  // Steelers
+  'pqb': { full_name: 'Steel Passer', position: 'QB', team: 'PIT', status: 'Active', depth_chart_order: 1 },
+  'prb': { full_name: 'Steel Runner', position: 'RB', team: 'PIT', status: 'Active', depth_chart_order: 1 },
+  'pwr': { full_name: 'Steel Catcher', position: 'WR', team: 'PIT', status: 'Active', depth_chart_order: 1 },
+  // noise
+  'k1': { full_name: 'Some Kicker', position: 'K', team: 'CIN', status: 'Active', depth_chart_order: 1 }
+};
+
+const MATCHUP_STATS_2025 = {
+  qb1: { gp: 17, pass_yd: 4500, pass_td: 34 },
+  qb2: { gp: 3, pass_yd: 300, pass_td: 2 },
+  rb1: { gp: 17, rush_yd: 990, rush_td: 7, rec: 34 },
+  rb2: { gp: 10, rush_yd: 450, rush_td: 2, rec: 10 },
+  rb3: { gp: 8, rush_yd: 120, rush_td: 0, rec: 2 },
+  wr1: { gp: 16, rec: 117, rec_yd: 1500, rec_td: 12 },
+  wr2: { gp: 17, rec: 68, rec_yd: 900, rec_td: 6 },
+  te1: { gp: 17, rec: 51, rec_yd: 510, rec_td: 3 },
+  wr3: { gp: 12, rec: 20, rec_yd: 190, rec_td: 1 },
+  pqb: { gp: 17, pass_yd: 3400, pass_td: 17 },
+  prb: { gp: 17, rush_yd: 1190, rush_td: 9, rec: 17 },
+  pwr: { gp: 17, rec: 85, rec_yd: 1020, rec_td: 5 }
+};
+
+const ESPN_TEAMS_BODY = { sports: [{ leagues: [{ teams: [
+  { team: { id: '4', displayName: 'Cincinnati Bengals' } },
+  { team: { id: '23', displayName: 'Pittsburgh Steelers' } }
+] }] }] };
+
+function espnStatsBody(passYds, passRank, rushYds, rushRank, pts, ptsRank){
+  return { results: { opponent: [
+    { name: 'passing', stats: [{ name: 'passingYardsPerGame', value: passYds, rank: passRank }] },
+    { name: 'rushing', stats: [{ name: 'rushingYardsPerGame', value: rushYds, rank: rushRank }] },
+    { name: 'scoring', stats: [{ name: 'totalPointsPerGame', value: pts, rank: ptsRank }] }
+  ] } };
+}
+
+const JULY_2026 = Date.UTC(2026, 6, 19);
+
+function matchupApp(overrides = {}){
+  const f = routedFetch([
+    ...(overrides.routes || []),
+    ['api.sleeper.app/v1/players/nfl', okResponse(MATCHUP_DUMP)],
+    ['api.sleeper.app/v1/stats/nfl/regular/2026', okResponse({ qb1: { gp: 0 } })],
+    ['api.sleeper.app/v1/stats/nfl/regular/2025', okResponse(MATCHUP_STATS_2025)],
+    ['/nfl/teams/4/statistics', okResponse(espnStatsBody(245.6, 26, 147.1, 32, 28.9, 30))],
+    ['/nfl/teams/23/statistics', okResponse(espnStatsBody(204.6, 8, 105.7, 9, 19.3, 6))],
+    ['site.api.espn.com/apis/site/v2/sports/football/nfl/teams', okResponse(ESPN_TEAMS_BODY)]
+  ]);
+  const app = createApp({ apiKey: 'k', fetchFn: f, now: () => (overrides.now || JULY_2026), ...(overrides.opts || {}) });
+  return { app, f };
+}
+
+const MATCHUP_QUERY = { home: 'Cincinnati Bengals', away: 'Pittsburgh Steelers' };
+
+test('matchups: missing params -> 400, nothing fetched', async () => {
+  const { app, f } = matchupApp();
+  const res = await request(app).get('/api/matchups/nfl').query({ home: 'Cincinnati Bengals' });
+  assert.equal(res.status, 400);
+  assert.equal(f.calls.length, 0);
+});
+
+test('matchups: unknown team name -> matched:false', async () => {
+  const { app } = matchupApp();
+  const res = await request(app).get('/api/matchups/nfl').query({ home: 'Cincinnati Bengals', away: 'London Monarchs' });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.matched, false);
+});
+
+test('matchups: key players ranked by season stat totals with per-game averages', async () => {
+  const { app } = matchupApp();
+  const res = await request(app).get('/api/matchups/nfl').query(MATCHUP_QUERY);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.matched, true);
+  assert.equal(res.body.season, 2025, 'must fall back to the completed season when the current one has no games played');
+
+  const home = res.body.home;
+  assert.equal(home.team, 'Cincinnati Bengals');
+  const names = home.players.map(p => p.name);
+  // QB1 by pass_yd, top-2 RBs by rush_yd, top-3 WR/TEs by rec_yd; kicker excluded
+  assert.deepEqual(names, ['Joe Burrow', 'Chase Brown', 'Second Back', 'Top Wideout', 'Deep Threat', 'Tight Endman']);
+
+  const qb = home.players[0];
+  assert.equal(qb.pos, 'QB');
+  assert.equal(qb.id, 'qb1');
+  assert.equal(qb.gp, 17);
+  assert.equal(qb.passYds, 264.7);  // 4500/17
+  assert.equal(qb.passTds, 2.0);    // 34/17
+
+  const rb = home.players[1];
+  assert.equal(rb.rushYds, 58.2);   // 990/17
+  assert.equal(rb.rushTds, 0.4);
+  assert.equal(rb.rec, 2.0);
+
+  const wr = home.players[3];
+  assert.equal(wr.rec, 7.3);        // 117/16
+  assert.equal(wr.recYds, 93.8);    // 1500/16
+  assert.equal(wr.recTds, 0.8);
+
+  assert.equal(res.body.away.players[0].name, 'Steel Passer');
+});
+
+test('matchups: defense blocks carry ESPN values and ranks', async () => {
+  const { app } = matchupApp();
+  const res = await request(app).get('/api/matchups/nfl').query(MATCHUP_QUERY);
+  assert.deepEqual(res.body.home.defense, {
+    passYdsAllowed: { value: 245.6, rank: 26 },
+    rushYdsAllowed: { value: 147.1, rank: 32 },
+    ptsAllowed: { value: 28.9, rank: 30 }
+  });
+  assert.equal(res.body.away.defense.ptsAllowed.rank, 6);
+});
+
+test('matchups: ESPN failure -> defense null, players still returned', async () => {
+  const { app } = matchupApp({ routes: [['site.api.espn.com', errResponse(500)]] });
+  const res = await request(app).get('/api/matchups/nfl').query(MATCHUP_QUERY);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.matched, true);
+  assert.equal(res.body.home.defense, null);
+  assert.ok(res.body.home.players.length > 0);
+});
+
+test('matchups: Sleeper stats failure -> statsUnavailable body, not a 500', async () => {
+  const { app } = matchupApp({ routes: [['api.sleeper.app/v1/stats', errResponse(500)]] });
+  const res = await request(app).get('/api/matchups/nfl').query(MATCHUP_QUERY);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.matched, true);
+  assert.equal(res.body.statsUnavailable, true);
+});
+
+test('matchups: repeat request within TTL costs no new upstream calls', async () => {
+  const { app, f } = matchupApp();
+  await request(app).get('/api/matchups/nfl').query(MATCHUP_QUERY);
+  const callsAfterFirst = f.calls.length;
+  await request(app).get('/api/matchups/nfl').query(MATCHUP_QUERY);
+  assert.equal(f.calls.length, callsAfterFirst, 'all Sleeper/ESPN data must be served from cache on a repeat');
+});

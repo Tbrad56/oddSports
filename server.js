@@ -48,6 +48,18 @@ const MLB_MARKET_STATS = {
   batter_home_runs:   { group: 'hitting',  stat: 'homeRuns',   window: 15 }
 };
 
+// Odds API full team names -> the abbreviations Sleeper's player dump uses.
+const NFL_TEAM_ABBREV = {
+  'Arizona Cardinals': 'ARI', 'Atlanta Falcons': 'ATL', 'Baltimore Ravens': 'BAL', 'Buffalo Bills': 'BUF',
+  'Carolina Panthers': 'CAR', 'Chicago Bears': 'CHI', 'Cincinnati Bengals': 'CIN', 'Cleveland Browns': 'CLE',
+  'Dallas Cowboys': 'DAL', 'Denver Broncos': 'DEN', 'Detroit Lions': 'DET', 'Green Bay Packers': 'GB',
+  'Houston Texans': 'HOU', 'Indianapolis Colts': 'IND', 'Jacksonville Jaguars': 'JAX', 'Kansas City Chiefs': 'KC',
+  'Las Vegas Raiders': 'LV', 'Los Angeles Chargers': 'LAC', 'Los Angeles Rams': 'LAR', 'Miami Dolphins': 'MIA',
+  'Minnesota Vikings': 'MIN', 'New England Patriots': 'NE', 'New Orleans Saints': 'NO', 'New York Giants': 'NYG',
+  'New York Jets': 'NYJ', 'Philadelphia Eagles': 'PHI', 'Pittsburgh Steelers': 'PIT', 'San Francisco 49ers': 'SF',
+  'Seattle Seahawks': 'SEA', 'Tampa Bay Buccaneers': 'TB', 'Tennessee Titans': 'TEN', 'Washington Commanders': 'WAS'
+};
+
 function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now = Date.now, dataDir = null, enableSweep = false } = {}) {
   const app = express();
   const cache = new Map(); // upstreamPath -> {body, remaining, cachedAt, expires}
@@ -475,6 +487,119 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
       matched: true,
       home: toPitcher(mg.teams.home.probablePitcher),
       away: toPitcher(mg.teams.away.probablePitcher)
+    });
+  }
+
+  // ---------- NFL matchups (Sleeper stats + ESPN defense) ----------
+
+  // Generic cached JSON fetch for absolute URLs (Sleeper stats, ESPN) — the
+  // odds cache is path-keyed against The Odds API and fetchStats is pinned to
+  // MLB's StatsAPI, so the NFL stats sources get their own small cache.
+  const jsonCache = new Map(); // absolute URL -> {body, expires}
+  async function fetchCachedJson(url, ttlMs){
+    const hit = jsonCache.get(url);
+    if (hit && now() < hit.expires) return hit.body;
+    const resp = await fetchFn(url);
+    if (!resp.ok) throw new Error(`${resp.status} for ${url}`);
+    const body = await resp.json();
+    jsonCache.set(url, { body, expires: now() + ttlMs });
+    return body;
+  }
+
+  const NFL_STATS_TTL_MS = 6 * 60 * 60 * 1000;
+
+  // Season aggregates for every player. Until the current season has games
+  // played (offseason/preseason), serve the completed previous season so the
+  // matchup view isn't a wall of zeros — the response says which season.
+  async function getNflSeasonStats(){
+    const year = new Date(now()).getUTCFullYear();
+    for (const season of [year, year - 1]) {
+      const stats = await fetchCachedJson(`https://api.sleeper.app/v1/stats/nfl/regular/${season}`, NFL_STATS_TTL_MS);
+      if (Object.values(stats || {}).some(s => s && s.gp > 0)) return { season, stats };
+    }
+    return null;
+  }
+
+  // Opponent (allowed) per-game stats for one team from ESPN's public API,
+  // ranks included (1 = fewest allowed). Returns null when the team or the
+  // stats can't be found — the matchup response just omits that block.
+  async function getEspnDefense(teamName){
+    const list = await fetchCachedJson('https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams', 24 * 60 * 60 * 1000);
+    const teams = ((((list.sports || [])[0] || {}).leagues || [])[0] || {}).teams || [];
+    const entry = teams.find(t => t.team && t.team.displayName === teamName);
+    if (!entry) return null;
+    const stats = await fetchCachedJson(`https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/${entry.team.id}/statistics`, NFL_STATS_TTL_MS);
+    const cats = (stats.results || {}).opponent || [];
+    const pick = (cat, name) => {
+      const c = cats.find(x => x.name === cat);
+      const s = c && (c.stats || []).find(x => x.name === name);
+      return s ? { value: s.value, rank: s.rank } : null;
+    };
+    const defense = {
+      passYdsAllowed: pick('passing', 'passingYardsPerGame'),
+      rushYdsAllowed: pick('rushing', 'rushingYardsPerGame'),
+      ptsAllowed: pick('scoring', 'totalPointsPerGame')
+    };
+    return (defense.passYdsAllowed || defense.rushYdsAllowed || defense.ptsAllowed) ? defense : null;
+  }
+
+  // QB1, top-2 RBs, top-3 WR/TEs for a team — ranked by season stat totals
+  // (depth chart as tiebreaker), emitted with per-game averages.
+  function keyPlayersFor(abbrev, players, stats){
+    const onTeam = Object.entries(players).filter(([, p]) => p && p.team === abbrev);
+    const stat = (id, k) => (stats[id] && Number(stats[id][k])) || 0;
+    const depth = p => (p.depth_chart_order == null ? 99 : p.depth_chart_order);
+    const top = (positions, key, n) => onTeam
+      .filter(([, p]) => positions.includes(p.position))
+      .sort(([ia, pa], [ib, pb]) => (stat(ib, key) - stat(ia, key)) || (depth(pa) - depth(pb)))
+      .slice(0, n);
+    const per = (id, k, gp) => gp ? Math.round(stat(id, k) / gp * 10) / 10 : null;
+    const payload = ([id, p]) => {
+      const gp = stat(id, 'gp');
+      const base = { id, name: p.full_name, pos: p.position, gp };
+      if (p.position === 'QB') return { ...base, passYds: per(id, 'pass_yd', gp), passTds: per(id, 'pass_td', gp) };
+      if (p.position === 'RB') return { ...base, rushYds: per(id, 'rush_yd', gp), rushTds: per(id, 'rush_td', gp), rec: per(id, 'rec', gp) };
+      return { ...base, rec: per(id, 'rec', gp), recYds: per(id, 'rec_yd', gp), recTds: per(id, 'rec_td', gp) };
+    };
+    return [
+      ...top(['QB'], 'pass_yd', 1),
+      ...top(['RB'], 'rush_yd', 2),
+      ...top(['WR', 'TE'], 'rec_yd', 3)
+    ].map(payload);
+  }
+
+  app.get('/api/matchups/nfl', (req, res) => {
+    handleNflMatchups(req, res).catch(err => {
+      console.error(`NFL matchups failed: ${err && err.message || err}`);
+      if (!res.headersSent) res.status(502).json({ error: 'Stats service unavailable' });
+    });
+  });
+
+  async function handleNflMatchups(req, res){
+    const { home, away } = req.query;
+    if (!home || !away) return res.status(400).json({ error: 'home and away are required' });
+    const homeAb = NFL_TEAM_ABBREV[home], awayAb = NFL_TEAM_ABBREV[away];
+    if (!homeAb || !awayAb) return res.json({ matched: false });
+
+    let dump, seasonStats;
+    try {
+      dump = await getSleeperPlayers();
+      seasonStats = await getNflSeasonStats();
+    } catch (e) {
+      return res.json({ matched: true, statsUnavailable: true });
+    }
+    if (!seasonStats) return res.json({ matched: true, statsUnavailable: true });
+
+    // Defense blocks are best-effort: ESPN being down never blocks the players.
+    const [homeDef, awayDef] = await Promise.all(
+      [home, away].map(t => getEspnDefense(t).catch(() => null))
+    );
+
+    res.json({
+      matched: true,
+      season: seasonStats.season,
+      home: { team: home, players: keyPlayersFor(homeAb, dump.players, seasonStats.stats), defense: homeDef },
+      away: { team: away, players: keyPlayersFor(awayAb, dump.players, seasonStats.stats), defense: awayDef }
     });
   }
 
