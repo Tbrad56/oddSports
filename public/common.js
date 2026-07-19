@@ -256,6 +256,7 @@ function renderNav(activePage){
     ['board','/board.html','📊','Board'],
     ['getprops','/getprops.html','🎯','Get Props'],
     ['stats','/stats.html','🔎','Stats'],
+    ['nba','/nba.html','🏀','NBA'],
     ['cheatsheet','/cheatsheet.html','📋','Cheatsheet'],
     ['record','/record.html','📈','Record'],
     ['slip','/slip.html','🎟️','Slip']
