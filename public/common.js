@@ -402,7 +402,15 @@ async function fetchMlbLive(){
 }
 
 function findScoreFor(scores, game){
-  return (scores || []).find(s => s.id === game.id) || null;
+  // Scores now come from ESPN, whose event ids differ from The Odds API's —
+  // match on team names (id kept as a fast path if they ever align).
+  const home = (game.home_team || '').trim().toLowerCase();
+  const away = (game.away_team || '').trim().toLowerCase();
+  return (scores || []).find(s =>
+    s.id === game.id ||
+    ((s.home_team || '').trim().toLowerCase() === home &&
+     (s.away_team || '').trim().toLowerCase() === away)
+  ) || null;
 }
 function findMlbLiveFor(liveGames, game){
   const home = (game.home_team || '').trim().toLowerCase();
