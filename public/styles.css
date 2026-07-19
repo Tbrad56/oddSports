@@ -635,7 +635,12 @@
 }
 
 /* ---------- Phone-width layout fixes (audit 2.1-2.4, 2.7a) ---------- */
-.table-scroll{overflow-x:auto; -webkit-overflow-scrolling:touch; max-width:100%;}
+.table-scroll{overflow-x:auto; -webkit-overflow-scrolling:touch; max-width:100%; cursor:grab;}
+.table-scroll.dragging{cursor:grabbing; user-select:none;}
+/* Wide stat tables keep their natural width and scroll/drag sideways instead
+   of squishing unreadably on phones. */
+.table-scroll .props-table{min-width:560px;}
+.table-scroll .props-table th, .table-scroll .props-table td{white-space:nowrap;}
 .layout main{min-width:0;}
 @media (max-width:480px){
   .book-row{flex-wrap:wrap; row-gap:6px;}

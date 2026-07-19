@@ -728,3 +728,32 @@ function teamLogoImg(sportKey, teamName){
   return `<img class="team-logo" src="${url}" width="24" height="24" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
 }
 
+
+// ---------- drag-to-scroll for wide stat tables ----------
+// Touch devices scroll .table-scroll natively; this adds click-drag panning
+// for mouse users. Delegated once per page so dynamically-rendered tables
+// (props, HR matchups) work without re-wiring.
+(function(){
+  let el = null, startX = 0, startLeft = 0, moved = false;
+  document.addEventListener('mousedown', (e)=>{
+    const t = e.target.closest('.table-scroll');
+    if(!t || t.scrollWidth <= t.clientWidth) return;
+    el = t; startX = e.pageX; startLeft = t.scrollLeft; moved = false;
+  });
+  document.addEventListener('mousemove', (e)=>{
+    if(!el) return;
+    const dx = e.pageX - startX;
+    if(Math.abs(dx) > 4){ moved = true; el.classList.add('dragging'); }
+    el.scrollLeft = startLeft - dx;
+  });
+  document.addEventListener('mouseup', ()=>{
+    if(!el) return;
+    el.classList.remove('dragging');
+    el = null;
+  });
+  // Swallow the click that ends a drag so buttons/links under the pointer
+  // don't fire after a pan.
+  document.addEventListener('click', (e)=>{
+    if(moved){ e.stopPropagation(); e.preventDefault(); moved = false; }
+  }, true);
+})();

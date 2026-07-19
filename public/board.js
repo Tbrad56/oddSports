@@ -357,7 +357,7 @@
     }
     const rows = [['season','Season'], ['vl','vs LHB'], ['vr','vs RHB']];
     let html = `<div class="hr-pitcher">${playerAvatarHtml(pitcher.id, 28)}Facing: ${escapeHtml(pitcher.name)} <span class="hand-tag">${escapeHtml(pitcher.hand)}HP</span></div>`;
-    html += `<table class="props-table"><thead><tr><th>Split</th><th>IP</th><th>WHIP</th><th>HR</th><th>HR/9</th></tr></thead><tbody>`;
+    html += `<div class="table-scroll"><table class="props-table"><thead><tr><th>Split</th><th>IP</th><th>WHIP</th><th>HR</th><th>HR/9</th></tr></thead><tbody>`;
     rows.forEach(([code, label])=>{
       const st = pitcher.rows[code];
       if(!st) return;
@@ -366,7 +366,7 @@
         + statCell(st.hr9, 1.4, 0.8, n=>n.toFixed(2))
         + `</tr>`;
     });
-    html += `</tbody></table>`;
+    html += `</tbody></table></div>`;
     return html;
   }
 
@@ -377,7 +377,7 @@
     }
     const scCols = statcast ? '<th>EV</th><th>Barrel%</th><th>HardHit%</th>' : '';
     let html = `<div class="hr-pitcher" style="margin-top:12px;">${escapeHtml(teamName)} lineup <span class="lineup-tag confirmed">✓ Confirmed</span></div>`;
-    html += `<table class="props-table"><thead><tr><th>Batter</th><th>HR odds</th><th>vs This P</th><th>HR</th><th>BA</th><th>OBP</th><th>SLG</th><th>ISO</th>${scCols}</tr></thead><tbody>`;
+    html += `<div class="table-scroll"><table class="props-table"><thead><tr><th>Batter</th><th>HR odds</th><th>vs This P</th><th>HR</th><th>BA</th><th>OBP</th><th>SLG</th><th>ISO</th>${scCols}</tr></thead><tbody>`;
     side.batters.forEach(b=>{
       const odds = hrOdds[b.name.toLowerCase()];
       const style = odds ? bookStyleFor(odds.bookKey) : null;
@@ -408,7 +408,7 @@
         + scCells
         + `</tr>`;
     });
-    html += `</tbody></table>`;
+    html += `</tbody></table></div>`;
     return html;
   }
 
