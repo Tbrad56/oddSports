@@ -1,7 +1,8 @@
 (function(){
   const state = {
     games: [], searchTerm: '', autoRefresh: false, autoTimer: null,
-    propsCache: {},    // gameId -> {game, data}
+    propsCache: {},    // gameId -> {game, data} (flat sports) | {game, groups:{groupId->data}} (NFL)
+    propsActiveTab: {}, // gameId -> NFL_PROP_TABS id, survives re-renders
     propRegistry: {},  // propId -> {side, matchup, rows}
     propIdCounter: 0,
     propsBookFilter: 'all',
@@ -10,6 +11,7 @@
     propsUnavailable: {}, // gameId -> cached "no props" / error message html
     scores: [], mlbLive: [], scoresTimer: null,
     hrCache: {},   // gameId -> hr-matchups API response
+    nflMatchups: {}, // gameId -> /api/matchups/nfl response
     statcast: undefined, // batters map from /statcast/statcast.json, or null if unavailable
     oddsView: {},  // gameId -> 'full' | 'f5', survives re-renders like propsOpen
     pitchers: {}   // gameId -> {matched, home:{id,name}|null, away:{id,name}|null}
@@ -27,6 +29,7 @@
   renderSportChips(document.getElementById('sportChips'), ()=>{
     state.propsCache = {}; state.propRegistry = {}; state.marketCollapsed = {};
     state.propsBookFilter = 'all'; state.propsOpen = {}; state.propsUnavailable = {};
+    state.propsActiveTab = {};
     refresh();
   });
   renderMyBooksList();
@@ -148,11 +151,12 @@
     if(!cached.length){ el.innerHTML = ''; if(label) label.style.display = 'none'; return; }
     if(label) label.style.display = '';
     const booksPresent = new Set();
-    cached.forEach(({data})=>{
-      (data.bookmakers||[]).forEach(b=>{
+    cached.forEach(entry=>{
+      const datas = entry.data ? [entry.data] : Object.values(entry.groups || {});
+      datas.forEach(data=>(data.bookmakers||[]).forEach(b=>{
         const k = b.key.toLowerCase();
         if(TRACKED_KEYS.includes(k)) booksPresent.add(k);
-      });
+      }));
     });
     let html = `<button class="chip props-filter-chip${state.propsBookFilter==='all'?' active':''}" data-book="all">All books</button>`;
     const orderedBooks = [...booksPresent].sort((a,b)=> (a==='fanduel'?-1:b==='fanduel'?1:a.localeCompare(b)));
@@ -171,32 +175,101 @@
     document.querySelectorAll('.props-host[data-loaded="1"]').forEach(host=>{
       const gameId = host.dataset.gameId;
       const cached = state.propsCache[gameId];
-      if(cached) host.innerHTML = buildPropsHtml(cached.game, cached.data, PROP_MARKETS[getSport()] || []);
+      if(!cached) return;
+      host.innerHTML = cached.groups
+        ? buildNflPropsHtml(cached.game)
+        : buildPropsHtml(cached.game, cached.data, PROP_MARKETS[getSport()] || []);
     });
   });
 
+  async function fetchPropGroup(sportKey, gameId, group){
+    const url = `/api/props/${sportKey}/${gameId}` + (group && group !== 'popular' ? `?group=${encodeURIComponent(group)}` : '');
+    const res = await fetch(url);
+    if(!res.ok) throw new Error(`props fetch failed (${res.status})`);
+    return await res.json();
+  }
+
   async function loadProps(game, sportKey, hostEl){
     try{
-      const res = await fetch(`/api/props/${sportKey}/${game.id}`);
-      if(!res.ok){
-        const msg = `<div class="props-block"><span style="color:var(--text-faint); font-size:12.5px;">Props aren't available for this game right now (either not offered yet, or the server couldn't reach the odds provider).</span></div>`;
-        state.propsUnavailable[game.id] = msg;
-        hostEl.innerHTML = msg;
-        return;
-      }
-      const data = await res.json();
+      const data = await fetchPropGroup(sportKey, game.id, null);
       delete state.propsUnavailable[game.id];
-      state.propsCache[game.id] = {game, data};
-      hostEl.innerHTML = buildPropsHtml(game, data, PROP_MARKETS[sportKey]);
+      if(sportKey === 'americanfootball_nfl'){
+        state.propsCache[game.id] = {game, groups: {popular: data}};
+        if(!state.propsActiveTab[game.id]) state.propsActiveTab[game.id] = 'popular';
+        hostEl.innerHTML = buildNflPropsHtml(game);
+      } else {
+        state.propsCache[game.id] = {game, data};
+        hostEl.innerHTML = buildPropsHtml(game, data, PROP_MARKETS[sportKey]);
+      }
       renderBookFilter();
     }catch(e){
-      const msg = `<div class="props-block"><span style="color:var(--text-faint); font-size:12.5px;">Couldn't load props right now.</span></div>`;
+      const msg = `<div class="props-block"><span style="color:var(--text-faint); font-size:12.5px;">Props aren't available for this game right now (either not offered yet, or the server couldn't reach the odds provider).</span></div>`;
       state.propsUnavailable[game.id] = msg;
       hostEl.innerHTML = msg;
     }
   }
 
-  function buildPropsHtml(game, data, markets){
+  // ---------- NFL prop tabs (DraftKings-style categories) ----------
+  // A tab shows every market in its display list that ANY fetched group
+  // carries — Passing shows the core pass yds/TDs (loaded with Popular) plus
+  // the passing bundle once that's been fetched. Merging all fetched groups
+  // into one bookmakers view lets the existing market renderer do the rest.
+  function nflMergedData(entry){
+    const byKey = {};
+    const nflIds = {};
+    Object.values(entry.groups).forEach(data=>{
+      Object.assign(nflIds, data.nflIds || {});
+      (data.bookmakers || []).forEach(bm=>{
+        if(!byKey[bm.key]) byKey[bm.key] = { key: bm.key, title: bm.title, link: bm.link || null, markets: [] };
+        byKey[bm.key].markets = byKey[bm.key].markets.concat(bm.markets || []);
+      });
+    });
+    return { bookmakers: Object.values(byKey), nflIds };
+  }
+
+  function buildNflTabChips(gameId){
+    const active = state.propsActiveTab[gameId] || 'popular';
+    return `<div class="props-group-tabs">` + NFL_PROP_TABS.map(t=>
+      `<button class="chip prop-group-tab${t.id===active?' active':''}" data-game-id="${escapeHtml(gameId)}" data-tab="${t.id}">${escapeHtml(t.label)}</button>`
+    ).join('') + `</div>`;
+  }
+
+  function buildNflPropsHtml(game){
+    const entry = state.propsCache[game.id];
+    if(!entry) return '';
+    const active = state.propsActiveTab[game.id] || 'popular';
+    const tab = NFL_PROP_TABS.find(t=>t.id===active) || NFL_PROP_TABS[0];
+    const body = buildPropsHtml(game, nflMergedData(entry), tab.markets, {
+      emptyMsg: 'No lines posted yet for this group — books usually add these closer to game day.'
+    });
+    return buildNflTabChips(game.id) + body;
+  }
+
+  async function onPropTabClick(btn){
+    const gameId = btn.dataset.gameId;
+    const entry = state.propsCache[gameId];
+    const tab = NFL_PROP_TABS.find(t=>t.id===btn.dataset.tab);
+    if(!entry || !tab) return;
+    state.propsActiveTab[gameId] = tab.id;
+    const host = document.querySelector('.props-host[data-game-id="' + CSS.escape(String(gameId)) + '"]');
+    if(!host) return;
+    if(!entry.groups[tab.id]){
+      host.innerHTML = buildNflTabChips(gameId) +
+        `<div class="props-block"><span class="spinner"></span> <span style="font-size:12.5px; color:var(--text-dim);">Loading ${escapeHtml(tab.label)} props…</span></div>`;
+      try{
+        entry.groups[tab.id] = await fetchPropGroup('americanfootball_nfl', gameId, tab.fetchGroup);
+      }catch(e){
+        // not cached, so the next click on this tab retries
+        host.innerHTML = buildNflTabChips(gameId) +
+          `<div class="props-block"><span style="color:var(--text-faint); font-size:12.5px;">Couldn't load this group right now — click the tab to retry.</span></div>`;
+        return;
+      }
+    }
+    host.innerHTML = buildNflPropsHtml(entry.game);
+    renderBookFilter();
+  }
+
+  function buildPropsHtml(game, data, markets, opts){
     let bms = (data.bookmakers || []).filter(b => TRACKED_KEYS.includes(b.key.toLowerCase()));
     let bookmakersToUse = bms.length ? bms : (data.bookmakers || []);
     if(state.propsBookFilter !== 'all'){
@@ -245,8 +318,10 @@
           side: `${entry.player} ${pointTxt} ${marketLabel(marketKey)}`,
           matchup: `${game.away_team} @ ${game.home_team}`, rows
         };
-        const mlbId = data.mlbIds && data.mlbIds[entry.player.toLowerCase()];
-        const avatar = mlbId ? playerAvatarHtml(mlbId, 20) : emptyAvatarHtml(20);
+        const nameKey = entry.player.toLowerCase();
+        const mlbId = data.mlbIds && data.mlbIds[nameKey];
+        const nflId = data.nflIds && data.nflIds[nameKey];
+        const avatar = mlbId ? playerAvatarHtml(mlbId, 20) : nflId ? nflAvatarHtml(nflId, 20) : emptyAvatarHtml(20);
         html += `<tr>
           <td style="font-weight:600; white-space:nowrap;">${avatar}${escapeHtml(entry.player)}</td>
           <td style="color:var(--text-dim); white-space:nowrap;">${escapeHtml(pointTxt)}</td>
@@ -262,7 +337,7 @@
         const filterName = filterStyle ? filterStyle.name : state.propsBookFilter;
         html += `<span style="color:var(--text-faint); font-size:12.5px;">No ${escapeHtml(filterName)} props for this game — clear the book filter to see all.</span>`;
       } else {
-        html += `<span style="color:var(--text-faint); font-size:12.5px;">No player props posted for this game yet — check back closer to game time.</span>`;
+        html += `<span style="color:var(--text-faint); font-size:12.5px;">${escapeHtml((opts && opts.emptyMsg) || 'No player props posted for this game yet — check back closer to game time.')}</span>`;
       }
     }
     html += '</div>';
@@ -313,7 +388,14 @@
     return `<img class="player-avatar" src="${url}" width="${size}" height="${size}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
   }
 
-  // Placeholder bubble for sports without a wired-up photo source yet (everything but MLB).
+  // Sleeper's public headshot CDN, keyed by the Sleeper player id from nflIds.
+  function nflAvatarHtml(id, size){
+    if(!id) return '';
+    const url = `https://sleepercdn.com/content/nfl/players/${encodeURIComponent(id)}.jpg`;
+    return `<img class="player-avatar" src="${url}" width="${size}" height="${size}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
+  }
+
+  // Placeholder bubble for sports without a wired-up photo source (NCAA, EPL, MMA…).
   function emptyAvatarHtml(size){
     return `<span class="player-avatar player-avatar-empty" style="width:${size}px; height:${size}px;"></span>`;
   }
@@ -451,6 +533,87 @@
     }
   }
 
+  // ---------- NFL matchups (opt-in per game) ----------
+  function ordinal(r){
+    if(r === null || r === undefined) return '—';
+    const s = r % 100;
+    if(s >= 11 && s <= 13) return r + 'th';
+    return r + ({1:'st', 2:'nd', 3:'rd'}[r % 10] || 'th');
+  }
+
+  // Rank banding: 1 = fewest allowed, so a low rank is a tough (green) defense
+  // for the offense's outlook — mirrored from statCell's league-context bands.
+  function defRankCells(d){
+    if(!d) return '<td>—</td><td>—</td>';
+    const cls = d.rank == null ? '' : d.rank <= 10 ? ' class="stat-g"' : d.rank >= 23 ? ' class="stat-r"' : '';
+    return `<td>${Number(d.value).toFixed(1)}</td><td${cls}>${ordinal(d.rank)}</td>`;
+  }
+
+  function nflDefenseTableHtml(teamName, defense){
+    let html = `<div class="hr-pitcher">${escapeHtml(teamName)} defense allows</div>`;
+    if(!defense) return html + `<div class="hr-note">Defense stats unavailable right now.</div>`;
+    html += `<table class="props-table"><thead><tr><th>Stat</th><th>Per game</th><th>Rank</th></tr></thead><tbody>`;
+    html += `<tr><td>Pass yards</td>${defRankCells(defense.passYdsAllowed)}</tr>`;
+    html += `<tr><td>Rush yards</td>${defRankCells(defense.rushYdsAllowed)}</tr>`;
+    html += `<tr><td>Points</td>${defRankCells(defense.ptsAllowed)}</tr>`;
+    html += `</tbody></table>`;
+    return html;
+  }
+
+  function nflOffenseTableHtml(side){
+    let html = `<div class="hr-pitcher" style="margin-top:12px;">${escapeHtml(side.team)} key players</div>`;
+    if(!side.players.length) return html + `<div class="hr-note">No player stats found for this team.</div>`;
+    html += `<table class="props-table"><thead><tr><th>Player</th><th>GP</th><th>Yds/G</th><th>TD/G</th><th>Rec/G</th></tr></thead><tbody>`;
+    side.players.forEach(p=>{
+      // one stat line per player, read through their position's lens
+      const yds = p.pos === 'QB' ? p.passYds : p.pos === 'RB' ? p.rushYds : p.recYds;
+      const tds = p.pos === 'QB' ? p.passTds : p.pos === 'RB' ? p.rushTds : p.recTds;
+      const rec = p.pos === 'QB' ? null : p.rec;
+      const fmt = v => (v === null || v === undefined) ? '—' : v;
+      html += `<tr><td style="font-weight:600; white-space:nowrap;">${nflAvatarHtml(p.id, 22)}${escapeHtml(p.name)} <span class="hand-tag">${escapeHtml(p.pos)}</span></td>
+        <td>${fmt(p.gp)}</td><td>${fmt(yds)}</td><td>${fmt(tds)}</td><td>${fmt(rec)}</td></tr>`;
+    });
+    html += `</tbody></table>`;
+    return html;
+  }
+
+  function buildNflMatchupsHtml(game, data){
+    if(!data.matched){
+      return `<div class="hr-block"><span class="hr-note">Couldn't match this game's teams.</span></div>`;
+    }
+    if(data.statsUnavailable){
+      return `<div class="hr-block"><span class="hr-note">Player stats unavailable right now — try again later.</span></div>`;
+    }
+    let html = '<div class="hr-block">';
+    if(data.season && data.season !== new Date().getFullYear()){
+      html += `<div class="hr-note">Stats from the ${data.season} season — updates once the new season kicks off.</div>`;
+    }
+    // Away offense faces the home defense, and vice versa
+    html += nflDefenseTableHtml(game.home_team, data.home.defense);
+    html += nflOffenseTableHtml(data.away);
+    html += '<div style="height:10px;"></div>';
+    html += nflDefenseTableHtml(game.away_team, data.away.defense);
+    html += nflOffenseTableHtml(data.home);
+    html += `<div class="hr-note">Rank 1 = fewest allowed. Bands are league-average context, not picks.</div>`;
+    html += '</div>';
+    return html;
+  }
+
+  async function loadNflMatchups(game, hostEl){
+    try{
+      const res = await fetch(`/api/matchups/nfl?home=${encodeURIComponent(game.home_team)}&away=${encodeURIComponent(game.away_team)}`);
+      if(!res.ok){
+        hostEl.innerHTML = `<div class="hr-block"><span class="hr-note">Couldn't load matchup data right now.</span></div>`;
+        return;
+      }
+      const data = await res.json();
+      state.nflMatchups[game.id] = data;
+      hostEl.innerHTML = buildNflMatchupsHtml(game, data);
+    }catch(e){
+      hostEl.innerHTML = `<div class="hr-block"><span class="hr-note">Couldn't load matchup data right now.</span></div>`;
+    }
+  }
+
   // Delegated clicks for props content that gets repainted without a full renderGames(): market
   // collapse headers and + Slip buttons live inside per-game hosts rebuilt by loadProps/filter.
   function toggleMarketHead(marketHead){
@@ -468,6 +631,11 @@
   }
 
   document.getElementById('gamesArea').addEventListener('click', (e)=>{
+    const groupTab = e.target.closest('.prop-group-tab');
+    if(groupTab){
+      onPropTabClick(groupTab);
+      return;
+    }
     const marketHead = e.target.closest('.prop-market-head');
     if(marketHead){
       toggleMarketHead(marketHead);
@@ -755,6 +923,16 @@
         return renderedAny;
       }
 
+      // NFL: same game-lines grid as MLB, full game only (no F5 equivalent).
+      if(sportKey === 'americanfootball_nfl'){
+        const renderedAny = renderGameLinesGrid('full');
+        if(!renderedAny){
+          const note = document.createElement('div');
+          note.className = 'empty-state f5-empty';
+          note.innerHTML = '<p>Odds not posted yet.</p>';
+          card.appendChild(note);
+        }
+      } else
       // MLB: F5 toggle swaps the same grid between full-game and first-5-innings lines.
       if(sportKey === 'baseball_mlb'){
         const view = state.oddsView[game.id] === 'f5' ? 'f5' : 'full';
@@ -807,7 +985,10 @@
         card.appendChild(propsHost);
 
         if(alreadyLoaded){
-          propsHost.innerHTML = buildPropsHtml(game, state.propsCache[game.id].data, PROP_MARKETS[sportKey]);
+          const cached = state.propsCache[game.id];
+          propsHost.innerHTML = cached.groups
+            ? buildNflPropsHtml(game)
+            : buildPropsHtml(game, cached.data, PROP_MARKETS[sportKey]);
           propsHost.dataset.loaded = '1';
         } else if(unavailableMsg){
           propsHost.innerHTML = unavailableMsg;
@@ -871,6 +1052,46 @@
           }
           hrToggleBtn.textContent = 'Hide HR matchups';
           revealShow(hrHost);
+        });
+      }
+
+      // ---- NFL matchups (opt-in per game) ----
+      if(sportKey === 'americanfootball_nfl'){
+        const muToggleWrap = document.createElement('div');
+        muToggleWrap.className = 'hr-toggle';
+        const muAlreadyLoaded = !!state.nflMatchups[game.id];
+        const muToggleBtn = document.createElement('button');
+        muToggleBtn.className = 'ghost';
+        muToggleBtn.textContent = muAlreadyLoaded ? 'Show matchups' : 'Load matchups';
+        muToggleWrap.appendChild(muToggleBtn);
+        card.appendChild(muToggleWrap);
+
+        const muHost = document.createElement('div');
+        muHost.className = 'hr-host reveal';
+        muHost.dataset.gameId = game.id;
+        muHost.style.display = 'none';
+        card.appendChild(muHost);
+
+        if(muAlreadyLoaded){
+          muHost.innerHTML = buildNflMatchupsHtml(game, state.nflMatchups[game.id]);
+          muHost.dataset.loaded = '1';
+        }
+
+        muToggleBtn.addEventListener('click', async ()=>{
+          if(muHost.classList.contains('is-open')){
+            revealHide(muHost);
+            muToggleBtn.textContent = 'Show matchups';
+            return;
+          }
+          if(!muHost.dataset.loaded){
+            muToggleBtn.disabled = true;
+            muToggleBtn.innerHTML = '<span class="spinner"></span> Loading…';
+            await loadNflMatchups(game, muHost);
+            muHost.dataset.loaded = '1';
+            muToggleBtn.disabled = false;
+          }
+          muToggleBtn.textContent = 'Hide matchups';
+          revealShow(muHost);
         });
       }
 
