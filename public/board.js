@@ -346,13 +346,18 @@
     }
     const scCols = statcast ? '<th>EV</th><th>Barrel%</th><th>HardHit%</th>' : '';
     let html = `<div class="hr-pitcher" style="margin-top:12px;">${escapeHtml(teamName)} lineup <span class="lineup-tag confirmed">✓ Confirmed</span></div>`;
-    html += `<table class="props-table"><thead><tr><th>Batter</th><th>HR odds</th><th>HR</th><th>BA</th><th>OBP</th><th>SLG</th><th>ISO</th>${scCols}</tr></thead><tbody>`;
+    html += `<table class="props-table"><thead><tr><th>Batter</th><th>HR odds</th><th>vs This P</th><th>HR</th><th>BA</th><th>OBP</th><th>SLG</th><th>ISO</th>${scCols}</tr></thead><tbody>`;
     side.batters.forEach(b=>{
       const odds = hrOdds[b.name.toLowerCase()];
       const style = odds ? bookStyleFor(odds.bookKey) : null;
       const link = odds ? BOOK_LINKS[odds.bookKey.toLowerCase()] : null;
       const oddsCell = odds
         ? `<td><span class="odds-chip best">${escapeHtml(style ? style.name : odds.bookTitle)} ${fmtAmerican(odds.odds)}</span>${link ? ` <a class="book-link-btn" href="${link}" target="_blank" rel="noopener">↗</a>` : ''}</td>`
+        : '<td>—</td>';
+      // Career numbers against today's opposing pitcher; green when he's taken
+      // this pitcher deep before. Tiny samples — context, not signal.
+      const bvpCell = b.bvp && b.bvp.ab > 0
+        ? `<td${b.bvp.hr > 0 ? ' class="stat-g"' : ''} title="${escapeHtml(`${b.bvp.hits}-for-${b.bvp.ab}${b.bvp.avg ? ', ' + b.bvp.avg + ' AVG' : ''}${b.bvp.ops ? ', ' + b.bvp.ops + ' OPS' : ''} career vs this pitcher`)}">${b.bvp.hr} HR/${b.bvp.ab} AB</td>`
         : '<td>—</td>';
       let scCells = '';
       if(statcast){
@@ -363,6 +368,7 @@
       }
       html += `<tr><td style="font-weight:600; white-space:nowrap;">${playerAvatarHtml(b.id, 22)}${escapeHtml(b.name)} <span class="hand-tag">${escapeHtml(b.hand)}</span></td>`
         + oddsCell
+        + bvpCell
         + `<td>${b.hr !== null ? b.hr : '—'}</td>`
         + statCell(b.ba, 0.280, 0.230, n=>n.toFixed(3))
         + statCell(b.obp, 0.350, 0.300, n=>n.toFixed(3))
@@ -388,7 +394,7 @@
     html += '<div style="height:10px;"></div>';
     html += pitcherTableHtml(data.away.pitcher);
     html += batterTableHtml(game.home_team, data.home, hrOdds, statcast);
-    html += `<div class="hr-note">Bands are league-average context, not picks.</div>`;
+    html += `<div class="hr-note">Bands are league-average context, not picks. "vs This P" is career batter-vs-pitcher — samples are tiny, treat as color not signal.</div>`;
     html += '</div>';
     return html;
   }
