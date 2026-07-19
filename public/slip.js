@@ -11,9 +11,26 @@
     try{ localStorage.setItem(LINKS_KEY, JSON.stringify(list)); }catch(e){}
   }
 
-  const state = { manual: getManualLinks(), selectedBook: null };
+  const state = { manual: getManualLinks() };
 
   renderNav('slip');
+
+  // Books this leg can be placed with — scoped to "My Books" (audit: picking a
+  // book is now the user's call, not an auto "best price" pick), falling back
+  // to every book on the leg when My Books is empty or none of them quote it.
+  function pickListFor(leg){
+    return filterToMyBooks(leg.rows, r=>r.bookKey);
+  }
+  // Resolves (and persists, if unset) which book a leg is placed with.
+  function selectedRowFor(leg){
+    const pickList = pickListFor(leg);
+    let row = pickList.find(r=>r.bookKey===leg.selectedBookKey);
+    if(!row){
+      row = pickList[0];
+      updateLegBook(leg.id, row.bookKey);
+    }
+    return row;
+  }
 
   function renderSlip(){
     const slip = getSlip();
@@ -25,17 +42,8 @@
     emptyEl.style.display = slip.length ? 'none' : 'block';
 
     slip.forEach(leg=>{
-      const best = leg.rows[0];
-      const style = bookStyleFor(best.bookKey);
-      // Full line shop for this leg, best → worst — the ranking the board
-      // no longer shows lives here, once a pick is actually on the slip.
-      const shopChips = leg.rows.map((r,idx)=>{
-        const rStyle = bookStyleFor(r.bookKey);
-        const rName = rStyle ? rStyle.name : r.bookTitle;
-        const chip = `<span class="odds-chip${idx===0?' best':''}" title="${escapeHtml(rName)}">${escapeHtml(rName)} ${fmtAmerican(r.odds)}</span>`;
-        const rLink = BOOK_LINKS[r.bookKey.toLowerCase()];
-        return rLink ? `<a href="${rLink}" target="_blank" rel="noopener" style="text-decoration:none;">${chip}</a>` : chip;
-      }).join('');
+      const pickList = pickListFor(leg);
+      const selected = selectedRowFor(leg);
       const div = document.createElement('div');
       div.className = 'leg-item';
       div.innerHTML = `
@@ -46,12 +54,15 @@
           </div>
           <button class="remove-btn" title="Remove">×</button>
         </div>
-        <div class="leg-odds">${fmtAmerican(best.odds)} · best at ${
-          BOOK_LINKS[best.bookKey.toLowerCase()]
-            ? `<a href="${BOOK_LINKS[best.bookKey.toLowerCase()]}" target="_blank" rel="noopener">${escapeHtml(style ? style.name : best.bookTitle)} ↗</a>`
-            : escapeHtml(style ? style.name : best.bookTitle)
-        }</div>
-        ${leg.rows.length > 1 ? `<div class="leg-shop">${shopChips}</div>` : ''}
+        <label class="leg-book-row">
+          <span class="leg-book-label">Book</span>
+          <select class="leg-book-select">
+            ${pickList.map(r=>{
+              const style = bookStyleFor(r.bookKey);
+              return `<option value="${escapeHtml(r.bookKey)}" ${r.bookKey===selected.bookKey?'selected':''}>${escapeHtml(style ? style.name : r.bookTitle)} · ${fmtAmerican(r.odds)}</option>`;
+            }).join('')}
+          </select>
+        </label>
       `;
       div.querySelector('.remove-btn').addEventListener('click', ()=>{
         div.classList.add('removing');
@@ -59,6 +70,10 @@
           removeLegFromSlip(leg.id);
           renderSlip();
         }, 200);
+      });
+      div.querySelector('.leg-book-select').addEventListener('change', (e)=>{
+        updateLegBook(leg.id, e.target.value);
+        renderParlay();
       });
       legsEl.appendChild(div);
     });
@@ -124,18 +139,19 @@
     const area = document.getElementById('parlayArea');
     if(slip.length < 1){ area.innerHTML=''; return; }
 
+    const selectedRows = slip.map(selectedRowFor);
+
     if(slip.length === 1){
-      const leg = slip[0];
-      const best = leg.rows[0];
-      const style = bookStyleFor(best.bookKey);
+      const row = selectedRows[0];
+      const style = bookStyleFor(row.bookKey);
       area.innerHTML = `
         <div class="parlay-result">
-          <div style="font-size:12px; color:var(--text-dim); margin-bottom:6px;">Single bet — best price</div>
+          <div style="font-size:12px; color:var(--text-dim); margin-bottom:6px;">Single bet</div>
           <div class="parlay-line">
-            ${linkedBadge(best.bookKey, best.bookTitle)}
-            <span class="odds">${fmtAmerican(best.odds)}</span>
+            ${linkedBadge(row.bookKey, row.bookTitle)}
+            <span class="odds">${fmtAmerican(row.odds)}</span>
           </div>
-          ${best.link ? `<a class="place-all-btn" href="${escapeHtml(best.link)}" target="_blank" rel="noopener">Place bet on ${escapeHtml(style ? style.name : best.bookTitle)} ↗</a>
+          ${row.link ? `<a class="place-all-btn" href="${escapeHtml(row.link)}" target="_blank" rel="noopener">Place bet on ${escapeHtml(style ? style.name : row.bookTitle)} ↗</a>
           <div class="place-note">Opens with this selection in your slip — set your wager there.</div>` : ''}
         </div>
       `;
@@ -143,83 +159,61 @@
       return;
     }
 
-    // find books common to every leg
-    const bookSets = slip.map(leg => new Set(leg.rows.map(r=>r.bookKey)));
-    const common = [...bookSets[0]].filter(k => bookSets.every(s=>s.has(k)));
-
+    // Every leg is placed with whichever book the user picked for it above —
+    // if they all landed on the same book this is a real parlay; otherwise
+    // it's a set of separate single bets, each opened with its own leg's link.
+    const bookKeys = new Set(selectedRows.map(r=>r.bookKey));
     let html = '<div class="parlay-result">';
-    if(common.length){
-      const results = common.map(bookKey=>{
-        let decimal = 1;
-        slip.forEach(leg=>{
-          const row = leg.rows.find(r=>r.bookKey===bookKey);
-          decimal *= americanToDecimal(row.odds);
-        });
-        return {bookKey, decimal};
-      }).sort((a,b)=>b.decimal-a.decimal);
-
-      // Selected book: sticky across re-renders while it still covers every leg;
-      // defaults to the best-priced book.
-      if(!state.selectedBook || !results.some(r=>r.bookKey===state.selectedBook)){
-        state.selectedBook = results[0].bookKey;
-      }
-      const selected = results.find(r=>r.bookKey===state.selectedBook);
-      const rowsFor = bookKey => slip.map(leg => leg.rows.find(r=>r.bookKey===bookKey));
-
-      html += `<div style="font-size:12px; color:var(--text-dim); margin-bottom:8px;">Pick a book — all ${slip.length} legs priced together</div>`;
-      html += `<div class="slip-book-chips">`;
-      results.forEach(r=>{
-        const style = bookStyleFor(r.bookKey);
-        const name = style ? style.name : r.bookKey;
-        const isBest = r === results[0];
-        html += `<button type="button" class="slip-book-chip${r.bookKey===state.selectedBook?' active':''}" data-book-key="${escapeHtml(r.bookKey)}">
-          <span class="chip-book-name">${escapeHtml(name)}</span>
-          <span class="chip-book-odds">${fmtAmerican(decimalToAmerican(r.decimal))}</span>
-          ${isBest ? '<span class="chip-best-tag">Best</span>' : ''}
-        </button>`;
-      });
-      html += `</div>`;
-
-      const selStyle = bookStyleFor(selected.bookKey);
-      const selName = selStyle ? selStyle.name : selected.bookKey;
-      html += `<div class="parlay-line" style="margin-top:10px;">
-        ${linkedBadge(selected.bookKey)}
-        <span class="odds">${fmtAmerican(decimalToAmerican(selected.decimal))}</span>
-      </div>`;
-      html += placeButtonsHtml(selected.bookKey, selName, rowsFor(selected.bookKey));
-
-      html += `<div class="copy-block">${buildCopyText(selected.bookKey, selName)}</div>
-        <button type="button" class="ghost copy-btn" data-book-key="${escapeHtml(selected.bookKey)}" data-book-name="${escapeHtml(selName)}" style="margin-top:6px; font-size:11.5px; padding:6px 10px;">Copy</button>`;
-    } else {
-      html += `<div style="font-size:12px; color:var(--text-dim); margin-bottom:6px;">No single book covers every leg. Best price per leg (mixed books, informational only):</div>`;
+    if(bookKeys.size === 1){
+      const bookKey = selectedRows[0].bookKey;
+      const style = bookStyleFor(bookKey);
+      const bookName = style ? style.name : selectedRows[0].bookTitle;
       let decimal = 1;
-      slip.forEach(leg=>{
-        const best = leg.rows[0];
-        decimal *= americanToDecimal(best.odds);
-        html += `<div class="parlay-line">
-          ${linkedBadge(best.bookKey, best.bookTitle)}
-          <span class="odds">${fmtAmerican(best.odds)}</span>
+      selectedRows.forEach(r=> decimal *= americanToDecimal(r.odds));
+      html += `<div style="font-size:12px; color:var(--text-dim); margin-bottom:6px;">Parlay on ${escapeHtml(bookName)}</div>
+        <div class="parlay-line">
+          ${linkedBadge(bookKey, selectedRows[0].bookTitle)}
+          <span class="odds">${fmtAmerican(decimalToAmerican(decimal))}</span>
         </div>`;
+
+      const buttonsHtml = placeButtonsHtml(bookKey, bookName, selectedRows);
+      html += buttonsHtml;
+
+      // Copy/paste is a last resort — only shown when this book offers no
+      // deep link at all, so the default path is always one-tap.
+      if(!buttonsHtml){
+        html += `<div class="copy-block">${buildCopyText(bookKey, bookName)}</div>
+          <button type="button" class="ghost copy-btn" data-book-key="${escapeHtml(bookKey)}" data-book-name="${escapeHtml(bookName)}" style="margin-top:6px; font-size:11.5px; padding:6px 10px;">Copy</button>`;
+      }
+    } else {
+      html += `<div style="font-size:12px; color:var(--text-dim); margin-bottom:6px;">Your picks span ${bookKeys.size} books — these can't combine into one parlay, so each opens as its own single bet:</div>`;
+      const legBtns = [];
+      slip.forEach((leg,i)=>{
+        const row = selectedRows[i];
+        html += `<div class="parlay-line">
+          ${linkedBadge(row.bookKey, row.bookTitle)}
+          <span class="odds">${fmtAmerican(row.odds)}</span>
+        </div>`;
+        if(row.link){
+          const style = bookStyleFor(row.bookKey);
+          legBtns.push(`<a class="place-leg-btn" href="${escapeHtml(row.link)}" target="_blank" rel="noopener">${escapeHtml(leg.side)} on ${escapeHtml(style ? style.name : row.bookTitle)} ↗</a>`);
+        }
       });
-      html += `<div style="font-size:11.5px; color:var(--text-faint); margin-top:6px;">Combined (theoretical, can't actually be placed as one parlay): ${fmtAmerican(decimalToAmerican(decimal))}</div>`;
+      if(legBtns.length){
+        html += `<div class="place-leg-list" style="margin-top:8px;">${legBtns.join('')}</div>`;
+      }
     }
     html += '</div>';
     area.innerHTML = html;
     staggerIn(area);
     wireCopyButton(area);
-    area.querySelectorAll('.slip-book-chip').forEach(chip=>{
-      chip.addEventListener('click', ()=>{
-        state.selectedBook = chip.dataset.bookKey;
-        renderParlay();
-      });
-    });
   }
 
   function buildCopyLines(bookKey, bookName){
     const slip = getSlip();
     const lines = [`${bookName} parlay slip:`];
     slip.forEach(leg=>{
-      const row = leg.rows.find(r=>r.bookKey===bookKey);
+      const row = leg.rows.find(r=>r.bookKey===bookKey) || selectedRowFor(leg);
       lines.push(`• ${leg.side} (${leg.matchup}) — ${fmtAmerican(row.odds)}`);
     });
     return lines;

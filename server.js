@@ -22,6 +22,15 @@ const PROP_MARKETS = {
   icehockey_nhl: ['player_points', 'player_assists', 'player_shots_on_goal', 'player_goal_scorer_anytime']
 };
 
+// MLB "first 5 innings" alternate-period markets. NOTE: the bulk /odds
+// endpoint used below only serves h2h/spreads/totals — asking it for these
+// period markets returns 422 INVALID_MARKET for the *entire* request, which
+// silently kills the full-game odds too. Period markets are only available
+// per event via /v4/sports/{sport}/events/{eventId}/odds (one extra upstream
+// call per game), which isn't wired up yet — so these are unused for now and
+// the F5 tab just shows its "not posted yet" empty state.
+const MLB_F5_MARKETS = ['h2h_1st_5_innings', 'totals_1st_5_innings', 'spreads_1st_5_innings'];
+
 const STATSAPI = 'https://statsapi.mlb.com';
 const SCORES_TTL_MS = 30 * 1000;
 const LIVE_TTL_MS = 20 * 1000;
@@ -146,7 +155,11 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
   app.get('/api/odds/:sport', (req, res) => {
     const { sport } = req.params;
     if (!SPORTS.has(sport)) return res.status(400).json({ error: 'Unknown sport' });
-    proxy(`/v4/sports/${sport}/odds/?regions=us,us2&markets=h2h,spreads,totals&oddsFormat=american&includeLinks=true&includeSids=true`, res);
+    // MLB only: full-game spreads/totals alongside moneyline — Board's Game
+    // Lines grid needs Spread/Total/Money for MLB specifically. F5 markets
+    // are deliberately NOT requested here (see MLB_F5_MARKETS above).
+    const markets = sport === 'baseball_mlb' ? ['h2h', 'spreads', 'totals'] : ['h2h'];
+    proxy(`/v4/sports/${sport}/odds/?regions=us,us2&markets=${markets.join(',')}&oddsFormat=american&includeLinks=true&includeSids=true`, res);
   });
 
   // Live/recent scores. Cached on a much shorter TTL than odds (SCORES_TTL_MS)
@@ -408,6 +421,38 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
         lineupPosted: awayBatIds.length > 0,
         batters: battersPayload(awayBatIds, awayHit, homePitcherHand, awayBvp)
       }
+    });
+  }
+
+  // Both starting pitchers for a scheduled MLB game — a lighter sibling of
+  // /api/hr-matchups/mlb (no splits/lineups), shown automatically on every
+  // MLB board card rather than opt-in. Shares getMlbScheduleGame's cached
+  // schedule fetch, so this doesn't cost an extra StatsAPI call per card.
+  app.get('/api/pitchers/mlb', (req, res) => {
+    handlePitchers(req, res).catch(err => {
+      console.error(`Pitchers failed: ${err && err.message || err}`);
+      if (!res.headersSent) res.status(502).json({ error: 'Stats service unavailable' });
+    });
+  });
+
+  async function handlePitchers(req, res){
+    const { home, away, date } = req.query;
+    if (!home || !away || !date) return res.status(400).json({ error: 'home, away, and date are required' });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: 'Bad date' });
+
+    let mg;
+    try {
+      mg = await getMlbScheduleGame(date, home, away);
+    } catch (err) {
+      return sendUpstreamError(res, err);
+    }
+    if (!mg) return res.json({ matched: false });
+
+    const toPitcher = p => (p && p.id) ? { id: p.id, name: p.fullName || null } : null;
+    res.json({
+      matched: true,
+      home: toPitcher(mg.teams.home.probablePitcher),
+      away: toPitcher(mg.teams.away.probablePitcher)
     });
   }
 

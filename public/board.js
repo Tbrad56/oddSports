@@ -10,10 +10,12 @@
     propsUnavailable: {}, // gameId -> cached "no props" / error message html
     scores: [], mlbLive: [], scoresTimer: null,
     hrCache: {},   // gameId -> hr-matchups API response
-    statcast: undefined // batters map from /statcast/statcast.json, or null if unavailable
+    statcast: undefined, // batters map from /statcast/statcast.json, or null if unavailable
+    oddsView: {},  // gameId -> 'full' | 'f5', survives re-renders like propsOpen
+    pitchers: {}   // gameId -> {matched, home:{id,name}|null, away:{id,name}|null}
   };
   let renderScheduled = false;
-  // Coalesces multiple renderGames() requests (weather + Kalshi post-fetches, audit 6.2)
+  // Coalesces multiple renderGames() requests (weather/pitchers post-fetches, audit 6.2)
   // into a single call per animation frame, instead of re-rendering the whole board twice more.
   function scheduleRender(){
     if(renderScheduled) return;
@@ -46,11 +48,7 @@
       // MLB: pull hourly stadium forecasts (free Open-Meteo, no key), re-render with weather strips
       if(sport === 'baseball_mlb' && games.length){
         fetchStadiumWeather(games).then(scheduleRender).catch(()=>{});
-      }
-      // Kalshi reference prices (public market data, no key) for supported sports
-      kalshiEventsCache = [];
-      if(KALSHI_SERIES[sport] && games.length){
-        fetchKalshi(sport).then(scheduleRender).catch(()=>{});
+        fetchStartingPitchers(games).then(scheduleRender).catch(()=>{});
       }
       // Live scores: fetch now, then keep polling every 30s while this sport is loaded
       state.scores = []; state.mlbLive = [];
@@ -320,6 +318,39 @@
     return `<span class="player-avatar player-avatar-empty" style="width:${size}px; height:${size}px;"></span>`;
   }
 
+  // Both starting pitchers, one request per game (server-cached per date so
+  // every card sharing a slate hits the same cached StatsAPI schedule fetch,
+  // not a fresh one). Best-effort — a miss just means the card shows nothing.
+  async function fetchStartingPitchers(games){
+    await Promise.all(games.map(async game=>{
+      if(state.pitchers[game.id]) return;
+      const dateStr = new Date(game.commence_time).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+      try{
+        const res = await fetch(`/api/pitchers/mlb?home=${encodeURIComponent(game.home_team)}&away=${encodeURIComponent(game.away_team)}&date=${dateStr}`);
+        if(!res.ok) return;
+        state.pitchers[game.id] = await res.json();
+      }catch(e){ /* best-effort */ }
+    }));
+  }
+
+  function buildStartingPitchersHtml(game){
+    const info = state.pitchers[game.id];
+    if(!info || !info.matched) return '';
+    const side = (p, team) => `
+      <div class="pitcher-card">
+        ${p ? playerAvatarHtml(p.id, 36) : emptyAvatarHtml(36)}
+        <div>
+          <div class="pitcher-name">${p ? escapeHtml(p.name) : 'TBD'}</div>
+          <div class="pitcher-team">${escapeHtml(team)}</div>
+        </div>
+      </div>`;
+    return `<div class="pitchers-strip">
+      ${side(info.away, game.away_team)}
+      <div class="pitcher-vs">vs</div>
+      ${side(info.home, game.home_team)}
+    </div>`;
+  }
+
   function pitcherTableHtml(pitcher){
     if(!pitcher){
       return `<div class="hr-note">Probable pitcher not announced yet.</div>`;
@@ -507,7 +538,7 @@
       scoreSlot.innerHTML = buildScoreBadgeHtml(game, scoreEntry, liveDetail);
       card.appendChild(scoreSlot);
 
-      // MLB: stadium weather strip sits above the odds
+      // MLB: stadium weather strip, then both starting pitchers with photos
       if(sportKey === 'baseball_mlb'){
         const weatherHtml = buildWeatherStrip(game);
         if(weatherHtml){
@@ -515,114 +546,241 @@
           w.innerHTML = weatherHtml;
           card.appendChild(w.firstElementChild);
         }
+        const pitchersHtml = buildStartingPitchersHtml(game);
+        if(pitchersHtml){
+          const p = document.createElement('div');
+          p.innerHTML = pitchersHtml;
+          card.appendChild(p.firstElementChild);
+        }
       }
 
-      // Three markets per game, one compact row per outcome: label + best price
-      // + "+ Slip". No best→worst list here — the full ranked line shop lives
-      // on the slip page once a leg is added (every book's row rides along).
-      const trackedBookmakers = game.bookmakers.filter(b => TRACKED_KEYS.includes(b.key.toLowerCase()));
-      const bookmakersToUse = trackedBookmakers.length ? trackedBookmakers : game.bookmakers;
-      const myBooks = getMyBooks();
-      const fmtPoint = p => (p > 0 ? '+' + p : String(p));
+      // MLB only: Spread/Total/Moneyline grid like a sportsbook's own game-lines
+      // page, one row per team. Each cell is the best price across whichever
+      // pool applies (My Books if set, else all tracked books) — same rule the
+      // rest of Board already uses, just one number per cell instead of a list.
+      // Returns true if at least one cell had data.
+      function renderGameLinesGrid(view){
+        const suffix = view === 'f5' ? '_1st_5_innings' : '';
+        const tag = view === 'f5' ? ' (F5)' : '';
+        const [awayTeam, homeTeam] = [game.away_team, game.home_team];
+        const trackedBookmakers = game.bookmakers.filter(b => TRACKED_KEYS.includes(b.key.toLowerCase()));
+        const bookmakersToUse = trackedBookmakers.length ? trackedBookmakers : game.bookmakers;
+        const myBooks = getMyBooks();
+        const scoped = myBooks.length ? bookmakersToUse.filter(b=>myBooks.includes(b.key.toLowerCase())) : [];
+        const pool = scoped.length ? scoped : bookmakersToUse;
 
-      // Collect rows per outcome for one market key, grouped on the consensus
-      // point (books quoting an alt line are left out of that outcome's rows so
-      // prices stay comparable; h2h has no point so everything groups together).
-      function outcomeRowsFor(marketKey){
-        const byOutcome = {}; // name -> point -> rows[]
-        bookmakersToUse.forEach(bm=>{
-          const market = bm.markets.find(m=>m.key === marketKey);
-          if(!market) return;
-          market.outcomes.forEach(o=>{
-            const pt = o.point ?? '';
-            byOutcome[o.name] = byOutcome[o.name] || {};
-            byOutcome[o.name][pt] = byOutcome[o.name][pt] || [];
-            byOutcome[o.name][pt].push({bookKey: bm.key, bookTitle: bm.title, odds: o.price, point: o.point, link: o.link || bm.link || null, sid: o.sid || null, marketSid: market.sid || null});
+        function rowsFor(marketKey, outcomeName){
+          const rows = [];
+          pool.forEach(bm=>{
+            const market = bm.markets.find(m=>m.key===marketKey);
+            if(!market) return;
+            const outcome = market.outcomes.find(o=>o.name===outcomeName);
+            if(!outcome) return;
+            rows.push({bookKey:bm.key, bookTitle:bm.title, odds:outcome.price, point:outcome.point, link:outcome.link||bm.link||null, sid:outcome.sid||null, marketSid:market.sid||null});
           });
-        });
-        return Object.entries(byOutcome).map(([name, byPoint])=>{
-          const consensus = Object.entries(byPoint).sort((a,b)=>b[1].length-a[1].length)[0];
-          const rows = consensus[1].sort((a,b)=> americanToDecimal(b.odds) - americanToDecimal(a.odds));
-          return { name, point: rows[0].point, rows };
-        });
-      }
+          rows.sort((a,b)=>americanToDecimal(b.odds)-americanToDecimal(a.odds));
+          return rows;
+        }
+        // Books can quote slightly different lines (mostly totals) — group by
+        // point, keep whichever point the most tracked books share, best price within it.
+        function modalPointRows(marketKey, outcomeName){
+          const all = rowsFor(marketKey, outcomeName);
+          if(!all.length) return [];
+          const byPoint = {};
+          all.forEach(r=>{ const k=String(r.point); (byPoint[k]=byPoint[k]||[]).push(r); });
+          const bestKey = Object.keys(byPoint).sort((a,b)=>byPoint[b].length-byPoint[a].length)[0];
+          return byPoint[bestKey];
+        }
 
-      // Sportsbook-style grid: one row per team, one tappable price cell per
-      // market (Spread / Total / Moneyline). No book names here — tapping a
-      // cell adds the leg with every book's price riding along, and the full
-      // line shop shows on the slip.
-      const spreads = outcomeRowsFor('spreads');
-      const totals = outcomeRowsFor('totals');
-      const h2h = outcomeRowsFor('h2h');
-      const findOutcome = (list, name) => list.find(o=>o.name === name) || null;
+        const ml = { away: rowsFor('h2h'+suffix, awayTeam), home: rowsFor('h2h'+suffix, homeTeam) };
+        const spread = { away: modalPointRows('spreads'+suffix, awayTeam), home: modalPointRows('spreads'+suffix, homeTeam) };
+        const total = { over: modalPointRows('totals'+suffix, 'Over'), under: modalPointRows('totals'+suffix, 'Under') };
 
-      function bestRowOf(oc){
-        if(!oc) return null;
-        const myRows = myBooks.length ? filterToMyBooks(oc.rows, r=>r.bookKey) : [];
-        return (myRows.length ? myRows : oc.rows)[0];
-      }
+        if(![ml.away, ml.home, spread.away, spread.home, total.over, total.under].some(r=>r.length)) return false;
 
-      function priceCell(oc, topLine, side){
-        const shown = bestRowOf(oc);
-        if(!shown) return '<div class="line-cell empty">—</div>';
-        return `<button type="button" class="line-cell" data-side="${escapeHtml(side)}">
-          ${topLine ? `<span class="cell-line">${escapeHtml(topLine)}</span>` : ''}
-          <span class="cell-odds ${Number(shown.odds)>0?'pos':'neg'}">${fmtAmerican(shown.odds)}</span>
-        </button>`;
-      }
-
-      const grid = document.createElement('div');
-      grid.className = 'lines-grid';
-      let gridHtml = `<div class="lines-head"><span></span><span>Spread</span><span>Total</span><span>Money</span></div>`;
-      [[game.away_team, 'Over'], [game.home_team, 'Under']].forEach(([team, ouName])=>{
-        const sp = findOutcome(spreads, team);
-        const tot = findOutcome(totals, ouName);
-        const ml = findOutcome(h2h, team);
-        gridHtml += `<div class="lines-row">
-          <span class="lines-team">${teamLogoImg(sportKey, team)}${escapeHtml(team)}</span>
-          ${priceCell(sp, sp ? fmtPoint(sp.point) : '', sp ? `${team} ${fmtPoint(sp.point)}` : '')}
-          ${priceCell(tot, tot ? `${ouName === 'Over' ? 'O' : 'U'} ${tot.point}` : '', tot ? `${ouName} ${tot.point}` : '')}
-          ${priceCell(ml, '', ml ? `${team} to win` : '')}
-        </div>`;
-      });
-      grid.innerHTML = gridHtml;
-
-      // Tap a cell = add that leg (all books' rows ride along to the slip)
-      const cellSources = { };
-      [[game.away_team, 'Over'], [game.home_team, 'Under']].forEach(([team, ouName])=>{
-        const sp = findOutcome(spreads, team);
-        const tot = findOutcome(totals, ouName);
-        const ml = findOutcome(h2h, team);
-        if(sp) cellSources[`${team} ${fmtPoint(sp.point)}`] = sp;
-        if(tot) cellSources[`${ouName} ${tot.point}`] = tot;
-        if(ml) cellSources[`${team} to win`] = ml;
-      });
-      grid.querySelectorAll('.line-cell[data-side]').forEach(cell=>{
-        cell.addEventListener('click', ()=>{
-          const oc = cellSources[cell.dataset.side];
-          if(!oc) return;
-          addLegToSlip({
-            id: Date.now()+Math.random(),
-            matchup: `${game.away_team} @ ${game.home_team}`,
-            side: cell.dataset.side,
-            rows: oc.rows
-          });
+        const addLeg = (side, rows, cellEl)=>{
+          if(!rows.length) return;
+          addLegToSlip({ id: Date.now()+Math.random(), matchup: `${awayTeam} @ ${homeTeam}`, side, rows });
           showToast('Added ✓');
-          flashEl(cell);
-        });
-      });
-      card.appendChild(grid);
+          flashEl(cellEl);
+        };
 
-      // Kalshi reference strip (prediction market) — kept, one compact line
-      const kalshiParts = [game.away_team, game.home_team].map(team=>{
-        const kRow = kalshiRowFor(game, team);
-        return kRow ? `${escapeHtml(team)} ${fmtAmerican(kRow.american)} <a class="book-link-btn" href="${kRow.link}" target="_blank" rel="noopener">↗</a>` : null;
-      }).filter(Boolean);
-      if(kalshiParts.length){
-        const ks = document.createElement('div');
-        ks.className = 'kalshi-strip';
-        ks.innerHTML = `<span class="kalshi-badge">Kalshi</span><span class="kalshi-note">prediction market</span> ${kalshiParts.join(' · ')}`;
-        card.appendChild(ks);
+        function cell(rows, lineLabel, side){
+          const div = document.createElement('div');
+          if(!rows.length){
+            div.className = 'gl-cell gl-empty';
+            div.textContent = '—';
+            return div;
+          }
+          div.className = 'gl-cell';
+          div.title = 'Tap to add to Slip';
+          const best = rows[0];
+          div.innerHTML = `${lineLabel ? `<div class="gl-line">${escapeHtml(lineLabel)}</div>` : ''}<div class="gl-price ${Number(best.odds)>0?'pos':''}">${fmtAmerican(best.odds)}</div>`;
+          div.addEventListener('click', ()=>addLeg(side, rows, div));
+          return div;
+        }
+
+        const grid = document.createElement('div');
+        grid.className = 'gl-grid';
+        grid.appendChild(document.createElement('div'));
+        ['Spread','Total','Money'].forEach(label=>{
+          const h = document.createElement('div');
+          h.className = 'gl-head';
+          h.textContent = label;
+          grid.appendChild(h);
+        });
+
+        function teamRow(team, spreadRows, totalRows, totalSide, mlRows){
+          const name = document.createElement('div');
+          name.className = 'gl-team';
+          name.textContent = team;
+          grid.appendChild(name);
+          const spreadLabel = spreadRows.length ? fmtAmerican(spreadRows[0].point) : '';
+          grid.appendChild(cell(spreadRows, spreadLabel, `${team}${tag} ${spreadLabel}`.trim()));
+          const totalLabel = totalRows.length ? (totalSide === 'Over' ? 'O ' : 'U ') + totalRows[0].point : '';
+          grid.appendChild(cell(totalRows, totalLabel, `${totalSide} ${totalRows.length ? totalRows[0].point : ''}${tag}`.trim()));
+          grid.appendChild(cell(mlRows, '', `${team}${tag}`));
+        }
+        teamRow(awayTeam, spread.away, total.over, 'Over', ml.away);
+        teamRow(homeTeam, spread.home, total.under, 'Under', ml.home);
+
+        card.appendChild(grid);
+        return true;
+      }
+
+      // Renders the per-team moneyline grid for a given market key (full-game
+      // 'h2h' or MLB's 'h2h_1st_5_innings'). Same best-price/My Books logic
+      // either way — only which market's outcomes get gathered changes.
+      // Returns true if at least one team had rows to show.
+      function renderOddsBlocks(marketKey){
+        const teams = [game.away_team, game.home_team];
+        const trackedBookmakers = game.bookmakers.filter(b => TRACKED_KEYS.includes(b.key.toLowerCase()));
+        const bookmakersToUse = trackedBookmakers.length ? trackedBookmakers : game.bookmakers;
+        const myBooks = getMyBooks();
+
+        const rowsByTeam = {};
+        teams.forEach(team=>{
+          const rows = [];
+          bookmakersToUse.forEach(bm=>{
+            const market = bm.markets.find(m=>m.key === marketKey);
+            if(!market) return;
+            const outcome = market.outcomes.find(o=>o.name === team);
+            if(!outcome) return;
+            rows.push({bookKey: bm.key, bookTitle: bm.title, odds: outcome.price, link: outcome.link || bm.link || null, sid: outcome.sid || null, marketSid: market.sid || null});
+          });
+          rows.sort((a,b)=> americanToDecimal(b.odds) - americanToDecimal(a.odds));
+          rowsByTeam[team] = rows;
+        });
+
+        let renderedAny = false;
+        teams.forEach(team=>{
+          const rows = rowsByTeam[team];
+          if(!rows.length) return;
+          renderedAny = true;
+          const otherTeam = teams.find(t=>t!==team);
+          const fairDecimal = computeFairDecimal(rows, rowsByTeam[otherTeam] || []);
+          const sideLabel = marketKey === 'h2h' ? team : team + ' (F5)';
+
+          const block = document.createElement('div');
+          block.className = 'outcome-block';
+          const label = document.createElement('div');
+          label.className = 'outcome-label';
+          label.textContent = sideLabel + ' to win';
+          block.appendChild(label);
+
+          const addLeg = (rowEl)=>{
+            addLegToSlip({
+              id: Date.now()+Math.random(),
+              matchup: `${game.away_team} @ ${game.home_team}`,
+              side: sideLabel,
+              rows: rows
+            });
+            showToast('Added ✓');
+            if(rowEl) flashEl(rowEl);
+          };
+
+          const myRows = myBooks.length ? filterToMyBooks(rows, r=>r.bookKey) : [];
+          const otherRows = myBooks.length ? rows.filter(r=>!myBooks.includes(r.bookKey.toLowerCase())) : [];
+
+          // Board never names the book — just the price. The link icon still
+          // opens the right book (its title attr carries the name for hover/
+          // screen readers); picking which book to actually bet with happens
+          // on the Slip page's book selector instead.
+          if(myBooks.length && myRows.length){
+            // Clean grid of just the user's books — no Best/Value ranking noise
+            const grid = document.createElement('div');
+            grid.className = 'mybook-grid';
+            myRows.forEach(r=>{
+              const style = bookStyleFor(r.bookKey);
+              const link = BOOK_LINKS[r.bookKey.toLowerCase()];
+              const cell = document.createElement('div');
+              cell.className = 'mybook-cell';
+              cell.innerHTML = `
+                <span class="book-odds ${Number(r.odds)>0?'pos':'neg'}">${fmtAmerican(r.odds)}</span>
+                <button class="add-leg-btn">+ Slip</button>
+                ${link ? `<a class="book-link-btn" href="${link}" target="_blank" rel="noopener" title="Open ${escapeHtml(style?style.name:r.bookTitle)}">↗</a>` : ''}
+              `;
+              cell.querySelector('.add-leg-btn').addEventListener('click', ()=>addLeg(cell));
+              grid.appendChild(cell);
+            });
+            block.appendChild(grid);
+            const bestMine = myRows[0], bestOther = otherRows[0];
+            if(bestOther && americanToDecimal(bestOther.odds) > americanToDecimal(bestMine.odds)){
+              const oLink = BOOK_LINKS[bestOther.bookKey.toLowerCase()];
+              const hint = document.createElement('div');
+              hint.className = 'elsewhere-hint';
+              hint.innerHTML = `A better price is available elsewhere: ${fmtAmerican(bestOther.odds)}${oLink?` <a href="${oLink}" target="_blank" rel="noopener">↗</a>`:''}`;
+              block.appendChild(hint);
+            }
+          } else {
+            rows.forEach((r, idx)=>{
+              const row = document.createElement('div');
+              const isValue = fairDecimal && americanToDecimal(r.odds) > fairDecimal * 1.015;
+              row.className = 'book-row' + (idx===0 ? ' best' : '');
+              const style = bookStyleFor(r.bookKey);
+              const link = BOOK_LINKS[r.bookKey.toLowerCase()];
+              row.innerHTML = `
+                ${idx===0 ? '<span class="best-tag">Best</span>' : ''}
+                ${isValue ? '<span class="value-tag" title="Pays better than the market-consensus fair line">Value</span>' : ''}
+                <span class="book-odds ${Number(r.odds)>0?'pos':'neg'}">${fmtAmerican(r.odds)}</span>
+                <button class="add-leg-btn">+ Slip</button>
+                ${link ? `<a class="book-link-btn" href="${link}" target="_blank" rel="noopener" title="Open ${escapeHtml(style?style.name:r.bookTitle)}">↗</a>` : ''}
+              `;
+              row.querySelector('.add-leg-btn').addEventListener('click', ()=>addLeg(row));
+              block.appendChild(row);
+            });
+          }
+          card.appendChild(block);
+        });
+        return renderedAny;
+      }
+
+      // MLB: F5 toggle swaps the same grid between full-game and first-5-innings lines.
+      if(sportKey === 'baseball_mlb'){
+        const view = state.oddsView[game.id] === 'f5' ? 'f5' : 'full';
+        const tabs = document.createElement('div');
+        tabs.className = 'f5-tabs';
+        tabs.innerHTML = `
+          <button class="f5-tab${view==='full'?' active':''}" data-view="full">Full game</button>
+          <button class="f5-tab${view==='f5'?' active':''}" data-view="f5">First 5 innings</button>
+        `;
+        tabs.querySelectorAll('.f5-tab').forEach(btn=>{
+          btn.addEventListener('click', ()=>{
+            state.oddsView[game.id] = btn.dataset.view;
+            renderGames();
+          });
+        });
+        card.appendChild(tabs);
+
+        const renderedAny = renderGameLinesGrid(view);
+        if(!renderedAny){
+          const note = document.createElement('div');
+          note.className = 'empty-state f5-empty';
+          note.innerHTML = `<p>${view === 'f5' ? 'F5 lines not posted yet.' : 'Odds not posted yet.'}</p>`;
+          card.appendChild(note);
+        }
+      } else {
+        renderOddsBlocks('h2h');
       }
 
       // ---- player props (opt-in per game, protects API quota) ----
@@ -632,7 +790,7 @@
         const alreadyLoaded = !!state.propsCache[game.id];
         const unavailableMsg = state.propsUnavailable[game.id];
         // Props open/closed state lives in state.propsOpen so it survives re-renders
-        // triggered by the weather/Kalshi batch or a fallback score render (audit 6.1a).
+        // triggered by the weather/pitchers batch or a fallback score render (audit 6.1a).
         const isOpen = !!state.propsOpen[game.id];
         const toggleBtn = document.createElement('button');
         toggleBtn.className = 'ghost';

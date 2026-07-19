@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LineWatch — Cheatsheet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Teko:wght@500;600;700&family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="app-header">
+  <div class="header-top">
+    <div class="brand">
+      <h1>Line<span>Watch</span></h1>
+      <div class="tag">All odds everywhere</div>
+    </div>
+    <div class="header-controls"></div>
+  </div>
+  <div class="ticker-wrap">
+    <div class="ticker-track" id="tickerTrack" aria-hidden="true">
+      <span>Loading the ticker →</span>
+    </div>
+  </div>
+</header>
+
+<div class="layout no-side">
+  <nav class="nav-rail" id="navRail"></nav>
+
+  <main>
+    <h2 class="hero-line">Cheatsheet</h2>
+    <div class="hero-sub">Every book's price on your current Slip legs, ranked best to worst — for comparison only. Pick which book to actually bet with back on the Slip page.</div>
+    <div id="errorArea"></div>
+    <div id="cheatsheetArea"></div>
+  </main>
+</div>
+
+<footer class="disclaimer">
+  <strong>Informational tool only.</strong> LineWatch pulls publicly available odds data and does not place bets, hold funds, or connect to any sportsbook account.
+  Combined "parlay" figures are for comparison only — always confirm the exact price on the sportsbook itself before betting, as odds move quickly.
+  Must be 21+ and located in a state where sports betting is legal. If gambling stops being fun or feels out of control, Ohio's problem gambling helpline is
+  1-800-589-9966, or text 4HOPE to 741741. National Problem Gambling Helpline: 1-800-522-4700.
+</footer>
+
+<script src="common.js"></script>
+<script src="cheatsheet.js"></script>
+</body>
+</html>

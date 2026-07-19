@@ -195,39 +195,6 @@
   .outcome-block{padding:14px 16px; border-bottom:1px solid var(--border-soft);}
   .outcome-block:last-child{border-bottom:none;}
   .outcome-label{font-size:12.5px; font-weight:600; color:var(--text-dim); margin-bottom:10px; text-transform:uppercase; letter-spacing:.6px;}
-  /* Sportsbook-style lines grid: team rows × Spread/Total/Money price cells */
-  .lines-grid{padding:12px 16px 14px;}
-  .lines-head{
-    display:grid; grid-template-columns:1fr 92px 92px 92px; gap:8px;
-    font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.6px;
-    color:var(--text-faint); margin-bottom:8px; text-align:center;
-  }
-  .lines-head span:first-child{text-align:left;}
-  .lines-row{
-    display:grid; grid-template-columns:1fr 92px 92px 92px; gap:8px;
-    align-items:center; margin-bottom:8px;
-  }
-  .lines-row:last-child{margin-bottom:0;}
-  .lines-team{font-size:13.5px; font-weight:600; display:flex; align-items:center; gap:8px; min-width:0;}
-  .line-cell{
-    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px;
-    background:var(--bg-raised); border:1px solid var(--border-soft); border-radius:8px;
-    padding:8px 6px; cursor:pointer; min-height:48px;
-    font-family:var(--font-mono); transition:border-color .15s ease, background .15s ease;
-  }
-  .line-cell:hover{border-color:var(--accent); background:var(--bg-card-hover);}
-  .line-cell.empty{cursor:default; color:var(--text-faint); border-color:transparent;}
-  .line-cell .cell-line{font-size:11px; color:var(--text-dim); font-weight:600;}
-  .line-cell .cell-odds{font-size:13.5px; font-weight:700;}
-  .line-cell .cell-odds.pos{color:var(--good);}
-  .line-cell .cell-odds.neg{color:var(--text);}
-  .kalshi-strip{
-    padding:8px 16px 12px; font-size:11.5px; color:var(--text-dim);
-    display:flex; align-items:center; gap:8px; flex-wrap:wrap;
-  }
-  @media (max-width:640px){
-    .lines-head, .lines-row{grid-template-columns:1fr 72px 72px 72px; gap:5px;}
-  }
 
   .book-row{
     display:flex; align-items:center; gap:12px;
@@ -275,6 +242,34 @@
     padding:14px 16px; border-top:1px dashed var(--border-soft);
     background:#101010;
   }
+  .f5-tabs{display:flex; gap:6px; margin:12px 16px 0;}
+  .f5-tab{
+    flex:1; font-size:12px; font-weight:600; padding:8px 10px;
+    background:var(--bg-raised); border:1px solid var(--border); color:var(--text-dim);
+    border-radius:7px;
+  }
+  .f5-tab.active{background:rgba(187,0,0,0.16); border-color:var(--accent); color:var(--accent);}
+  .f5-empty{margin:12px 16px; padding:20px; font-size:12.5px;}
+
+  /* ---------- Game Lines grid (MLB): Spread / Total / Moneyline ---------- */
+  .gl-grid{
+    display:grid; grid-template-columns:1fr 72px 72px 72px;
+    gap:8px; align-items:center; padding:12px 16px;
+  }
+  .gl-head{font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--text-faint); text-align:center;}
+  .gl-team{font-size:13.5px; font-weight:600;}
+  .gl-cell{
+    border:1px solid var(--border); border-radius:8px; padding:6px 4px;
+    text-align:center; cursor:pointer; background:var(--bg-raised);
+    transition:border-color .15s ease, background .15s ease, transform .1s ease;
+  }
+  .gl-cell:hover{transform:translateY(-1px); border-color:var(--accent-dim);}
+  .gl-cell:active{transform:scale(0.96);}
+  .gl-cell.gl-empty{cursor:default; color:var(--text-faint); font-size:13px;}
+  .gl-cell.gl-empty:hover{transform:none; border-color:var(--border);}
+  .gl-cell .gl-line{font-size:10.5px; color:var(--text-dim); line-height:1.3;}
+  .gl-cell .gl-price{font-family:var(--font-mono); font-weight:700; font-size:13.5px; line-height:1.3;}
+  .gl-cell .gl-price.pos{color:var(--good);}
   .props-toggle{margin:0 16px 14px; font-size:12px;}
   .books-toggle{margin:0 16px 14px; font-size:12px;}
   .props-table{width:100%; border-collapse:collapse; font-size:12.5px;}
@@ -363,8 +358,16 @@
     cursor:pointer; padding:0 2px; line-height:1;
   }
   .leg-item .remove-btn:hover{color:var(--bad);}
-  .leg-odds{font-family:var(--font-mono); color:var(--good); font-weight:600; margin-top:4px;}
-  .leg-shop{display:flex; flex-wrap:wrap; gap:5px; margin-top:7px;}
+  .leg-book-row{
+    display:flex; align-items:center; gap:8px; margin-top:8px;
+  }
+  .leg-book-label{font-size:11px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.6px; font-weight:600;}
+  .leg-book-select{
+    flex:1; font-family:var(--font-mono); font-size:12.5px; font-weight:600;
+    color:var(--good); background:var(--bg-card); border:1px solid var(--border);
+    border-radius:6px; padding:6px 8px;
+  }
+  .leg-book-select:focus{border-color:var(--accent);}
 
   .parlay-result{
     margin-top:12px; padding-top:12px; border-top:1px solid var(--border-soft);
@@ -381,24 +384,6 @@
   }
 
   /* ---------- One-tap slip handoff ---------- */
-  .slip-book-chips{display:flex; flex-wrap:wrap; gap:8px;}
-  .slip-book-chip{
-    display:flex; flex-direction:column; align-items:center; gap:2px;
-    background:var(--bg-raised); border:1px solid var(--border);
-    border-radius:9px; padding:8px 14px; cursor:pointer;
-    transition:all .15s ease; position:relative; min-width:86px;
-  }
-  .slip-book-chip:hover{border-color:var(--accent-dim); transform:translateY(-1px);}
-  .slip-book-chip.active{background:rgba(187,0,0,0.14); border-color:var(--accent);}
-  .slip-book-chip .chip-book-name{font-size:11.5px; font-weight:700; color:var(--text);}
-  .slip-book-chip.active .chip-book-name{color:var(--accent);}
-  .slip-book-chip .chip-book-odds{font-family:var(--font-mono); font-size:12.5px; font-weight:700; color:var(--text-dim);}
-  .slip-book-chip.active .chip-book-odds{color:var(--accent);}
-  .slip-book-chip .chip-best-tag{
-    position:absolute; top:-7px; right:-6px;
-    font-size:8.5px; font-weight:800; text-transform:uppercase; letter-spacing:.4px;
-    background:var(--good); color:#1B1B1B; border-radius:4px; padding:1px 5px;
-  }
   .place-all-btn{
     display:block; text-align:center; margin-top:12px;
     background:linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%);
@@ -513,18 +498,6 @@
 .flag-chip.warn{background:var(--warn); color:#1B1B1B;}
 .flag-chip.info{background:var(--bg-raised); color:var(--text-dim); border:1px solid var(--border);}
 
-/* ---------- Kalshi reference row ---------- */
-.book-row.kalshi-row{
-  border:1px dashed var(--border); background:transparent; margin-top:8px;
-}
-.kalshi-badge{
-  font-family:var(--font-display); font-weight:600; font-size:15px;
-  padding:4px 10px; border-radius:5px; letter-spacing:.3px;
-  min-width:88px; text-align:center; flex-shrink:0;
-  background:transparent; border:1.5px solid var(--good); color:var(--good);
-}
-.kalshi-note{font-size:10px; color:var(--text-faint); margin-left:4px;}
-
 /* ---------- My books ---------- */
 .mybook-grid{display:flex; flex-wrap:wrap; gap:8px;}
 .mybook-cell{
@@ -578,6 +551,15 @@
 .rating-tag.w-good{color:var(--good); border-color:var(--good); background:rgba(61,220,132,0.1);}
 .rating-tag.w-mod{color:var(--warn); border-color:var(--warn); background:rgba(255,180,67,0.08);}
 .rating-tag.w-bad{color:var(--bad); border-color:var(--bad); background:rgba(255,107,107,0.1);}
+.pitchers-strip{
+  display:flex; align-items:center; gap:10px;
+  padding:10px 16px; border-bottom:1px solid var(--border-soft);
+  background:var(--bg-card);
+}
+.pitcher-card{display:flex; align-items:center; gap:8px; min-width:0; flex:1;}
+.pitcher-name{font-size:12.5px; font-weight:600; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.pitcher-team{font-size:10.5px; color:var(--text-faint);}
+.pitcher-vs{font-size:11px; color:var(--text-faint); font-weight:600; text-transform:uppercase; flex-shrink:0;}
 .wind-field-wrap{
   margin-left:auto; display:flex; align-items:center; gap:6px; flex-shrink:0;
 }
