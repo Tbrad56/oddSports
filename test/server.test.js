@@ -750,3 +750,121 @@ test('pitchers: schedule StatsAPI failure -> 502 Stats service unavailable', asy
   assert.equal(res.status, 502);
   assert.equal(res.body.error, 'Stats service unavailable');
 });
+
+// ---------- NFL: odds markets, prop groups, nflIds ----------
+
+const SLEEPER_DUMP = {
+  '6770': { full_name: 'Joe Burrow', position: 'QB', team: 'CIN', status: 'Active', depth_chart_order: 1 },
+  '9509': { full_name: 'Chase Brown', position: 'RB', team: 'CIN', status: 'Active', depth_chart_order: 1 },
+  '1111': { full_name: 'Old Retired', position: 'QB', team: null, status: 'Inactive', depth_chart_order: null }
+};
+
+const NFL_PROPS_BODY = {
+  id: 'ev9',
+  bookmakers: [{
+    key: 'draftkings', title: 'DraftKings',
+    markets: [{
+      key: 'player_pass_yds',
+      outcomes: [
+        { name: 'Over',  description: 'Joe Burrow', point: 267.5, price: -110 },
+        { name: 'Under', description: 'Joe Burrow', point: 267.5, price: -110 }
+      ]
+    }]
+  }]
+};
+
+function nflApp(overrides = {}){
+  const f = routedFetch([
+    ...(overrides.routes || []),
+    ['api.the-odds-api.com', okResponse(NFL_PROPS_BODY)],
+    ['api.sleeper.app/v1/players/nfl', okResponse(SLEEPER_DUMP)]
+  ]);
+  const app = createApp({ apiKey: 'k', fetchFn: f, ...(overrides.opts || {}) });
+  return { app, f };
+}
+
+test('NFL odds request includes spreads and totals, no F5 markets', async () => {
+  const f = fakeFetch(() => okResponse([]));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/odds/americanfootball_nfl');
+  assert.equal(res.status, 200);
+  assert.equal(f.calls.length, 1);
+  assert.match(f.calls[0], /markets=h2h,spreads,totals&/);
+  assert.doesNotMatch(f.calls[0], /1st_5_innings/);
+});
+
+test('NCAAF odds request stays moneyline-only', async () => {
+  const f = fakeFetch(() => okResponse([]));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  await request(app).get('/api/odds/americanfootball_ncaaf');
+  assert.match(f.calls[0], /markets=h2h&/);
+});
+
+test('NFL props: missing group defaults to the popular markets', async () => {
+  const { app, f } = nflApp();
+  const res = await request(app).get('/api/props/americanfootball_nfl/0a1b2c3d4e5f');
+  assert.equal(res.status, 200);
+  const oddsCall = f.calls.find(u => u.includes('api.the-odds-api.com'));
+  assert.match(oddsCall, /markets=player_pass_yds,player_pass_tds,player_rush_yds,player_receptions,player_reception_yds,player_anytime_td&/);
+});
+
+test('NFL props: explicit group swaps the upstream market list', async () => {
+  const { app, f } = nflApp();
+  const res = await request(app).get('/api/props/americanfootball_nfl/0a1b2c3d4e5f').query({ group: 'passing' });
+  assert.equal(res.status, 200);
+  const oddsCall = f.calls.find(u => u.includes('api.the-odds-api.com'));
+  assert.match(oddsCall, /markets=player_pass_attempts,player_pass_completions,player_pass_interceptions,player_pass_yds_alternate,player_pass_tds_alternate&/);
+});
+
+test('NFL props: unknown group -> 400, upstream not called', async () => {
+  const { app, f } = nflApp();
+  const res = await request(app).get('/api/props/americanfootball_nfl/0a1b2c3d4e5f').query({ group: 'nope' });
+  assert.equal(res.status, 400);
+  assert.equal(f.calls.filter(u => u.includes('api.the-odds-api.com')).length, 0);
+});
+
+test('props: explicit group on a flat-list sport -> 400, upstream not called', async () => {
+  const f = fakeFetch(() => okResponse({}));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/props/basketball_nba/0a1b2c3d4e5f').query({ group: 'passing' });
+  assert.equal(res.status, 400);
+  assert.equal(f.calls.length, 0);
+});
+
+test('NFL props: each group is cached separately, repeats within TTL are free', async () => {
+  let t = 1000000;
+  const { app, f } = nflApp({ opts: { cacheTtlMs: 600000, now: () => t } });
+  const oddsCalls = () => f.calls.filter(u => u.includes('api.the-odds-api.com')).length;
+  await request(app).get('/api/props/americanfootball_nfl/0a1b2c3d4e5f');
+  assert.equal(oddsCalls(), 1);
+  await request(app).get('/api/props/americanfootball_nfl/0a1b2c3d4e5f').query({ group: 'passing' });
+  assert.equal(oddsCalls(), 2, 'a second group must cost a second upstream call');
+  t += 120000;
+  await request(app).get('/api/props/americanfootball_nfl/0a1b2c3d4e5f').query({ group: 'passing' });
+  assert.equal(oddsCalls(), 2, 'a repeat of a fetched group within TTL must be served from cache');
+});
+
+test('NFL props: response carries nflIds for active players only', async () => {
+  const { app } = nflApp();
+  const res = await request(app).get('/api/props/americanfootball_nfl/0a1b2c3d4e5f');
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.nflIds, { 'joe burrow': '6770' });
+});
+
+test('NFL props: Sleeper failure leaves props intact without nflIds', async () => {
+  const { app } = nflApp({ routes: [['api.sleeper.app', errResponse(500)]] });
+  const res = await request(app).get('/api/props/americanfootball_nfl/0a1b2c3d4e5f');
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.bookmakers, NFL_PROPS_BODY.bookmakers);
+  assert.equal(res.body.nflIds, undefined);
+});
+
+test('NFL props: Sleeper dump is fetched once across requests (24h cache)', async () => {
+  let t = 1000000;
+  const { app, f } = nflApp({ opts: { cacheTtlMs: 1000, now: () => t } });
+  await request(app).get('/api/props/americanfootball_nfl/0a1b2c3d4e5f');
+  t += 2000; // odds cache expired, sleeper cache (24h) still fresh
+  await request(app).get('/api/props/americanfootball_nfl/0a1b2c3d4e5f');
+  assert.equal(f.calls.filter(u => u.includes('api.sleeper.app')).length, 1);
+  assert.equal(f.calls.filter(u => u.includes('api.the-odds-api.com')).length, 2);
+});

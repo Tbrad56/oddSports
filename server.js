@@ -12,9 +12,17 @@ const SPORTS = new Set([
 ]);
 
 // Server-controlled prop markets per sport (quota protection: clients
-// cannot request arbitrary markets). Copied from the prototype.
+// cannot request arbitrary markets). NFL is split into named fetch groups so
+// the client's category tabs only spend quota on what the user opens; the
+// other sports are flat lists with no group choice.
 const PROP_MARKETS = {
-  americanfootball_nfl: ['player_pass_yds', 'player_pass_tds', 'player_rush_yds', 'player_receptions', 'player_reception_yds', 'player_anytime_td'],
+  americanfootball_nfl: {
+    popular: ['player_pass_yds', 'player_pass_tds', 'player_rush_yds', 'player_receptions', 'player_reception_yds', 'player_anytime_td'],
+    passing: ['player_pass_attempts', 'player_pass_completions', 'player_pass_interceptions', 'player_pass_yds_alternate', 'player_pass_tds_alternate'],
+    rush_receive: ['player_rush_attempts', 'player_rush_longest', 'player_reception_longest', 'player_rush_yds_alternate', 'player_receptions_alternate', 'player_reception_yds_alternate'],
+    td: ['player_1st_td', 'player_last_td'],
+    kicker_defense: ['player_kicking_points', 'player_field_goals', 'player_tackles_assists', 'player_sacks', 'player_defensive_interceptions']
+  },
   americanfootball_ncaaf: ['player_pass_yds', 'player_pass_tds', 'player_rush_yds', 'player_receptions', 'player_reception_yds', 'player_anytime_td'],
   basketball_nba: ['player_points', 'player_rebounds', 'player_assists', 'player_threes', 'player_points_rebounds_assists'],
   basketball_ncaab: ['player_points', 'player_rebounds', 'player_assists', 'player_threes'],
@@ -151,10 +159,12 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
   app.get('/api/odds/:sport', (req, res) => {
     const { sport } = req.params;
     if (!SPORTS.has(sport)) return res.status(400).json({ error: 'Unknown sport' });
-    // MLB only: full-game spreads/totals alongside moneyline, in the same call
-    // as the F5 markets — Board's Game Lines grid needs Spread/Total/Money for
-    // MLB specifically (matches the F5 toggle, which is also MLB-only).
-    const markets = sport === 'baseball_mlb' ? ['h2h', 'spreads', 'totals', ...MLB_F5_MARKETS] : ['h2h'];
+    // MLB and NFL: full-game spreads/totals alongside moneyline for the
+    // Board's Game Lines grid, in one call. MLB additionally gets the F5
+    // period markets (the F5 toggle is MLB-only).
+    const markets = sport === 'baseball_mlb' ? ['h2h', 'spreads', 'totals', ...MLB_F5_MARKETS]
+      : sport === 'americanfootball_nfl' ? ['h2h', 'spreads', 'totals']
+      : ['h2h'];
     proxy(`/v4/sports/${sport}/odds/?regions=us,us2&markets=${markets.join(',')}&oddsFormat=american&includeLinks=true&includeSids=true`, res);
   });
 
@@ -222,6 +232,24 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     })().catch(err => sendUpstreamError(res, err));
   });
 
+  // Sleeper's full NFL player dump (free, no key, ~5MB) — fetched at most
+  // once per 24h. nameToId only maps players currently on a roster, so a
+  // retired player sharing a name never steals an active player's photo.
+  const SLEEPER_TTL_MS = 24 * 60 * 60 * 1000;
+  let sleeperCache = null; // {players, nameToId, expires}
+  async function getSleeperPlayers(){
+    if (sleeperCache && now() < sleeperCache.expires) return sleeperCache;
+    const resp = await fetchFn('https://api.sleeper.app/v1/players/nfl');
+    if (!resp.ok) throw new Error(`Sleeper ${resp.status}`);
+    const players = await resp.json();
+    const nameToId = {};
+    Object.entries(players).forEach(([id, p]) => {
+      if (p && p.full_name && p.team) nameToId[p.full_name.toLowerCase()] = id;
+    });
+    sleeperCache = { players, nameToId, expires: now() + SLEEPER_TTL_MS };
+    return sleeperCache;
+  }
+
   app.get('/api/props/:sport/:eventId', (req, res) => {
     handlePropsRequest(req, res).catch(err => {
       console.error(`Props fetch failed: ${err && err.message || err}`);
@@ -231,9 +259,19 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
 
   async function handlePropsRequest(req, res){
     const { sport, eventId } = req.params;
-    const markets = PROP_MARKETS[sport];
-    if (!markets) return res.status(400).json({ error: 'Props not supported for this sport' });
+    const sportMarkets = PROP_MARKETS[sport];
+    if (!sportMarkets) return res.status(400).json({ error: 'Props not supported for this sport' });
     if (!/^[a-z0-9]{1,64}$/i.test(eventId)) return res.status(400).json({ error: 'Bad event id' });
+
+    let markets;
+    if (Array.isArray(sportMarkets)) {
+      if (req.query.group !== undefined) return res.status(400).json({ error: 'This sport has no prop groups' });
+      markets = sportMarkets;
+    } else {
+      const group = req.query.group === undefined ? 'popular' : req.query.group;
+      markets = sportMarkets[group];
+      if (!markets) return res.status(400).json({ error: 'Unknown prop group' });
+    }
 
     let r;
     try {
@@ -243,6 +281,20 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     }
 
     let body = r.body;
+    // NFL: resolve player names to Sleeper IDs so the frontend can show real
+    // headshots (sleepercdn is keyed by these). Best-effort — Sleeper being
+    // down just means no photos, never a failed props response.
+    if (sport === 'americanfootball_nfl') {
+      try {
+        const { nameToId } = await getSleeperPlayers();
+        const nflIds = {};
+        (body.bookmakers || []).forEach(bm => (bm.markets || []).forEach(m => (m.outcomes || []).forEach(o => {
+          const nm = (o.description || o.name || '').toLowerCase();
+          if (nm && nameToId[nm]) nflIds[nm] = nameToId[nm];
+        })));
+        body = { ...body, nflIds };
+      } catch (e) { /* best-effort — a Sleeper miss just means no photos */ }
+    }
     // MLB only: resolve each player name to a StatsAPI personId (cached lookup,
     // same helper /api/analyze uses) so the frontend can show a real headshot.
     if (sport === 'baseball_mlb') {
