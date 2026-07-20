@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LineWatch — Locked</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Teko:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#1B1B1B; --bg-card:#242424; --bg-raised:#363636;
+    --border:#4D4D4D; --text:#F5F5F5; --text-dim:#B8B8B8; --text-faint:#808080;
+    --accent:#BB0000; --accent-dim:#8C0000; --good:#3DDC84; --bad:#FF6B6B;
+    --font-display:'Teko','Oswald',sans-serif; --font-body:'Inter',system-ui,sans-serif;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{
+    background:var(--bg); color:var(--text); font-family:var(--font-body);
+    min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px;
+  }
+  .lock-card{
+    width:100%; max-width:380px; background:var(--bg-card); border:1px solid var(--border);
+    border-radius:14px; padding:32px 28px; text-align:center;
+  }
+  .lock-logo{
+    font-family:var(--font-display); font-size:38px; font-weight:700; letter-spacing:.5px;
+    margin-bottom:6px;
+  }
+  .lock-logo span{color:var(--accent);}
+  .lock-sub{font-size:12.5px; color:var(--text-faint); margin-bottom:26px; text-transform:uppercase; letter-spacing:1px;}
+  .lock-icon{font-size:34px; margin-bottom:14px;}
+  h2{font-family:var(--font-display); font-size:22px; font-weight:600; margin-bottom:6px;}
+  p.hint{font-size:12.5px; color:var(--text-dim); margin-bottom:20px; line-height:1.5;}
+  input{
+    width:100%; background:var(--bg-raised); color:var(--text); border:1px solid var(--border);
+    border-radius:8px; padding:12px 14px; font-family:var(--font-body); font-size:14px; margin-bottom:10px;
+  }
+  input:focus{outline:none; border-color:var(--accent);}
+  button{
+    width:100%; font-family:var(--font-body); font-weight:700; font-size:14px;
+    border-radius:8px; border:none; cursor:pointer; padding:13px 16px; margin-top:4px;
+    transition:transform .15s ease, opacity .15s ease;
+  }
+  button:active{transform:scale(0.97);}
+  button:disabled{opacity:.5; cursor:not-allowed;}
+  .btn-primary{background:linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%); color:#FFF;}
+  .btn-face{
+    background:var(--bg-raised); color:var(--text); border:1px solid var(--border);
+    display:flex; align-items:center; justify-content:center; gap:8px;
+  }
+  .btn-face:hover{border-color:var(--accent-dim);}
+  .btn-link{
+    background:transparent; color:var(--text-faint); font-weight:600; font-size:12px;
+    text-decoration:underline; padding:8px;
+  }
+  .divider{display:flex; align-items:center; gap:10px; margin:16px 0; color:var(--text-faint); font-size:11px; text-transform:uppercase; letter-spacing:.6px;}
+  .divider::before, .divider::after{content:''; flex:1; height:1px; background:var(--border);}
+  .msg{font-size:12.5px; border-radius:8px; padding:9px 12px; margin-bottom:14px; text-align:left;}
+  .msg.error{background:rgba(255,107,107,0.12); color:var(--bad); border:1px solid rgba(255,107,107,0.3);}
+  .msg.success{background:rgba(61,220,132,0.12); color:var(--good); border:1px solid rgba(61,220,132,0.3);}
+  .spinner{
+    display:inline-block; width:14px; height:14px; border-radius:50%;
+    border:2px solid rgba(255,255,255,0.3); border-top-color:#FFF; animation:spin .7s linear infinite;
+    vertical-align:middle; margin-right:6px;
+  }
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .hidden{display:none;}
+</style>
+</head>
+<body>
+  <div class="lock-card">
+    <div class="lock-logo">Line<span>Watch</span></div>
+    <div class="lock-sub">All odds everywhere</div>
+
+    <div id="msgArea"></div>
+
+    <!-- First-run setup -->
+    <div id="setupView" class="hidden">
+      <div class="lock-icon">🔒</div>
+      <h2>Set up your lock</h2>
+      <p class="hint">Choose a username and password to protect this app. You can add Face ID / Touch ID unlock right after.</p>
+      <input type="text" id="setupUsername" placeholder="Username" autocomplete="username">
+      <input type="password" id="setupPassword" placeholder="Password (8+ characters)" autocomplete="new-password">
+      <input type="password" id="setupPassword2" placeholder="Confirm password" autocomplete="new-password">
+      <button class="btn-primary" id="setupBtn">Create lock</button>
+    </div>
+
+    <!-- Returning-user unlock -->
+    <div id="loginView" class="hidden">
+      <div class="lock-icon">🔒</div>
+      <h2>Locked</h2>
+      <p class="hint">Sign in to open LineWatch.</p>
+      <button class="btn-face hidden" id="faceBtn">
+        <span id="faceBtnLabel">🆔 Unlock with Face ID / Touch ID</span>
+      </button>
+      <div class="divider" id="orDivider">or</div>
+      <input type="text" id="loginUsername" placeholder="Username" autocomplete="username">
+      <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password">
+      <button class="btn-primary" id="loginBtn">Unlock</button>
+    </div>
+
+    <!-- Post-login prompt to enable biometrics (setup flow only) -->
+    <div id="enrollView" class="hidden">
+      <div class="lock-icon">🆔</div>
+      <h2>Add Face ID / Touch ID?</h2>
+      <p class="hint">Skip typing your password next time on this device.</p>
+      <button class="btn-primary" id="enrollBtn">Enable biometric unlock</button>
+      <button class="btn-link" id="skipEnrollBtn">Not now — take me in</button>
+    </div>
+  </div>
+
+<script>
+(function(){
+  const msgArea = document.getElementById('msgArea');
+  function showMsg(text, kind){
+    msgArea.innerHTML = `<div class="msg ${kind}">${text}</div>`;
+  }
+  function clearMsg(){ msgArea.innerHTML = ''; }
+  function show(id){
+    ['setupView','loginView','enrollView'].forEach(v => document.getElementById(v).classList.toggle('hidden', v !== id));
+  }
+
+  // ---------- WebAuthn base64url <-> ArrayBuffer helpers (native, no library needed client-side) ----------
+  function b64urlToBuf(s){
+    const pad = '='.repeat((4 - s.length % 4) % 4);
+    const b64 = (s + pad).replace(/-/g, '+').replace(/_/g, '/');
+    const bin = atob(b64);
+    const buf = new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) buf[i] = bin.charCodeAt(i);
+    return buf.buffer;
+  }
+  function bufToB64url(buf){
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    for(let i=0;i<bytes.length;i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  }
+
+  async function api(path, body){
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: body !== undefined ? {'Content-Type':'application/json'} : {},
+      body: body !== undefined ? JSON.stringify(body) : undefined
+    });
+    let data = {};
+    try{ data = await res.json(); }catch(e){}
+    if(!res.ok) throw new Error(data.error || 'Something went wrong.');
+    return data;
+  }
+
+  async function boot(){
+    let status;
+    try{
+      status = await (await fetch('/api/auth/status')).json();
+    }catch(e){
+      showMsg('Could not reach the server. Refresh to try again.', 'error');
+      return;
+    }
+    if(!status.configured){
+      show('setupView');
+      return;
+    }
+    show('loginView');
+    if(status.webauthnEnabled && window.PublicKeyCredential){
+      document.getElementById('faceBtn').classList.remove('hidden');
+      document.getElementById('faceBtn').addEventListener('click', doWebauthnLogin);
+      // Offer it immediately — most phones/laptops treat this as a user gesture already
+    } else {
+      document.getElementById('orDivider').classList.add('hidden');
+    }
+  }
+
+  document.getElementById('setupBtn').addEventListener('click', async ()=>{
+    clearMsg();
+    const username = document.getElementById('setupUsername').value.trim();
+    const password = document.getElementById('setupPassword').value;
+    const password2 = document.getElementById('setupPassword2').value;
+    if(!username){ showMsg('Choose a username.', 'error'); return; }
+    if(password.length < 8){ showMsg('Password must be at least 8 characters.', 'error'); return; }
+    if(password !== password2){ showMsg('Passwords do not match.', 'error'); return; }
+    const btn = document.getElementById('setupBtn');
+    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Creating…';
+    try{
+      await api('/api/auth/setup', { username, password });
+      clearMsg();
+      show('enrollView');
+    }catch(e){
+      showMsg(e.message, 'error');
+    }finally{
+      btn.disabled = false; btn.textContent = 'Create lock';
+    }
+  });
+
+  document.getElementById('loginBtn').addEventListener('click', doPasswordLogin);
+  document.getElementById('loginPassword').addEventListener('keydown', e=>{ if(e.key==='Enter') doPasswordLogin(); });
+
+  async function doPasswordLogin(){
+    clearMsg();
+    const username = document.getElementById('loginUsername').value.trim();
+    const password = document.getElementById('loginPassword').value;
+    if(!username || !password){ showMsg('Enter your username and password.', 'error'); return; }
+    const btn = document.getElementById('loginBtn');
+    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Unlocking…';
+    try{
+      await api('/api/auth/login', { username, password });
+      window.location.href = '/';
+    }catch(e){
+      showMsg(e.message, 'error');
+      btn.disabled = false; btn.textContent = 'Unlock';
+    }
+  }
+
+  async function doWebauthnLogin(){
+    clearMsg();
+    if(!window.PublicKeyCredential){
+      showMsg('This browser does not support Face ID / Touch ID unlock.', 'error');
+      return;
+    }
+    const btn = document.getElementById('faceBtn');
+    btn.disabled = true;
+    document.getElementById('faceBtnLabel').innerHTML = '<span class="spinner"></span>Waiting for Face ID / Touch ID…';
+    try{
+      const options = await api('/api/auth/webauthn/login-options');
+      const cred = await navigator.credentials.get({
+        publicKey: {
+          challenge: b64urlToBuf(options.challenge),
+          rpId: options.rpId,
+          timeout: options.timeout,
+          userVerification: options.userVerification || 'preferred',
+          allowCredentials: (options.allowCredentials || []).map(c => ({
+            id: b64urlToBuf(c.id), type: 'public-key', transports: c.transports
+          }))
+        }
+      });
+      const response = {
+        id: cred.id, rawId: bufToB64url(cred.rawId), type: cred.type,
+        response: {
+          clientDataJSON: bufToB64url(cred.response.clientDataJSON),
+          authenticatorData: bufToB64url(cred.response.authenticatorData),
+          signature: bufToB64url(cred.response.signature),
+          userHandle: cred.response.userHandle ? bufToB64url(cred.response.userHandle) : null
+        },
+        clientExtensionResults: cred.getClientExtensionResults ? cred.getClientExtensionResults() : {}
+      };
+      await api('/api/auth/webauthn/login-verify', response);
+      window.location.href = '/';
+    }catch(e){
+      showMsg(e.name === 'NotAllowedError' ? 'Cancelled or not recognized — try your password instead.' : (e.message || 'Biometric unlock failed.'), 'error');
+      btn.disabled = false;
+      document.getElementById('faceBtnLabel').textContent = '🆔 Unlock with Face ID / Touch ID';
+    }
+  }
+
+  document.getElementById('enrollBtn').addEventListener('click', async ()=>{
+    clearMsg();
+    if(!window.PublicKeyCredential){
+      showMsg('This browser does not support Face ID / Touch ID.', 'error');
+      return;
+    }
+    const btn = document.getElementById('enrollBtn');
+    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Follow the prompt…';
+    try{
+      const options = await api('/api/auth/webauthn/register-options');
+      const cred = await navigator.credentials.create({
+        publicKey: {
+          challenge: b64urlToBuf(options.challenge),
+          rp: options.rp,
+          user: {
+            id: b64urlToBuf(options.user.id),
+            name: options.user.name,
+            displayName: options.user.displayName
+          },
+          pubKeyCredParams: options.pubKeyCredParams,
+          timeout: options.timeout,
+          attestation: options.attestation,
+          authenticatorSelection: options.authenticatorSelection,
+          excludeCredentials: (options.excludeCredentials || []).map(c => ({
+            id: b64urlToBuf(c.id), type: 'public-key', transports: c.transports
+          }))
+        }
+      });
+      const response = {
+        id: cred.id, rawId: bufToB64url(cred.rawId), type: cred.type,
+        response: {
+          clientDataJSON: bufToB64url(cred.response.clientDataJSON),
+          attestationObject: bufToB64url(cred.response.attestationObject),
+          transports: cred.response.getTransports ? cred.response.getTransports() : []
+        },
+        clientExtensionResults: cred.getClientExtensionResults ? cred.getClientExtensionResults() : {}
+      };
+      await api('/api/auth/webauthn/register-verify', response);
+      window.location.href = '/';
+    }catch(e){
+      showMsg(e.name === 'NotAllowedError' ? 'Cancelled — you can add this later.' : (e.message || 'Could not set up biometric unlock.'), 'error');
+      btn.disabled = false; btn.textContent = 'Enable biometric unlock';
+    }
+  });
+
+  document.getElementById('skipEnrollBtn').addEventListener('click', ()=>{
+    window.location.href = '/';
+  });
+
+  boot();
+})();
+</script>
+</body>
+</html>

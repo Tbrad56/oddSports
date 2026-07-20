@@ -1,8 +1,14 @@
 require('dotenv').config();
 const express = require('express');
 const path = require('path');
+const crypto = require('crypto');
 const { analyzeProp, rankPicks } = require('./analysis');
 const { createStore, computeRecord } = require('./store');
+const { createAuthStore } = require('./auth');
+const {
+  generateRegistrationOptions, verifyRegistrationResponse,
+  generateAuthenticationOptions, verifyAuthenticationResponse
+} = require('@simplewebauthn/server');
 
 const UPSTREAM = 'https://api.the-odds-api.com';
 
@@ -44,12 +50,246 @@ const MLB_MARKET_STATS = {
   batter_home_runs:   { group: 'hitting',  stat: 'homeRuns',   window: 15 }
 };
 
-function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now = Date.now, dataDir = null, enableSweep = false } = {}) {
+function createApp({
+  apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now = Date.now, dataDir = null, enableSweep = false,
+  enableAuth = false, sessionSecret = null
+} = {}) {
   const app = express();
+  app.set('trust proxy', 1); // Railway terminates TLS; this makes req.secure/req.protocol honor X-Forwarded-Proto
+  app.use(express.json({ limit: '64kb' }));
   const cache = new Map(); // upstreamPath -> {body, remaining, cachedAt, expires}
   const statsCache = new Map(); // statsapi path -> {body, expires}
   const analysisCache = new Map(); // eventId -> {body, expires}
   const store = createStore({ dataDir });
+
+  // ---------- Auth gate: single-user password + optional WebAuthn (Face ID /
+  // Touch ID / Windows Hello) lock screen. Opt-in via enableAuth so every
+  // existing test and the local-dev default keep working with zero setup;
+  // the real production boot below turns it on. ----------
+  if (enableAuth) {
+    if (!sessionSecret) throw new Error('enableAuth requires a sessionSecret');
+    const authStore = createAuthStore({ dataDir });
+    const SESSION_COOKIE = 'lw_session';
+    const SESSION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+    function signSession(payload){
+      const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+      const sig = crypto.createHmac('sha256', sessionSecret).update(body).digest('base64url');
+      return `${body}.${sig}`;
+    }
+    function verifySessionToken(token){
+      if (!token || typeof token !== 'string' || !token.includes('.')) return null;
+      const [body, sig] = token.split('.');
+      const expected = crypto.createHmac('sha256', sessionSecret).update(body).digest('base64url');
+      const a = Buffer.from(sig), b = Buffer.from(expected);
+      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+      try {
+        const payload = JSON.parse(Buffer.from(body, 'base64url').toString());
+        if (!payload.exp || Date.now() > payload.exp) return null;
+        return payload;
+      } catch (e) { return null; }
+    }
+    function parseCookies(req){
+      const header = req.headers.cookie || '';
+      const out = {};
+      header.split(';').forEach(part => {
+        const i = part.indexOf('=');
+        if (i === -1) return;
+        out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+      });
+      return out;
+    }
+    function getSession(req){
+      return verifySessionToken(parseCookies(req)[SESSION_COOKIE]);
+    }
+    function setSessionCookie(req, res, username){
+      const token = signSession({ u: username, exp: Date.now() + SESSION_MS });
+      const attrs = [`${SESSION_COOKIE}=${token}`, 'HttpOnly', 'Path=/', 'SameSite=Lax', `Max-Age=${Math.floor(SESSION_MS/1000)}`];
+      if (req.secure) attrs.push('Secure');
+      res.set('Set-Cookie', attrs.join('; '));
+    }
+    function clearSessionCookie(req, res){
+      const attrs = [`${SESSION_COOKIE}=`, 'HttpOnly', 'Path=/', 'SameSite=Lax', 'Max-Age=0'];
+      if (req.secure) attrs.push('Secure');
+      res.set('Set-Cookie', attrs.join('; '));
+    }
+    function rpIdOf(req){ return req.hostname || 'localhost'; }
+    function originOf(req){ return `${req.protocol}://${req.get('host')}`; }
+
+    // Basic brute-force throttle on the password endpoint. In-memory, so it
+    // resets on restart and doesn't share state across instances — acceptable
+    // for a single-instance personal deployment, not a substitute for real
+    // rate limiting at scale.
+    const loginAttempts = new Map(); // ip -> {count, resetAt}
+    function tooManyAttempts(ip){
+      const hit = loginAttempts.get(ip);
+      if (!hit || Date.now() > hit.resetAt) return false;
+      return hit.count >= 10;
+    }
+    function recordAttempt(ip){
+      const hit = loginAttempts.get(ip);
+      if (!hit || Date.now() > hit.resetAt) {
+        loginAttempts.set(ip, { count: 1, resetAt: Date.now() + 15 * 60 * 1000 });
+      } else {
+        hit.count++;
+      }
+    }
+
+    // Single pending challenge slots — fine for a single-user app; a second
+    // in-flight attempt just invalidates the first rather than causing any
+    // security issue.
+    let pendingRegChallenge = null;
+    let pendingLoginChallenge = null;
+
+    app.get('/api/auth/status', (req, res) => {
+      res.json({
+        configured: authStore.hasCredentials(),
+        username: authStore.hasCredentials() ? authStore.username() : null,
+        webauthnEnabled: authStore.webauthnCredentials().length > 0,
+        authenticated: !!getSession(req)
+      });
+    });
+
+    app.post('/api/auth/setup', (req, res) => {
+      if (authStore.hasCredentials()) return res.status(409).json({ error: 'Already configured' });
+      const { username, password } = req.body || {};
+      if (typeof username !== 'string' || !username.trim() || username.length > 64) {
+        return res.status(400).json({ error: 'Choose a username (1-64 characters)' });
+      }
+      if (typeof password !== 'string' || password.length < 8) {
+        return res.status(400).json({ error: 'Password must be at least 8 characters' });
+      }
+      authStore.setPassword(username.trim(), password);
+      setSessionCookie(req, res, username.trim());
+      res.json({ ok: true });
+    });
+
+    app.post('/api/auth/login', (req, res) => {
+      const ip = req.ip || 'unknown';
+      if (tooManyAttempts(ip)) return res.status(429).json({ error: 'Too many attempts — try again in 15 minutes' });
+      const { username, password } = req.body || {};
+      if (typeof username !== 'string' || typeof password !== 'string' || !authStore.verifyPassword(username, password)) {
+        recordAttempt(ip);
+        return res.status(401).json({ error: 'Invalid username or password' });
+      }
+      setSessionCookie(req, res, username);
+      res.json({ ok: true });
+    });
+
+    app.post('/api/auth/logout', (req, res) => {
+      clearSessionCookie(req, res);
+      res.json({ ok: true });
+    });
+
+    // Register a new Face ID / Touch ID / Windows Hello credential — only
+    // once already logged in via password, so this can't be used to create
+    // a backdoor without first proving the password.
+    app.post('/api/auth/webauthn/register-options', async (req, res) => {
+      const session = getSession(req);
+      if (!session) return res.status(401).json({ error: 'Log in with your password first' });
+      try {
+        const options = await generateRegistrationOptions({
+          rpName: 'LineWatch',
+          rpID: rpIdOf(req),
+          userName: authStore.username(),
+          userID: Buffer.from(authStore.username()),
+          attestationType: 'none',
+          excludeCredentials: authStore.webauthnCredentials().map(c => ({ id: c.credentialID, transports: c.transports })),
+          authenticatorSelection: { residentKey: 'preferred', userVerification: 'preferred', authenticatorAttachment: 'platform' }
+        });
+        pendingRegChallenge = { challenge: options.challenge, expires: Date.now() + 5 * 60 * 1000 };
+        res.json(options);
+      } catch (e) {
+        res.status(500).json({ error: 'Could not start biometric setup' });
+      }
+    });
+
+    app.post('/api/auth/webauthn/register-verify', async (req, res) => {
+      const session = getSession(req);
+      if (!session) return res.status(401).json({ error: 'Log in with your password first' });
+      if (!pendingRegChallenge || Date.now() > pendingRegChallenge.expires) {
+        return res.status(400).json({ error: 'Registration expired — try again' });
+      }
+      try {
+        const verification = await verifyRegistrationResponse({
+          response: req.body,
+          expectedChallenge: pendingRegChallenge.challenge,
+          expectedOrigin: originOf(req),
+          expectedRPID: rpIdOf(req)
+        });
+        pendingRegChallenge = null;
+        if (!verification.verified || !verification.registrationInfo) {
+          return res.status(400).json({ error: 'Could not verify biometric registration' });
+        }
+        const { credential } = verification.registrationInfo;
+        authStore.addWebauthnCredential({
+          credentialID: credential.id,
+          publicKey: Buffer.from(credential.publicKey).toString('base64'),
+          counter: credential.counter,
+          transports: (req.body.response && req.body.response.transports) || []
+        });
+        res.json({ ok: true });
+      } catch (e) {
+        res.status(400).json({ error: 'Could not verify biometric registration' });
+      }
+    });
+
+    // Unauthenticated by design — this IS how you log in without a password.
+    app.post('/api/auth/webauthn/login-options', async (req, res) => {
+      const creds = authStore.webauthnCredentials();
+      if (!creds.length) return res.status(400).json({ error: 'No biometric login set up yet' });
+      try {
+        const options = await generateAuthenticationOptions({
+          rpID: rpIdOf(req),
+          allowCredentials: creds.map(c => ({ id: c.credentialID, transports: c.transports })),
+          userVerification: 'preferred'
+        });
+        pendingLoginChallenge = { challenge: options.challenge, expires: Date.now() + 5 * 60 * 1000 };
+        res.json(options);
+      } catch (e) {
+        res.status(500).json({ error: 'Could not start biometric login' });
+      }
+    });
+
+    app.post('/api/auth/webauthn/login-verify', async (req, res) => {
+      if (!pendingLoginChallenge || Date.now() > pendingLoginChallenge.expires) {
+        return res.status(400).json({ error: 'Login expired — try again' });
+      }
+      const stored = authStore.webauthnCredentials().find(c => c.credentialID === req.body.id);
+      if (!stored) return res.status(400).json({ error: 'Unrecognized credential' });
+      try {
+        const verification = await verifyAuthenticationResponse({
+          response: req.body,
+          expectedChallenge: pendingLoginChallenge.challenge,
+          expectedOrigin: originOf(req),
+          expectedRPID: rpIdOf(req),
+          credential: {
+            id: stored.credentialID,
+            publicKey: Buffer.from(stored.publicKey, 'base64'),
+            counter: stored.counter,
+            transports: stored.transports
+          }
+        });
+        pendingLoginChallenge = null;
+        if (!verification.verified) return res.status(400).json({ error: 'Could not verify biometric login' });
+        authStore.updateWebauthnCounter(stored.credentialID, verification.authenticationInfo.newCounter);
+        setSessionCookie(req, res, authStore.username());
+        res.json({ ok: true });
+      } catch (e) {
+        res.status(400).json({ error: 'Could not verify biometric login' });
+      }
+    });
+
+    // The actual gate. Registered before every other route below, so nothing
+    // — API or static file — is reachable without a valid session, except
+    // the /api/auth/* endpoints above and the self-contained lock screen.
+    app.use((req, res, next) => {
+      if (req.path.startsWith('/api/auth/') || req.path === '/lock.html') return next();
+      if (getSession(req)) return next();
+      if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Not authenticated' });
+      res.sendFile(path.join(__dirname, 'public', 'lock.html'));
+    });
+  }
 
   // Fetch (or serve from cache) an Odds API path. Returns {body, remaining, cacheAge}.
   // Throws {kind:'quota'} or {kind:'unavailable'}.
@@ -1504,12 +1744,22 @@ if (require.main === module) {
   // ODDS_CACHE_MINUTES stretches how long odds/props responses are reused
   // before spending fresh credits. Default 10; raise to 30–60 to sip quota.
   const cacheMinutes = Math.max(1, Number(process.env.ODDS_CACHE_MINUTES) || 10);
+  // The lock screen is always on in the real server. SESSION_SECRET should be
+  // set so logins survive a restart/redeploy; without it a random secret is
+  // generated each boot, which works fine but signs everyone out on restart.
+  let sessionSecret = process.env.SESSION_SECRET;
+  if (!sessionSecret) {
+    console.warn('auth: SESSION_SECRET not set — using a random one for this boot only. Set SESSION_SECRET in your environment so logins survive a restart.');
+    sessionSecret = crypto.randomBytes(32).toString('hex');
+  }
   createApp({
     apiKey: process.env.ODDS_API_KEY,
     cacheTtlMs: cacheMinutes * 60 * 1000,
     dataDir: process.env.RAILWAY_VOLUME_MOUNT_PATH || process.env.DATA_DIR || './data',
-    enableSweep: true
+    enableSweep: true,
+    enableAuth: true,
+    sessionSecret
   }).listen(port, () => {
-    console.log(`LineWatch listening on :${port} (odds cached ${cacheMinutes} min)`);
+    console.log(`LineWatch listening on :${port} (odds cached ${cacheMinutes} min, lock screen on)`);
   });
 }

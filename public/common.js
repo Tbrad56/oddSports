@@ -265,7 +265,15 @@ function renderNav(activePage){
   rail.innerHTML = '<a class="rail-logo" href="/">LW</a>' + items.map(([key,href,icon,label])=>
     `<a class="rail-btn${key===activePage?' active':''}" href="${href}">
       <span aria-hidden="true">${icon}</span><span class="rail-label">${label}${key==='slip'?'<span class="slip-badge" id="slipBadge"></span>':''}</span>
-    </a>`).join('');
+    </a>`).join('') +
+    `<button class="rail-btn" id="lockBtn" title="Lock LineWatch" type="button">
+      <span aria-hidden="true">🔒</span><span class="rail-label">Lock</span>
+    </button>`;
+  const lockBtn = document.getElementById('lockBtn');
+  if(lockBtn) lockBtn.addEventListener('click', async ()=>{
+    try{ await fetch('/api/auth/logout', {method:'POST'}); }catch(e){}
+    window.location.href = '/lock.html';
+  });
   updateSlipBadge();
 }
 // Seed from the persisted slip so a non-empty slip doesn't fake-trigger the
