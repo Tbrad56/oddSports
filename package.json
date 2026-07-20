@@ -13,6 +13,7 @@
   "license": "UNLICENSED",
   "private": true,
   "dependencies": {
+    "@simplewebauthn/server": "^13.3.2",
     "dotenv": "^17.4.2",
     "express": "^4.22.2"
   },
