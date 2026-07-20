@@ -184,6 +184,15 @@ function createApp({
     // Register a new Face ID / Touch ID / Windows Hello credential — only
     // once already logged in via password, so this can't be used to create
     // a backdoor without first proving the password.
+    //
+    // residentKey/userVerification are both 'required' (not 'preferred') so
+    // this registers as a true discoverable passkey — synced via iCloud
+    // Keychain / Google Password Manager / Windows Hello, and eligible for
+    // autofill (conditional UI) on the login screen, not just a plain
+    // server-side public key. authenticatorAttachment is left unset (rather
+    // than pinned to 'platform') so a phone's Face ID can also be used
+    // cross-device via QR code from a desktop that has no biometric sensor
+    // of its own.
     app.post('/api/auth/webauthn/register-options', async (req, res) => {
       const session = getSession(req);
       if (!session) return res.status(401).json({ error: 'Log in with your password first' });
@@ -192,15 +201,17 @@ function createApp({
           rpName: 'LineWatch',
           rpID: rpIdOf(req),
           userName: authStore.username(),
+          userDisplayName: authStore.username(),
           userID: Buffer.from(authStore.username()),
           attestationType: 'none',
           excludeCredentials: authStore.webauthnCredentials().map(c => ({ id: c.credentialID, transports: c.transports })),
-          authenticatorSelection: { residentKey: 'preferred', userVerification: 'preferred', authenticatorAttachment: 'platform' }
+          authenticatorSelection: { residentKey: 'required', userVerification: 'required' }
         });
         pendingRegChallenge = { challenge: options.challenge, expires: Date.now() + 5 * 60 * 1000 };
         res.json(options);
       } catch (e) {
-        res.status(500).json({ error: 'Could not start biometric setup' });
+        console.error(`WebAuthn register-options failed: ${e.message}`);
+        res.status(500).json({ error: `Could not start passkey setup: ${e.message}` });
       }
     });
 
@@ -219,7 +230,7 @@ function createApp({
         });
         pendingRegChallenge = null;
         if (!verification.verified || !verification.registrationInfo) {
-          return res.status(400).json({ error: 'Could not verify biometric registration' });
+          return res.status(400).json({ error: 'Could not verify passkey registration (verification returned false)' });
         }
         const { credential } = verification.registrationInfo;
         authStore.addWebauthnCredential({
@@ -230,24 +241,29 @@ function createApp({
         });
         res.json({ ok: true });
       } catch (e) {
-        res.status(400).json({ error: 'Could not verify biometric registration' });
+        console.error(`WebAuthn register-verify failed: ${e.message}`);
+        res.status(400).json({ error: `Could not verify passkey registration: ${e.message}` });
       }
     });
 
     // Unauthenticated by design — this IS how you log in without a password.
+    // allowCredentials is included for the explicit "Unlock with Face ID"
+    // button; the separate conditional-mediation call the login screen fires
+    // on load omits it so the browser can autofill any matching passkey.
     app.post('/api/auth/webauthn/login-options', async (req, res) => {
       const creds = authStore.webauthnCredentials();
-      if (!creds.length) return res.status(400).json({ error: 'No biometric login set up yet' });
+      if (!creds.length) return res.status(400).json({ error: 'No passkey set up yet' });
       try {
         const options = await generateAuthenticationOptions({
           rpID: rpIdOf(req),
           allowCredentials: creds.map(c => ({ id: c.credentialID, transports: c.transports })),
-          userVerification: 'preferred'
+          userVerification: 'required'
         });
         pendingLoginChallenge = { challenge: options.challenge, expires: Date.now() + 5 * 60 * 1000 };
         res.json(options);
       } catch (e) {
-        res.status(500).json({ error: 'Could not start biometric login' });
+        console.error(`WebAuthn login-options failed: ${e.message}`);
+        res.status(500).json({ error: `Could not start passkey login: ${e.message}` });
       }
     });
 
@@ -256,7 +272,7 @@ function createApp({
         return res.status(400).json({ error: 'Login expired — try again' });
       }
       const stored = authStore.webauthnCredentials().find(c => c.credentialID === req.body.id);
-      if (!stored) return res.status(400).json({ error: 'Unrecognized credential' });
+      if (!stored) return res.status(400).json({ error: 'Unrecognized passkey — it may be registered to a different LineWatch deployment' });
       try {
         const verification = await verifyAuthenticationResponse({
           response: req.body,
@@ -271,12 +287,13 @@ function createApp({
           }
         });
         pendingLoginChallenge = null;
-        if (!verification.verified) return res.status(400).json({ error: 'Could not verify biometric login' });
+        if (!verification.verified) return res.status(400).json({ error: 'Could not verify passkey login (verification returned false)' });
         authStore.updateWebauthnCounter(stored.credentialID, verification.authenticationInfo.newCounter);
         setSessionCookie(req, res, authStore.username());
         res.json({ ok: true });
       } catch (e) {
-        res.status(400).json({ error: 'Could not verify biometric login' });
+        console.error(`WebAuthn login-verify failed: ${e.message}`);
+        res.status(400).json({ error: `Could not verify passkey login: ${e.message}` });
       }
     });
 
