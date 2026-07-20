@@ -94,17 +94,17 @@
         <span id="faceBtnLabel">🆔 Unlock with Face ID / Touch ID</span>
       </button>
       <div class="divider" id="orDivider">or</div>
-      <input type="text" id="loginUsername" placeholder="Username" autocomplete="username">
-      <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password">
+      <input type="text" id="loginUsername" placeholder="Username" autocomplete="username webauthn">
+      <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password webauthn">
       <button class="btn-primary" id="loginBtn">Unlock</button>
     </div>
 
     <!-- Post-login prompt to enable biometrics (setup flow only) -->
     <div id="enrollView" class="hidden">
       <div class="lock-icon">🆔</div>
-      <h2>Add Face ID / Touch ID?</h2>
-      <p class="hint">Skip typing your password next time on this device.</p>
-      <button class="btn-primary" id="enrollBtn">Enable biometric unlock</button>
+      <h2>Add a passkey?</h2>
+      <p class="hint">Next time, just tap the username field — Face ID / Touch ID will offer to sign you in automatically, no typing. Saved to your device's keychain, not to LineWatch.</p>
+      <button class="btn-primary" id="enrollBtn">Set up Face ID / Touch ID</button>
       <button class="btn-link" id="skipEnrollBtn">Not now — take me in</button>
     </div>
   </div>
@@ -148,6 +148,8 @@
     return data;
   }
 
+  let conditionalAbort = null;
+
   async function boot(){
     let status;
     try{
@@ -163,8 +165,17 @@
     show('loginView');
     if(status.webauthnEnabled && window.PublicKeyCredential){
       document.getElementById('faceBtn').classList.remove('hidden');
-      document.getElementById('faceBtn').addEventListener('click', doWebauthnLogin);
-      // Offer it immediately — most phones/laptops treat this as a user gesture already
+      document.getElementById('faceBtn').addEventListener('click', ()=>doWebauthnLogin('optional'));
+
+      // True passkey autofill: if the browser supports it, this silently
+      // arms the username/password fields so tapping into either one shows
+      // a native "Sign in with Face ID" suggestion — no button press needed.
+      // Safe to fire on every page load; it just sits waiting until either
+      // the user picks a suggestion or navigates away.
+      if(window.PublicKeyCredential.isConditionalMediationAvailable){
+        const available = await PublicKeyCredential.isConditionalMediationAvailable().catch(()=>false);
+        if(available) doWebauthnLogin('conditional');
+      }
     } else {
       document.getElementById('orDivider').classList.add('hidden');
     }
@@ -210,25 +221,44 @@
     }
   }
 
-  async function doWebauthnLogin(){
-    clearMsg();
-    if(!checkWebauthnAvailable()) return;
+  // mode 'optional'   — explicit button press: shows a spinner, surfaces errors.
+  // mode 'conditional' — silent autofill offer armed on page load: no spinner,
+  //                      no error UI (a browser declining to offer a suggestion
+  //                      isn't a failure worth interrupting the user over), and
+  //                      allowCredentials is omitted so the browser can surface
+  //                      any matching discoverable passkey in the autofill list.
+  async function doWebauthnLogin(mode){
+    if(mode === 'optional'){
+      clearMsg();
+      if(!checkWebauthnAvailable()) return;
+      if(conditionalAbort) conditionalAbort.abort(); // one get() at a time
+    }
     const btn = document.getElementById('faceBtn');
-    btn.disabled = true;
-    document.getElementById('faceBtnLabel').innerHTML = '<span class="spinner"></span>Waiting for Face ID / Touch ID…';
+    if(mode === 'optional'){
+      btn.disabled = true;
+      document.getElementById('faceBtnLabel').innerHTML = '<span class="spinner"></span>Waiting for Face ID / Touch ID…';
+    }
+    const controller = mode === 'conditional' ? new AbortController() : null;
+    if(mode === 'conditional') conditionalAbort = controller;
     try{
       const options = await api('/api/auth/webauthn/login-options');
-      const cred = await navigator.credentials.get({
+      const getOpts = {
         publicKey: {
           challenge: b64urlToBuf(options.challenge),
           rpId: options.rpId,
           timeout: options.timeout,
-          userVerification: options.userVerification || 'preferred',
-          allowCredentials: (options.allowCredentials || []).map(c => ({
-            id: b64urlToBuf(c.id), type: 'public-key', transports: c.transports
-          }))
+          userVerification: options.userVerification || 'required'
         }
-      });
+      };
+      if(mode === 'optional'){
+        getOpts.publicKey.allowCredentials = (options.allowCredentials || []).map(c => ({
+          id: b64urlToBuf(c.id), type: 'public-key', transports: c.transports
+        }));
+      } else {
+        getOpts.mediation = 'conditional';
+        getOpts.signal = controller.signal;
+      }
+      const cred = await navigator.credentials.get(getOpts);
       const response = {
         id: cred.id, rawId: bufToB64url(cred.rawId), type: cred.type,
         response: {
@@ -242,7 +272,9 @@
       await api('/api/auth/webauthn/login-verify', response);
       window.location.href = '/';
     }catch(e){
-      showMsg(e.name === 'NotAllowedError' ? 'Cancelled or not recognized — try your password instead.' : (e.message || 'Biometric unlock failed.'), 'error');
+      if(mode === 'conditional') return; // silent background offer — nothing to report
+      if(e.name === 'AbortError') return; // superseded by another request, not a real error
+      showMsg(e.name === 'NotAllowedError' ? 'Cancelled or not recognized — try your password instead.' : `${e.name || 'Error'}: ${e.message || 'Passkey unlock failed.'}`, 'error');
       btn.disabled = false;
       document.getElementById('faceBtnLabel').textContent = '🆔 Unlock with Face ID / Touch ID';
     }
@@ -297,7 +329,7 @@
       await api('/api/auth/webauthn/register-verify', response);
       window.location.href = '/';
     }catch(e){
-      showMsg(e.name === 'NotAllowedError' ? 'Cancelled — you can add this later.' : (e.message || 'Could not set up biometric unlock.'), 'error');
+      showMsg(e.name === 'NotAllowedError' ? 'Cancelled — you can add this later.' : `${e.name || 'Error'}: ${e.message || 'Could not set up your passkey.'}`, 'error');
       btn.disabled = false; btn.textContent = 'Enable biometric unlock';
     }
   });
