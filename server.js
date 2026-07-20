@@ -183,6 +183,281 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     }));
   }
 
+  // ---------- NBA betting dashboard (all free ESPN endpoints) ----------
+  // stats.nba.com blocks datacenter traffic, so advanced metrics are computed
+  // here from ESPN box-score totals: possessions ≈ FGA - ORB + TOV + 0.44·FTA,
+  // Pace = possessions/game, ORtg = 100·Pts/poss, DRtg = 100·OppPts/poss.
+  const ESPN_NBA = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba';
+  const NBA_TTL_MS = 12 * 60 * 60 * 1000;
+
+  async function nbaTeams(){
+    const data = await fetchExternal(`${ESPN_NBA}/teams?limit=32`, 24 * 60 * 60 * 1000);
+    const teams = [];
+    (data.sports?.[0]?.leagues?.[0]?.teams || []).forEach(t => {
+      const team = t.team || {};
+      teams.push({ id: team.id, name: team.displayName, abbrev: team.abbreviation,
+        logo: (team.logos || [])[0]?.href || null });
+    });
+    return teams;
+  }
+
+  async function nbaStandingsMap(){
+    const data = await fetchExternal('https://site.api.espn.com/apis/v2/sports/basketball/nba/standings', NBA_TTL_MS);
+    const map = {};
+    (data.children || []).forEach(conf => {
+      (conf.standings?.entries || []).forEach(e => {
+        const stats = {};
+        (e.stats || []).forEach(s => { stats[s.name] = s.value; });
+        map[e.team.id] = {
+          wins: stats.wins, losses: stats.losses,
+          ppg: stats.avgPointsFor, oppPpg: stats.avgPointsAgainst
+        };
+      });
+    });
+    return map;
+  }
+
+  async function nbaTeamMetrics(teamId){
+    // seasontype=2 pins regular-season totals — the bare endpoint can serve a
+    // playoff-only sample, which would corrupt possessions/ratings.
+    const year = new Date(now()).getFullYear() + (new Date(now()).getMonth() >= 9 ? 1 : 0);
+    const data = await fetchExternal(`${ESPN_NBA}/teams/${teamId}/statistics?season=${year}&seasontype=2`, NBA_TTL_MS);
+    const vals = {};
+    (data.results?.stats?.categories || data.statistics?.splits?.categories || []).forEach(cat => {
+      (cat.stats || []).forEach(s => { if (s.name && s.value !== undefined) vals[s.name] = s.value; });
+    });
+    // Fall back over both response shapes ESPN serves for this endpoint
+    if (!Object.keys(vals).length) {
+      const walk = (o) => {
+        if (Array.isArray(o)) return o.forEach(walk);
+        if (o && typeof o === 'object') {
+          if (o.name && typeof o.value === 'number' && vals[o.name] === undefined) vals[o.name] = o.value;
+          Object.values(o).forEach(walk);
+        }
+      };
+      walk(data);
+    }
+    const g = vals.gamesPlayed || 1;
+    const fga = (vals.fieldGoalsAttempted || 0) / g;
+    const fta = (vals.freeThrowsAttempted || 0) / g;
+    const orb = (vals.offensiveRebounds || 0) / g;
+    const tov = (vals.turnovers ?? vals.totalTurnovers ?? 0) / g;
+    const pts = vals.avgPoints || ((vals.points || 0) / g);
+    const poss = fga - orb + tov + 0.44 * fta;
+    return { games: g, pts, poss: poss > 0 ? poss : null };
+  }
+
+  // Rest & scheduling context from the team's completed-games dates.
+  async function nbaSchedule(teamId){
+    let data = await fetchExternal(`${ESPN_NBA}/teams/${teamId}/schedule?seasontype=2`, NBA_TTL_MS);
+    if (!(data.events || []).length) data = await fetchExternal(`${ESPN_NBA}/teams/${teamId}/schedule`, NBA_TTL_MS);
+    const events = (data.events || []).map(ev => {
+      const comp = (ev.competitions || [])[0] || {};
+      const mine = (comp.competitors || []).find(c => String(c.team?.id) === String(teamId)) || {};
+      return {
+        date: ev.date,
+        completed: !!comp.status?.type?.completed,
+        home: mine.homeAway === 'home',
+        pointsFor: mine.score ? Number(mine.score.value ?? mine.score.displayValue ?? mine.score) : null
+      };
+    }).filter(e => e.date);
+    const done = events.filter(e => e.completed).sort((a,b)=>new Date(a.date)-new Date(b.date));
+    const today = new Date(now());
+    const daysBetween = (a,b) => Math.round((b - a) / 86400000);
+    const last = done[done.length - 1];
+    const lastDates = done.slice(-8).map(e => new Date(e.date));
+    const inWindow = (days) => lastDates.filter(d => daysBetween(d, today) < days).length;
+    let streakType = null, streakLen = 0;
+    for (let i = done.length - 1; i >= 0; i--) {
+      const t = done[i].home ? 'home' : 'road';
+      if (streakType === null) streakType = t;
+      if (t !== streakType) break;
+      streakLen++;
+    }
+    const last10 = done.slice(-10);
+    return {
+      daysRest: last ? Math.max(0, daysBetween(new Date(last.date), today) - 1) : null,
+      backToBack: last ? daysBetween(new Date(last.date), today) <= 1 : false,
+      threeInFour: inWindow(4) >= 3,
+      fourInSix: inWindow(6) >= 4,
+      streakType, streakLen,
+      last10Ppg: last10.length ? last10.reduce((s,e)=>s+(e.pointsFor||0),0) / last10.length : null,
+      gamesPlayed: done.length
+    };
+  }
+
+  async function nbaInjuries(teamId){
+    try {
+      const data = await fetchExternal(`${ESPN_NBA}/teams/${teamId}/injuries`, 60 * 60 * 1000);
+      const list = [];
+      (data.injuries || []).forEach(group => {
+        (group.injuries || [group]).forEach(inj => {
+          const athlete = inj.athlete || {};
+          if (athlete.displayName) list.push({
+            name: athlete.displayName,
+            status: inj.status || inj.type?.description || '',
+            detail: inj.details?.type || inj.shortComment || ''
+          });
+        });
+      });
+      return list;
+    } catch (e) { return []; }
+  }
+
+  app.get('/api/nba/teams', (req, res) => {
+    nbaTeams().then(t => res.json({ teams: t })).catch(err => sendUpstreamError(res, err));
+  });
+
+  app.get('/api/nba/matchup', (req, res) => {
+    (async () => {
+      const { home, away } = req.query;
+      if (!/^\d{1,4}$/.test(String(home||'')) || !/^\d{1,4}$/.test(String(away||''))) {
+        return res.status(400).json({ error: 'home and away team ids required' });
+      }
+      const [teams, standings] = await Promise.all([nbaTeams(), nbaStandingsMap()]);
+      const teamOf = id => teams.find(t => String(t.id) === String(id));
+      const hTeam = teamOf(home), aTeam = teamOf(away);
+      if (!hTeam || !aTeam) return res.status(400).json({ error: 'Unknown team id' });
+
+      // League-wide metrics for real ranks (30 cached calls, 12h TTL)
+      const metricRows = await Promise.all(teams.map(async t => {
+        try {
+          const m = await nbaTeamMetrics(t.id);
+          const st = standings[t.id] || {};
+          if (!m.poss || st.ppg === undefined) return null;
+          const ortg = 100 * st.ppg / m.poss;
+          const drtg = 100 * st.oppPpg / m.poss;
+          return { id: t.id, pace: m.poss, ortg, drtg, net: ortg - drtg, ppg: st.ppg };
+        } catch (e) { return null; }
+      }));
+      const rows = metricRows.filter(Boolean);
+      const rankOf = (id, key, desc = true) => {
+        const sorted = rows.slice().sort((a,b)=> desc ? b[key]-a[key] : a[key]-b[key]);
+        const i = sorted.findIndex(r => String(r.id) === String(id));
+        return i === -1 ? null : i + 1;
+      };
+
+      async function sideFor(team){
+        const st = standings[team.id] || {};
+        const row = rows.find(r => String(r.id) === String(team.id)) || {};
+        const [sched, injuries] = await Promise.all([nbaSchedule(team.id), nbaInjuries(team.id)]);
+        return {
+          team,
+          record: st.wins !== undefined ? `${st.wins}-${st.losses}` : null,
+          ppg: st.ppg ?? null, oppPpg: st.oppPpg ?? null,
+          pace: row.pace ?? null, ortg: row.ortg ?? null, drtg: row.drtg ?? null, net: row.net ?? null,
+          ranks: {
+            pace: rankOf(team.id, 'pace'),
+            ortg: rankOf(team.id, 'ortg'),
+            drtg: rankOf(team.id, 'drtg', false),
+            net: rankOf(team.id, 'net')
+          },
+          schedule: sched,
+          injuries
+        };
+      }
+      const [h, a] = await Promise.all([sideFor(hTeam), sideFor(aTeam)]);
+
+      // ---- rule-based insight engine (deterministic, no LLM) ----
+      const insights = [];
+      const leans = [];
+      let confidence = 5;
+      if (h.ranks.pace && a.ranks.pace && h.ranks.pace <= 10 && a.ranks.pace <= 10) {
+        insights.push(`Both teams rank top-10 in pace (#${a.ranks.pace} and #${h.ranks.pace}) — a favorable environment for the Over.`);
+        leans.push('Lean Over on the total'); confidence += 0.8;
+      } else if (h.ranks.pace && a.ranks.pace && h.ranks.pace >= 21 && a.ranks.pace >= 21) {
+        insights.push(`Both teams play bottom-10 pace — points may come slow.`);
+        leans.push('Lean Under on the total'); confidence += 0.6;
+      }
+      if (h.net !== null && a.net !== null) {
+        const diff = h.net - a.net;
+        const better = diff > 0 ? h : a;
+        if (Math.abs(diff) >= 4) {
+          insights.push(`${better.team.name} hold a ${Math.abs(diff).toFixed(1)}-point Net Rating edge.`);
+          leans.push(`${better.team.name} spread`); confidence += Math.min(1.5, Math.abs(diff) * 0.15);
+        }
+      }
+      const restDiff = (h.schedule.daysRest ?? 0) - (a.schedule.daysRest ?? 0);
+      [[h, a], [a, h]].forEach(([x, y]) => {
+        if (x.schedule.backToBack && (y.schedule.daysRest ?? 0) >= 2) {
+          insights.push(`${x.team.name} are on a back-to-back while ${y.team.name} have ${y.schedule.daysRest} days of rest.`);
+          leans.push(`${y.team.name} rest edge`); confidence += 0.7;
+        } else if (x.schedule.threeInFour) {
+          insights.push(`${x.team.name} are playing their 3rd game in 4 nights.`);
+          confidence += 0.3;
+        }
+      });
+      [h, a].forEach(s => {
+        if (s.injuries.length >= 3) {
+          insights.push(`${s.team.name} list ${s.injuries.length} players on the injury report.`);
+          confidence += 0.3;
+        }
+      });
+      if (!insights.length) insights.push('No strong statistical edges detected — this projects as a fairly even matchup.');
+
+      res.json({
+        home: h, away: a,
+        summary: {
+          insights,
+          leans: [...new Set(leans)],
+          confidence: Math.round(Math.min(9.5, confidence) * 10) / 10,
+          note: 'Auto-generated from the numbers above — context, not picks. No referee or positional-defense data exists on a free feed, so those factors are not modeled.'
+        }
+      });
+    })().catch(err => sendUpstreamError(res, err));
+  });
+
+  app.get('/api/nba/roster', (req, res) => {
+    (async () => {
+      const { team } = req.query;
+      if (!/^\d{1,4}$/.test(String(team||''))) return res.status(400).json({ error: 'team id required' });
+      const data = await fetchExternal(`${ESPN_NBA}/teams/${team}/roster`, NBA_TTL_MS);
+      const players = [];
+      (data.athletes || []).forEach(a => {
+        players.push({ id: a.id, name: a.displayName, position: a.position?.abbreviation || '', headshot: a.headshot?.href || null });
+      });
+      res.json({ players });
+    })().catch(err => sendUpstreamError(res, err));
+  });
+
+  // Player form: last-10 vs season, plus home/away split — powers both the
+  // Matchup Analyzer and the Hot Players scan.
+  app.get('/api/nba/player-form', (req, res) => {
+    (async () => {
+      const { id } = req.query;
+      if (!/^\d{1,10}$/.test(String(id||''))) return res.status(400).json({ error: 'player id required' });
+      const data = await fetchExternal(
+        `https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/${id}/gamelog`,
+        STATS_TTL_MS
+      );
+      const labels = data.labels || data.names || [];
+      const idx = k => labels.indexOf(k);
+      const games = [];
+      Object.values(data.seasonTypes || {}).forEach(stype => {
+        ((stype && stype.categories) || []).forEach(cat => {
+          (cat.events || []).forEach(ev => { if (ev.stats) games.push(ev); });
+        });
+      });
+      const evMeta = data.events || {};
+      const rows = games.map(g => {
+        const meta = evMeta[g.eventId] || {};
+        return { stats: g.stats, home: meta.atVs === 'vs', date: meta.gameDate };
+      }).sort((a,b)=> new Date(b.date||0) - new Date(a.date||0));
+      const num = (r, k) => { const i = idx(k); return i === -1 ? null : Number(r.stats[i]); };
+      const avg = (list, k) => {
+        const v = list.map(r => num(r, k)).filter(x => x !== null && !isNaN(x));
+        return v.length ? Math.round(v.reduce((s,x)=>s+x,0) / v.length * 10) / 10 : null;
+      };
+      const pack = list => ({ games: list.length, pts: avg(list,'PTS'), reb: avg(list,'REB'), ast: avg(list,'AST'), min: avg(list,'MIN'), fgPct: avg(list,'FG%') });
+      res.json({
+        last10: pack(rows.slice(0, 10)),
+        season: pack(rows),
+        home: pack(rows.filter(r=>r.home)),
+        away: pack(rows.filter(r=>!r.home))
+      });
+    })().catch(err => sendUpstreamError(res, err));
+  });
+
   // ---------- Player stat search (all free, keyless public APIs) ----------
   // ESPN's search covers every league we track and returns headshots;
   // stats come from ESPN's athlete overview, except MLB which gets the far
