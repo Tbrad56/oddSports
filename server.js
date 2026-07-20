@@ -458,6 +458,332 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     })().catch(err => sendUpstreamError(res, err));
   });
 
+  // ---------- NFL betting dashboard (all free ESPN + Open-Meteo) ----------
+  const ESPN_NFL = 'https://site.api.espn.com/apis/site/v2/sports/football/nfl';
+  const NFL_TTL_MS = 12 * 60 * 60 * 1000;
+
+  // Stadium coords + roof flags for the weather card (approximate venue lat/lon).
+  const NFL_STADIUMS = {
+    ARI:{lat:33.5276,lon:-112.2626,dome:true},  ATL:{lat:33.7554,lon:-84.4008,dome:true},
+    BAL:{lat:39.2780,lon:-76.6227},             BUF:{lat:42.7738,lon:-78.7870},
+    CAR:{lat:35.2258,lon:-80.8528},             CHI:{lat:41.8623,lon:-87.6167},
+    CIN:{lat:39.0955,lon:-84.5161},             CLE:{lat:41.5061,lon:-81.6995},
+    DAL:{lat:32.7473,lon:-97.0945,dome:true},   DEN:{lat:39.7439,lon:-105.0201},
+    DET:{lat:42.3400,lon:-83.0456,dome:true},   GB:{lat:44.5013,lon:-88.0622},
+    HOU:{lat:29.6847,lon:-95.4107,dome:true},   IND:{lat:39.7601,lon:-86.1639,dome:true},
+    JAX:{lat:30.3240,lon:-81.6373},             KC:{lat:39.0489,lon:-94.4839},
+    LAC:{lat:33.9535,lon:-118.3392,dome:true},  LAR:{lat:33.9535,lon:-118.3392,dome:true},
+    LV:{lat:36.0909,lon:-115.1833,dome:true},   MIA:{lat:25.9580,lon:-80.2389},
+    MIN:{lat:44.9736,lon:-93.2575,dome:true},   NE:{lat:42.0909,lon:-71.2643},
+    NO:{lat:29.9511,lon:-90.0812,dome:true},    NYG:{lat:40.8128,lon:-74.0742},
+    NYJ:{lat:40.8128,lon:-74.0742},             PHI:{lat:39.9008,lon:-75.1675},
+    PIT:{lat:40.4468,lon:-80.0158},             SEA:{lat:47.5952,lon:-122.3316},
+    SF:{lat:37.4030,lon:-121.9696},             TB:{lat:27.9759,lon:-82.5033},
+    TEN:{lat:36.1665,lon:-86.7713},             WSH:{lat:38.9076,lon:-76.8645}
+  };
+
+  async function nflTeams(){
+    const data = await fetchExternal(`${ESPN_NFL}/teams?limit=34`, 24 * 60 * 60 * 1000);
+    const teams = [];
+    (data.sports?.[0]?.leagues?.[0]?.teams || []).forEach(t => {
+      const team = t.team || {};
+      teams.push({ id: team.id, name: team.displayName, abbrev: team.abbreviation,
+        logo: (team.logos || [])[0]?.href || null });
+    });
+    return teams;
+  }
+
+  async function nflStandingsMap(){
+    const data = await fetchExternal('https://site.api.espn.com/apis/v2/sports/football/nfl/standings', NFL_TTL_MS);
+    const map = {};
+    (data.children || []).forEach(conf => {
+      (conf.standings?.entries || []).forEach(e => {
+        const stats = {};
+        (e.stats || []).forEach(s => { stats[s.name] = s.value; });
+        // NFL standings expose season totals, not per-game averages
+        const g = (stats.wins || 0) + (stats.losses || 0) + (stats.ties || 0);
+        map[e.team.id] = { wins: stats.wins, losses: stats.losses, ties: stats.ties,
+          pf: g ? stats.pointsFor / g : null, pa: g ? stats.pointsAgainst / g : null };
+      });
+    });
+    return map;
+  }
+
+  // Offense per-game numbers + defense activity from the team statistics feed.
+  // Yards-allowed splits are not on any free feed — defense is represented by
+  // points allowed (standings) plus sacks/INTs from here.
+  async function nflTeamMetrics(teamId){
+    const y = new Date(now()).getFullYear();
+    const year = new Date(now()).getMonth() >= 7 ? y : y - 1; // season year flips in August
+    const data = await fetchExternal(`${ESPN_NFL}/teams/${teamId}/statistics?season=${year}&seasontype=2`, NFL_TTL_MS);
+    const vals = {};
+    const walk = (o) => {
+      if (Array.isArray(o)) return o.forEach(walk);
+      if (o && typeof o === 'object') {
+        if (o.name && typeof o.value === 'number' && vals[o.name] === undefined) vals[o.name] = o.value;
+        Object.values(o).forEach(walk);
+      }
+    };
+    walk(data);
+    const g = vals.gamesPlayed || 1;
+    return {
+      games: g,
+      rushYpg: (vals.rushingYards || 0) / g,
+      passYpg: vals.netPassingYardsPerGame ?? ((vals.netPassingYards || 0) / g),
+      thirdDownPct: vals.thirdDownConvPct ?? null,
+      redZoneTdPct: vals.redzoneTouchdownPct ?? vals.redzoneScoringPct ?? null,
+      explosive: ((vals.rushingBigPlays || 0) + (vals.receivingBigPlays || 0)) / g,
+      sacks: (vals.sacks || 0) / g,
+      ints: (vals.interceptions || 0) / g,
+      turnovers: ((vals.fumblesLost || 0) + (vals.interceptionPct !== undefined ? 0 : 0)) / g
+    };
+  }
+
+  async function nflSchedule(teamId){
+    let data = await fetchExternal(`${ESPN_NFL}/teams/${teamId}/schedule?seasontype=2`, NFL_TTL_MS);
+    if (!(data.events || []).length) data = await fetchExternal(`${ESPN_NFL}/teams/${teamId}/schedule`, NFL_TTL_MS);
+    const done = (data.events || []).map(ev => {
+      const comp = (ev.competitions || [])[0] || {};
+      const mine = (comp.competitors || []).find(c => String(c.team?.id) === String(teamId)) || {};
+      return {
+        date: ev.date,
+        completed: !!comp.status?.type?.completed,
+        won: mine.winner === true
+      };
+    }).filter(e => e.completed).sort((a,b)=>new Date(a.date)-new Date(b.date));
+    const last10 = done.slice(-10);
+    // A 12+ day gap between games during the season = coming off the bye
+    let offBye = false;
+    if (done.length >= 2) {
+      const a = new Date(done[done.length-2].date), b = new Date(done[done.length-1].date);
+      offBye = (b - a) / 86400000 >= 12;
+    }
+    let streak = 0, streakWin = null;
+    for (let i = done.length - 1; i >= 0; i--) {
+      if (streakWin === null) streakWin = done[i].won;
+      if (done[i].won !== streakWin) break;
+      streak++;
+    }
+    return {
+      last10: last10.length ? `${last10.filter(e=>e.won).length}-${last10.filter(e=>!e.won).length}` : null,
+      streak: streak > 1 ? `${streak}-game ${streakWin ? 'win' : 'loss'} streak` : null,
+      offBye,
+      gamesPlayed: done.length
+    };
+  }
+
+  // One depth-chart call powers both the Injury Center (grouped, statused) and
+  // Fantasy Impact (who steps in behind an injured player).
+  async function nflDepthAndInjuries(teamId){
+    const data = await fetchExternal(`${ESPN_NFL}/teams/${teamId}/depthcharts`, 60 * 60 * 1000);
+    const units = [];
+    (data.depthchart || data.items || []).forEach(unit => {
+      Object.entries(unit.positions || {}).forEach(([key, pos]) => {
+        const players = (pos.athletes || []).map(a => ({
+          id: a.id, name: a.displayName || '',
+          injuries: (a.injuries || []).map(i => i.status || i.type?.description || 'listed')
+        })).filter(p => p.name);
+        if (players.length) units.push({
+          unit: unit.name || '',
+          position: pos.position?.abbreviation || key.toUpperCase(),
+          players
+        });
+      });
+    });
+    const injuries = [];
+    const nextMen = [];
+    units.forEach(u => {
+      u.players.forEach((p, depth) => {
+        if (p.injuries.length) {
+          injuries.push({ name: p.name, position: u.position, status: p.injuries[0], starter: depth === 0 });
+          if (depth === 0 && u.players[1]) {
+            nextMen.push({ out: p.name, position: u.position, in: u.players[1].name, status: p.injuries[0] });
+          }
+        }
+      });
+    });
+    return { injuries, nextMen };
+  }
+
+  async function nflWeather(abbrev){
+    const st = NFL_STADIUMS[abbrev];
+    if (!st) return null;
+    if (st.dome) return { dome: true };
+    try {
+      const w = await fetchExternal(
+        `https://api.open-meteo.com/v1/forecast?latitude=${st.lat}&longitude=${st.lon}&current=temperature_2m,precipitation,rain,snowfall,wind_speed_10m&wind_speed_unit=mph&temperature_unit=fahrenheit`,
+        30 * 60 * 1000
+      );
+      const c = w.current || {};
+      return {
+        dome: false,
+        tempF: c.temperature_2m ?? null,
+        windMph: c.wind_speed_10m ?? null,
+        rain: (c.rain || 0) > 0 || (c.precipitation || 0) > 0.05,
+        snow: (c.snowfall || 0) > 0
+      };
+    } catch (e) { return null; }
+  }
+
+  app.get('/api/nfl/teams', (req, res) => {
+    nflTeams().then(t => res.json({ teams: t })).catch(err => sendUpstreamError(res, err));
+  });
+
+  app.get('/api/nfl/matchup', (req, res) => {
+    (async () => {
+      const { home, away } = req.query;
+      if (!/^\d{1,4}$/.test(String(home||'')) || !/^\d{1,4}$/.test(String(away||''))) {
+        return res.status(400).json({ error: 'home and away team ids required' });
+      }
+      const [teams, standings] = await Promise.all([nflTeams(), nflStandingsMap()]);
+      const teamOf = id => teams.find(t => String(t.id) === String(id));
+      const hTeam = teamOf(home), aTeam = teamOf(away);
+      if (!hTeam || !aTeam) return res.status(400).json({ error: 'Unknown team id' });
+
+      // League-wide metric rows for true 1-32 ranks (cached 12h)
+      const metricRows = (await Promise.all(teams.map(async t => {
+        try { return { id: t.id, pa: (standings[t.id] || {}).pa, ...(await nflTeamMetrics(t.id)) }; }
+        catch (e) { return null; }
+      }))).filter(Boolean);
+      const rankOf = (id, key, desc = true) => {
+        const rows = metricRows.filter(r => r[key] !== null && r[key] !== undefined);
+        const sorted = rows.slice().sort((a,b)=> desc ? b[key]-a[key] : a[key]-b[key]);
+        const i = sorted.findIndex(r => String(r.id) === String(id));
+        return i === -1 ? null : i + 1;
+      };
+
+      async function sideFor(team){
+        const st = standings[team.id] || {};
+        const m = metricRows.find(r => String(r.id) === String(team.id)) || {};
+        const [sched, depth] = await Promise.all([nflSchedule(team.id), nflDepthAndInjuries(team.id)]);
+        return {
+          team,
+          record: st.wins !== undefined ? `${st.wins}-${st.losses}${st.ties ? '-' + st.ties : ''}` : null,
+          pf: st.pf ?? null, pa: st.pa ?? null,
+          metrics: {
+            rushYpg: m.rushYpg ?? null, passYpg: m.passYpg ?? null,
+            thirdDownPct: m.thirdDownPct ?? null, redZoneTdPct: m.redZoneTdPct ?? null,
+            explosive: m.explosive ?? null, sacks: m.sacks ?? null, ints: m.ints ?? null
+          },
+          ranks: {
+            rushYpg: rankOf(team.id, 'rushYpg'), passYpg: rankOf(team.id, 'passYpg'),
+            thirdDownPct: rankOf(team.id, 'thirdDownPct'), redZoneTdPct: rankOf(team.id, 'redZoneTdPct'),
+            explosive: rankOf(team.id, 'explosive'), sacks: rankOf(team.id, 'sacks'),
+            ints: rankOf(team.id, 'ints'), pa: rankOf(team.id, 'pa', false)
+          },
+          schedule: sched,
+          injuries: depth.injuries,
+          nextMen: depth.nextMen
+        };
+      }
+      const [h, a] = await Promise.all([sideFor(hTeam), sideFor(aTeam)]);
+      const weather = await nflWeather(hTeam.abbrev);
+
+      // ---- rule-based insight engine ----
+      const insights = [];
+      const leans = [];
+      let confidence = 5;
+      // Cross-matchup: A's rush attack vs B's run-stop proxy, pass rush vs protection
+      [[a, h, 'away'], [h, a, 'home']].forEach(([off, def]) => {
+        if (off.ranks.rushYpg && off.ranks.rushYpg <= 8 && def.ranks.pa && def.ranks.pa >= 22) {
+          insights.push(`${off.team.name}'s #${off.ranks.rushYpg} rush offense meets a defense allowing bottom-10 points.`);
+          confidence += 0.5;
+        }
+        if (def.ranks.sacks && def.ranks.sacks <= 6) {
+          insights.push(`${def.team.name} bring a top-6 pass rush (${def.metrics.sacks.toFixed(1)} sacks/game) at ${off.team.name}'s protection.`);
+          confidence += 0.4;
+        }
+      });
+      if (h.pf !== null && a.pf !== null) {
+        const diff = (h.pf - h.pa) - (a.pf - a.pa);
+        const better = diff > 0 ? h : a;
+        if (Math.abs(diff) >= 5) {
+          insights.push(`${better.team.name} hold a ${Math.abs(diff).toFixed(1)}-point average scoring-margin edge.`);
+          leans.push(`${better.team.name} side`); confidence += Math.min(1.5, Math.abs(diff) * 0.12);
+        }
+      }
+      [h, a].forEach(s => {
+        if (s.schedule.offBye) { insights.push(`${s.team.name} are coming off their bye week.`); confidence += 0.4; }
+        const startersOut = s.injuries.filter(i => i.starter).length;
+        if (startersOut) {
+          insights.push(`${s.team.name} have ${startersOut} starter${startersOut===1?'':'s'} on the injury report.`);
+          confidence += 0.3;
+        }
+      });
+      if (weather && !weather.dome) {
+        if ((weather.windMph ?? 0) >= 15) {
+          insights.push(`${Math.round(weather.windMph)} mph wind at ${hTeam.abbrev} — passing and kicking downgrade, running upgrade.`);
+          leans.push('Weather leans Under'); confidence += 0.6;
+        }
+        if (weather.rain || weather.snow) {
+          insights.push(`${weather.snow ? 'Snow' : 'Rain'} in the forecast — ball-security and ground games matter more.`);
+          leans.push('Running-game upgrade'); confidence += 0.4;
+        }
+      }
+      if (!insights.length) insights.push('No strong statistical edges detected — this projects close to even.');
+
+      res.json({
+        home: h, away: a, weather,
+        summary: {
+          insights,
+          leans: [...new Set(leans)],
+          confidence: Math.round(Math.min(9.5, confidence) * 10) / 10,
+          note: 'Auto-generated from the numbers above — context, not picks. ATS/over-under trend history and yards-allowed splits are not on any free feed, so they are not modeled; win-loss form here is straight-up.'
+        }
+      });
+    })().catch(err => sendUpstreamError(res, err));
+  });
+
+  app.get('/api/nfl/roster', (req, res) => {
+    (async () => {
+      const { team } = req.query;
+      if (!/^\d{1,4}$/.test(String(team||''))) return res.status(400).json({ error: 'team id required' });
+      const data = await fetchExternal(`${ESPN_NFL}/teams/${team}/roster`, NFL_TTL_MS);
+      const players = [];
+      (data.athletes || []).forEach(group => {
+        (group.items || []).forEach(a => {
+          players.push({ id: a.id, name: a.displayName, position: a.position?.abbreviation || '' });
+        });
+      });
+      res.json({ players });
+    })().catch(err => sendUpstreamError(res, err));
+  });
+
+  // Position-aware game-log form. NFL gamelogs repeat labels across stat
+  // groups (passing YDS then rushing YDS), so values are picked by scanning
+  // label positions in order.
+  app.get('/api/nfl/player-form', (req, res) => {
+    (async () => {
+      const { id } = req.query;
+      if (!/^\d{1,10}$/.test(String(id||''))) return res.status(400).json({ error: 'player id required' });
+      const data = await fetchExternal(
+        `https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/${id}/gamelog`,
+        STATS_TTL_MS
+      );
+      const labels = data.labels || data.names || [];
+      const games = [];
+      Object.values(data.seasonTypes || {}).forEach(stype => {
+        ((stype && stype.categories) || []).forEach(cat => {
+          (cat.events || []).forEach(ev => { if (ev.stats) games.push(ev.stats); });
+        });
+      });
+      const idxAll = key => labels.map((l,i)=> l === key ? i : -1).filter(i=>i!==-1);
+      const avgAt = (list, i) => {
+        if (i === undefined) return null;
+        const v = list.map(r => Number(r[i])).filter(x => !isNaN(x));
+        return v.length ? Math.round(v.reduce((s,x)=>s+x,0) / v.length * 10) / 10 : null;
+      };
+      const yds = idxAll('YDS'), td = idxAll('TD'), rec = idxAll('REC');
+      const pack = list => ({
+        games: list.length,
+        yds1: avgAt(list, yds[0]), yds2: avgAt(list, yds[1]),
+        td1: avgAt(list, td[0]), td2: avgAt(list, td[1]),
+        rec: avgAt(list, rec[0])
+      });
+      res.json({ labels, last5: pack(games.slice(0, 5)), season: pack(games) });
+    })().catch(err => sendUpstreamError(res, err));
+  });
+
   // ---------- Player stat search (all free, keyless public APIs) ----------
   // ESPN's search covers every league we track and returns headshots;
   // stats come from ESPN's athlete overview, except MLB which gets the far
