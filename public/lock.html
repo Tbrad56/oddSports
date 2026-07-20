@@ -212,10 +212,7 @@
 
   async function doWebauthnLogin(){
     clearMsg();
-    if(!window.PublicKeyCredential){
-      showMsg('This browser does not support Face ID / Touch ID unlock.', 'error');
-      return;
-    }
+    if(!checkWebauthnAvailable()) return;
     const btn = document.getElementById('faceBtn');
     btn.disabled = true;
     document.getElementById('faceBtnLabel').innerHTML = '<span class="spinner"></span>Waiting for Face ID / Touch ID…';
@@ -251,12 +248,21 @@
     }
   }
 
-  document.getElementById('enrollBtn').addEventListener('click', async ()=>{
-    clearMsg();
+  function checkWebauthnAvailable(){
     if(!window.PublicKeyCredential){
       showMsg('This browser does not support Face ID / Touch ID.', 'error');
-      return;
+      return false;
     }
+    if(!window.isSecureContext){
+      showMsg('Face ID / Touch ID only works over HTTPS (or on localhost). Open this site at its https:// address to use it.', 'error');
+      return false;
+    }
+    return true;
+  }
+
+  document.getElementById('enrollBtn').addEventListener('click', async ()=>{
+    clearMsg();
+    if(!checkWebauthnAvailable()) return;
     const btn = document.getElementById('enrollBtn');
     btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Follow the prompt…';
     try{
