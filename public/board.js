@@ -496,6 +496,23 @@
     const area = document.getElementById('gamesArea');
     if(!state.games.length){
       area.innerHTML = '<div class="empty-state"><h3>No games found</h3><p>Try a different sport — this one may be out of season.</p></div>';
+      const sport = getSport();
+      // Free (ESPN), long-cached shared helper — turns a bare "no games" into
+      // "season starts Aug 6" when that's why.
+      fetchSeasonStatus().then(all=>{
+        // Bail if the user switched sports or games loaded while this was in flight
+        const st = all[sport];
+        if(getSport() !== sport || state.games.length) return;
+        const p = area.querySelector('.empty-state p');
+        if(!p || !st) return;
+        if(st.inSeason){
+          p.textContent = `Currently in season (${st.name || ''}) — no games on the board right now, check back soon.`;
+        } else if(st.daysUntilStart !== null){
+          p.textContent = `Season starts ${fmtSeasonDate(st.startDate)} — ${st.daysUntilStart} day${st.daysUntilStart===1?'':'s'} away.`;
+        } else {
+          p.textContent = `Off season — last window was ${fmtSeasonDate(st.startDate)} to ${fmtSeasonDate(st.endDate)}.`;
+        }
+      });
       return;
     }
 
