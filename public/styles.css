@@ -121,6 +121,30 @@
   .rail-btn:hover{background:var(--bg-raised); color:var(--text-dim);}
   .rail-btn.active{background:rgba(187,0,0,0.14); color:var(--accent); border-color:rgba(187,0,0,0.35);}
 
+  /* ---------- Nav rail sport-group dropdowns ---------- */
+  .rail-group{position:relative;}
+  .rail-group.active .rail-group-btn{background:rgba(187,0,0,0.14); color:var(--accent); border-color:rgba(187,0,0,0.35);}
+  .rail-caret{font-size:7px; margin-left:2px; display:inline-block; transition:transform .18s ease; vertical-align:1px;}
+  .rail-group.open .rail-caret{transform:rotate(180deg);}
+  .rail-group.open .rail-group-btn{background:var(--bg-raised); color:var(--text);}
+  .rail-flyout{
+    position:absolute; top:0; left:calc(100% + 8px);
+    min-width:168px; background:var(--bg-card); border:1px solid var(--border);
+    border-radius:10px; padding:6px; box-shadow:0 10px 30px rgba(0,0,0,0.45);
+    display:flex; flex-direction:column; gap:2px; z-index:50;
+    opacity:0; transform:translateX(-6px) scale(0.97); pointer-events:none;
+    transition:opacity .16s ease, transform .16s ease;
+  }
+  .rail-group.open .rail-flyout{opacity:1; transform:translateX(0) scale(1); pointer-events:auto;}
+  .rail-flyout-item{
+    display:flex; align-items:center; gap:9px;
+    padding:9px 11px; border-radius:7px; font-size:12.5px; font-weight:600;
+    color:var(--text-dim); text-decoration:none; white-space:nowrap;
+    transition:background .12s ease, color .12s ease;
+  }
+  .rail-flyout-item:hover{background:var(--bg-raised); color:var(--text);}
+  .rail-flyout-item span{font-size:15px;}
+
   .chip-row{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px;}
   .chip{
     font-family:var(--font-body); font-size:12.5px; font-weight:600;
@@ -148,11 +172,18 @@
     .layout{grid-template-columns:1fr;}
     .nav-rail{
       flex-direction:row; justify-content:center; border-right:none;
-      border-bottom:1px solid var(--border-soft); padding:10px;
+      border-bottom:1px solid var(--border-soft); padding:10px; flex-wrap:wrap;
     }
     .nav-rail .rail-logo{display:none;}
     .layout main{padding:16px;}
     .layout .sidebar{padding:0 16px 16px;}
+    /* Horizontal rail on mobile — flyouts drop down below the button instead
+       of popping out to the right, and stay centered under it. */
+    .rail-flyout{
+      top:calc(100% + 8px); left:50%; right:auto;
+      transform:translateX(-50%) translateY(-6px) scale(0.97);
+    }
+    .rail-group.open .rail-flyout{transform:translateX(-50%) translateY(0) scale(1);}
   }
 
   .status-row{
