@@ -739,3 +739,31 @@ function teamLogoImg(sportKey, teamName){
   return `<img class="team-logo" src="${url}" width="24" height="24" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
 }
 
+
+// ---------- season windows (free, ESPN) ----------
+// Shared by Board's empty-state and the NBA/NFL dashboard headers.
+let _seasonStatusPromise = null;
+function fetchSeasonStatus(){
+  if(!_seasonStatusPromise) _seasonStatusPromise = fetch('/api/season-status').then(r=>r.json()).catch(()=>({}));
+  return _seasonStatusPromise;
+}
+function fmtSeasonDate(iso){
+  return new Date(iso).toLocaleDateString(undefined, {month:'short', day:'numeric', year:'numeric'});
+}
+// Renders a compact season-window line into #seasonBanner, if present on the page.
+async function renderSeasonBanner(sportKey){
+  const host = document.getElementById('seasonBanner');
+  if(!host) return;
+  const all = await fetchSeasonStatus();
+  const st = all[sportKey];
+  if(!st){ host.innerHTML = ''; return; }
+  let text;
+  if(st.inSeason){
+    text = `In season — ${escapeHtml(st.name || '')} · through ${fmtSeasonDate(st.endDate)}`;
+  } else if(st.daysUntilStart !== null){
+    text = `Off season — next season starts ${fmtSeasonDate(st.startDate)} (${st.daysUntilStart} day${st.daysUntilStart===1?'':'s'} away)`;
+  } else {
+    text = `Off season — last window ran ${fmtSeasonDate(st.startDate)} to ${fmtSeasonDate(st.endDate)}`;
+  }
+  host.innerHTML = `<div class="season-banner${st.inSeason?' in-season':''}">${text}</div>`;
+}

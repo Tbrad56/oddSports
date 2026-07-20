@@ -294,6 +294,7 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
         (group.injuries || [group]).forEach(inj => {
           const athlete = inj.athlete || {};
           if (athlete.displayName) list.push({
+            id: athlete.id || null,
             name: athlete.displayName,
             status: inj.status || inj.type?.description || '',
             detail: inj.details?.type || inj.shortComment || ''
@@ -656,9 +657,9 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     units.forEach(u => {
       u.players.forEach((p, depth) => {
         if (p.injuries.length) {
-          injuries.push({ name: p.name, position: u.position, status: p.injuries[0], starter: depth === 0 });
+          injuries.push({ id: p.id, name: p.name, position: u.position, status: p.injuries[0], starter: depth === 0 });
           if (depth === 0 && u.players[1]) {
-            nextMen.push({ out: p.name, position: u.position, in: u.players[1].name, status: p.injuries[0] });
+            nextMen.push({ outId: p.id, out: p.name, position: u.position, inId: u.players[1].id, in: u.players[1].name, status: p.injuries[0] });
           }
         }
       });
@@ -803,7 +804,7 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
       const players = [];
       (data.athletes || []).forEach(group => {
         (group.items || []).forEach(a => {
-          players.push({ id: a.id, name: a.displayName, position: a.position?.abbreviation || '' });
+          players.push({ id: a.id, name: a.displayName, position: a.position?.abbreviation || '', headshot: a.headshot?.href || null });
         });
       });
       res.json({ players });
@@ -1018,6 +1019,37 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
       res.set('x-cache-age-seconds', '0');
       res.json(body);
     }).catch(err => sendUpstreamError(res, err));
+  });
+
+  // Season windows for every tracked sport (college + pro) — free from the
+  // same ESPN scoreboard each sport already uses for scores, which stamps
+  // its response with the active season's own name/type/date range whether
+  // or not any games are on today. One cached call per sport, long TTL.
+  const SEASON_STATUS_TTL_MS = 12 * 60 * 60 * 1000;
+  async function getSeasonStatus(sport){
+    const path = ESPN_SCOREBOARDS[sport];
+    if (!path || path.startsWith('mma')) return null; // UFC is event-based, no season window
+    const data = await fetchExternal(`https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard`, SEASON_STATUS_TTL_MS);
+    const season = (data.leagues || [])[0]?.season;
+    if (!season || !season.startDate || !season.endDate) return null;
+    const start = new Date(season.startDate), end = new Date(season.endDate), n = new Date(now());
+    return {
+      name: season.displayName || null,
+      phase: season.type?.name || null,
+      startDate: season.startDate,
+      endDate: season.endDate,
+      inSeason: n >= start && n <= end,
+      daysUntilStart: n < start ? Math.ceil((start - n) / 86400000) : null
+    };
+  }
+  app.get('/api/season-status', (req, res) => {
+    (async () => {
+      const entries = await Promise.all(Object.keys(ESPN_SCOREBOARDS).map(async sport => {
+        try { return [sport, await getSeasonStatus(sport)]; }
+        catch (e) { return [sport, null]; }
+      }));
+      res.json(Object.fromEntries(entries));
+    })().catch(err => sendUpstreamError(res, err));
   });
 
   // MLB live in-game detail (inning, outs, balls/strikes) — MLB StatsAPI only

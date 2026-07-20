@@ -8,6 +8,7 @@
   };
 
   renderNav('nfl');
+  renderSeasonBanner('americanfootball_nfl');
 
   // Positions bucketed the way bettors think about them
   const POS_BUCKETS = [
@@ -80,6 +81,22 @@
   }
 
   const fmt1 = v => v === null || v === undefined ? '—' : (Math.round(v*10)/10).toFixed(1);
+
+  // Headshots ride along on the roster fetch — look them up by id from
+  // whichever team's roster is loaded rather than re-fetching per player.
+  function headshotFor(id){
+    if(!id) return null;
+    for(const players of Object.values(state.rosters)){
+      const p = (players || []).find(x => String(x.id) === String(id));
+      if(p && p.headshot) return p.headshot;
+    }
+    return null;
+  }
+  function avatarHtml(id, size){
+    const url = headshotFor(id);
+    if(!url) return `<span class="player-avatar" style="width:${size}px; height:${size}px;"></span>`;
+    return `<img class="player-avatar" src="${escapeHtml(url)}" width="${size}" height="${size}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
+  }
   const rankChip = (rank) => {
     if(!rank) return '';
     const cls = rank <= 10 ? 'nba-rank good' : rank >= 23 ? 'nba-rank bad' : 'nba-rank';
@@ -110,7 +127,7 @@
       return `${teamHead(s)}` + Object.entries(byBucket).map(([bucket, list])=>`
         <div class="nfl-pos-group">${escapeHtml(bucket)}</div>
         <ul class="nba-injury-list">${list.map(i=>
-          `<li><strong>${escapeHtml(i.name)}</strong> <span class="hand-tag">${escapeHtml(i.position)}</span>
+          `<li>${avatarHtml(i.id, 20)}<strong>${escapeHtml(i.name)}</strong> <span class="hand-tag">${escapeHtml(i.position)}</span>
            <span class="${STATUS_CLASS(i.status)}">${escapeHtml(i.status)}</span>${i.starter ? ' <span class="nfl-starter-tag">Starter</span>' : ''}</li>`).join('')}
         </ul>`).join('');
     };
@@ -208,6 +225,10 @@
       <button class="ghost" id="analyzerBtn">Check form</button>
     </div>`;
     const pf = state.analyzerPlayer && state.playerForm[state.analyzerPlayer];
+    if(state.analyzerPlayer && pf && pf !== 'loading'){
+      const p = Object.values(state.rosters).flat().find(x=>String(x.id)===String(state.analyzerPlayer));
+      if(p) body += `<div class="nba-team-head" style="margin-bottom:8px;">${avatarHtml(p.id, 32)}<strong>${escapeHtml(p.name)}</strong> <span class="nba-record">${escapeHtml(p.position)}</span></div>`;
+    }
     if(pf === 'loading'){
       body += `<div class="hr-note"><span class="spinner"></span> Pulling game logs (3 seasons for the head-to-head)…</div>`;
     } else if(pf && pf.season.games){
@@ -262,9 +283,9 @@
           <tr><th>Team</th><th>Pos</th><th>Injured starter</th><th>Status</th><th>Next man up</th></tr></thead><tbody>
           ${rows.map(r=>`<tr>
             <td>${escapeHtml(r.team)}</td><td>${escapeHtml(r.position)}</td>
-            <td style="font-weight:600;">${escapeHtml(r.out)}</td>
+            <td style="font-weight:600; white-space:nowrap;">${avatarHtml(r.outId, 18)}${escapeHtml(r.out)}</td>
             <td><span class="${STATUS_CLASS(r.status)}">${escapeHtml(r.status)}</span></td>
-            <td class="stat-pos">${escapeHtml(r.in)}</td>
+            <td class="stat-pos" style="white-space:nowrap;">${avatarHtml(r.inId, 18)}${escapeHtml(r.in)}</td>
           </tr>`).join('')}
         </tbody></table></div>
         <div class="hr-note" style="margin-top:6px;">Straight from each team's depth chart — the player listed directly behind an injured starter.</div>`
