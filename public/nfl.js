@@ -209,7 +209,7 @@
     </div>`;
     const pf = state.analyzerPlayer && state.playerForm[state.analyzerPlayer];
     if(pf === 'loading'){
-      body += `<div class="hr-note"><span class="spinner"></span> Pulling game logs…</div>`;
+      body += `<div class="hr-note"><span class="spinner"></span> Pulling game logs (3 seasons for the head-to-head)…</div>`;
     } else if(pf && pf.season.games){
       // Label the two YDS columns from the gamelog's own label order
       const ydsLabels = [];
@@ -221,11 +221,28 @@
           ydsLabels.push(before.includes('CMP') && seen === 1 ? 'Pass YDS' : before.includes('REC') ? 'Rec YDS' : 'Rush YDS');
         }
       });
+      const vs = pf.vsOpponent;
       const rows = [['Last 5', pf.last5], ['Season', pf.season]];
+      if(vs && vs.games) rows.push([`vs ${vs.abbrev || 'OPP'} (3 seasons)`, vs]);
       body += `<div class="table-scroll"><table class="props-table"><thead>
         <tr><th>Split</th><th>G</th>${ydsLabels[0]?`<th>${ydsLabels[0]}</th>`:''}${ydsLabels[1]?`<th>${ydsLabels[1]}</th>`:''}<th>TD</th>${pf.season.rec !== null ? '<th>REC</th>' : ''}</tr></thead><tbody>
         ${rows.map(([label, r])=>`<tr><td style="font-weight:600;">${label}</td><td>${r.games}</td>${ydsLabels[0]?`<td>${fmt1(r.yds1)}</td>`:''}${ydsLabels[1]?`<td>${fmt1(r.yds2)}</td>`:''}<td>${fmt1(r.td1)}</td>${pf.season.rec !== null ? `<td>${fmt1(r.rec)}</td>` : ''}</tr>`).join('')}
       </tbody></table></div>`;
+      if(vs && vs.meetings && vs.meetings.length){
+        body += `<div class="nfl-pos-group" style="margin-top:8px;">Last meetings vs ${escapeHtml(vs.abbrev || '')}</div>
+          <div class="table-scroll"><table class="props-table"><thead>
+          <tr><th>Date</th><th>Site</th>${ydsLabels[0]?`<th>${ydsLabels[0]}</th>`:''}<th>TD</th>${pf.season.rec !== null ? '<th>REC</th>' : ''}</tr></thead><tbody>
+          ${vs.meetings.map(mt=>`<tr><td>${escapeHtml(mt.date || '')}</td><td>${mt.home?'Home':'Away'}</td>${ydsLabels[0]?`<td>${mt.yds1 ?? '—'}</td>`:''}<td>${mt.td1 ?? '—'}</td>${pf.season.rec !== null ? `<td>${mt.rec ?? '—'}</td>` : ''}</tr>`).join('')}
+        </tbody></table></div>`;
+      } else if(vs){
+        body += `<div class="hr-note" style="margin-top:6px;">No meetings against this opponent in the last 3 seasons.</div>`;
+      }
+      if(vs && vs.games >= 2 && vs.yds1 !== null && pf.season.yds1 !== null){
+        const d = vs.yds1 - pf.season.yds1;
+        if(Math.abs(d) >= 15){
+          body += `<div class="nba-insight">Averages ${fmt1(Math.abs(d))} ${d > 0 ? 'MORE' : 'fewer'} yards against this opponent than his overall norm (${vs.games}-game sample).</div>`;
+        }
+      }
       if(pf.last5.yds1 !== null && pf.season.yds1 !== null){
         const d = pf.last5.yds1 - pf.season.yds1;
         body += `<div class="nba-insight">${Math.abs(d) < 15 ? 'Producing right at season norm over the last 5.' : d > 0 ? `Averaging ${fmt1(d)} yards above season norm over the last 5 — favorable form for Over props.` : `Averaging ${fmt1(-d)} yards below season norm over the last 5 — caution on Overs.`}</div>`;
@@ -288,8 +305,12 @@
       if(!state.playerForm[id]){
         state.playerForm[id] = 'loading';
         render();
+        // The opponent is whichever matchup team the player does NOT belong to
+        const m = state.matchup;
+        const onAway = (state.rosters[m.away.team.id] || []).some(p => String(p.id) === String(id));
+        const oppId = onAway ? m.home.team.id : m.away.team.id;
         try{
-          const res = await fetch(`/api/nfl/player-form?id=${encodeURIComponent(id)}`);
+          const res = await fetch(`/api/nfl/player-form?id=${encodeURIComponent(id)}&vsTeam=${encodeURIComponent(oppId)}`);
           state.playerForm[id] = res.ok ? await res.json() : null;
         }catch(e){ state.playerForm[id] = null; }
       }

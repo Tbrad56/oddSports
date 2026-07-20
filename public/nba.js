@@ -150,16 +150,33 @@
     </div>`;
     const pf = state.analyzerPlayer && state.playerForm[state.analyzerPlayer];
     if(pf === 'loading'){
-      body += `<div class="hr-note"><span class="spinner"></span> Pulling game logs…</div>`;
+      body += `<div class="hr-note"><span class="spinner"></span> Pulling game logs (3 seasons for the head-to-head)…</div>`;
     } else if(pf){
+      const vs = pf.vsOpponent;
       const rows = [['Last 10', pf.last10], ['Season', pf.season], ['Home', pf.home], ['Away', pf.away]];
+      if(vs && vs.games) rows.push([`vs ${vs.abbrev || 'OPP'} (3 seasons)`, vs]);
       body += `<div class="table-scroll"><table class="props-table"><thead>
         <tr><th>Split</th><th>G</th><th>PTS</th><th>REB</th><th>AST</th><th>MIN</th><th>FG%</th></tr></thead><tbody>
         ${rows.map(([label, r])=>`<tr><td style="font-weight:600;">${label}</td><td>${r.games}</td><td>${fmt1(r.pts)}</td><td>${fmt1(r.reb)}</td><td>${fmt1(r.ast)}</td><td>${fmt1(r.min)}</td><td>${fmt1(r.fgPct)}</td></tr>`).join('')}
       </tbody></table></div>`;
+      if(vs && vs.meetings && vs.meetings.length){
+        body += `<div class="nfl-pos-group" style="margin-top:8px;">Last meetings vs ${escapeHtml(vs.abbrev || '')}</div>
+          <div class="table-scroll"><table class="props-table"><thead>
+          <tr><th>Date</th><th>Site</th><th>PTS</th><th>REB</th><th>AST</th></tr></thead><tbody>
+          ${vs.meetings.map(mt=>`<tr><td>${escapeHtml(mt.date || '')}</td><td>${mt.home?'Home':'Away'}</td><td>${mt.pts ?? '—'}</td><td>${mt.reb ?? '—'}</td><td>${mt.ast ?? '—'}</td></tr>`).join('')}
+        </tbody></table></div>`;
+      } else if(vs){
+        body += `<div class="hr-note" style="margin-top:6px;">No meetings against this opponent in the last 3 seasons.</div>`;
+      }
       if(pf.last10.pts !== null && pf.season.pts !== null){
         const d = pf.last10.pts - pf.season.pts;
         body += `<div class="nba-insight">${Math.abs(d) < 2 ? 'Scoring right at season norm over the last 10.' : d > 0 ? `Scoring ${fmt1(d)} above season average over the last 10 — trending up.` : `Scoring ${fmt1(-d)} below season average over the last 10 — trending down.`}</div>`;
+      }
+      if(vs && vs.games >= 2 && vs.pts !== null && pf.season.pts !== null){
+        const d = vs.pts - pf.season.pts;
+        if(Math.abs(d) >= 2){
+          body += `<div class="nba-insight">Averages ${fmt1(Math.abs(d))} ${d > 0 ? 'MORE' : 'fewer'} points against this opponent than his overall norm (${vs.games}-game sample).</div>`;
+        }
       }
     }
     body += `<div class="hr-note" style="margin-top:8px;">Positional "opponent allows to PGs" splits aren't on any free feed — this card covers real game-log form and home/away splits.</div>`;
@@ -234,8 +251,12 @@
       if(!state.playerForm[id]){
         state.playerForm[id] = 'loading';
         render();
+        // The opponent is whichever matchup team the player does NOT belong to
+        const m = state.matchup;
+        const onAway = (state.rosters[m.away.team.id] || []).some(p => String(p.id) === String(id));
+        const oppId = onAway ? m.home.team.id : m.away.team.id;
         try{
-          const res = await fetch(`/api/nba/player-form?id=${encodeURIComponent(id)}`);
+          const res = await fetch(`/api/nba/player-form?id=${encodeURIComponent(id)}&vsTeam=${encodeURIComponent(oppId)}`);
           state.playerForm[id] = res.ok ? await res.json() : null;
         }catch(e){ state.playerForm[id] = null; }
       }

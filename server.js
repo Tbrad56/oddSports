@@ -420,41 +420,102 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     })().catch(err => sendUpstreamError(res, err));
   });
 
-  // Player form: last-10 vs season, plus home/away split — powers both the
-  // Matchup Analyzer and the Hot Players scan.
+  // Parses one gamelog response into per-game rows tagged with opponent id.
+  function gamelogRows(data){
+    const games = [];
+    Object.values(data.seasonTypes || {}).forEach(stype => {
+      ((stype && stype.categories) || []).forEach(cat => {
+        (cat.events || []).forEach(ev => { if (ev.stats) games.push(ev); });
+      });
+    });
+    const evMeta = data.events || {};
+    return games.map(g => {
+      const meta = evMeta[g.eventId] || {};
+      return {
+        eventId: g.eventId, stats: g.stats,
+        home: meta.atVs === 'vs', date: meta.gameDate,
+        oppId: meta.opponent ? String(meta.opponent.id) : null,
+        oppAbbrev: meta.opponent ? meta.opponent.abbreviation : null
+      };
+    });
+  }
+
+  // Current gamelog plus up to two prior seasons (each a cached call) —
+  // enough history for a real "vs this opponent" sample without hammering ESPN.
+  async function gamelogMultiSeason(sportPath, id, endYear){
+    const base = await fetchExternal(
+      `https://site.web.api.espn.com/apis/common/v3/sports/${sportPath}/athletes/${id}/gamelog`,
+      STATS_TTL_MS
+    );
+    const labels = base.labels || base.names || [];
+    const seen = new Set();
+    const rows = [];
+    const add = data => gamelogRows(data).forEach(r => {
+      if (!seen.has(r.eventId)) { seen.add(r.eventId); rows.push(r); }
+    });
+    add(base);
+    for (const y of [endYear - 1, endYear - 2]) {
+      try {
+        add(await fetchExternal(
+          `https://site.web.api.espn.com/apis/common/v3/sports/${sportPath}/athletes/${id}/gamelog?season=${y}`,
+          STATS_TTL_MS
+        ));
+      } catch (e) { /* season may not exist for this player */ }
+    }
+    rows.sort((a,b)=> new Date(b.date||0) - new Date(a.date||0));
+    return { labels, rows };
+  }
+
+  // Player form: last-10 vs season, home/away split, and (when vsTeam is the
+  // opposing ESPN team id) a 3-season history against that specific opponent.
   app.get('/api/nba/player-form', (req, res) => {
     (async () => {
-      const { id } = req.query;
+      const { id, vsTeam } = req.query;
       if (!/^\d{1,10}$/.test(String(id||''))) return res.status(400).json({ error: 'player id required' });
-      const data = await fetchExternal(
-        `https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/${id}/gamelog`,
-        STATS_TTL_MS
-      );
-      const labels = data.labels || data.names || [];
+      const wantVs = /^\d{1,4}$/.test(String(vsTeam||''));
+      const endYear = new Date(now()).getFullYear();
+
+      let labels, allRows;
+      if (wantVs) {
+        ({ labels, rows: allRows } = await gamelogMultiSeason('basketball/nba', id, endYear));
+      } else {
+        const data = await fetchExternal(
+          `https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/${id}/gamelog`,
+          STATS_TTL_MS
+        );
+        labels = data.labels || data.names || [];
+        allRows = gamelogRows(data).sort((a,b)=> new Date(b.date||0) - new Date(a.date||0));
+      }
       const idx = k => labels.indexOf(k);
-      const games = [];
-      Object.values(data.seasonTypes || {}).forEach(stype => {
-        ((stype && stype.categories) || []).forEach(cat => {
-          (cat.events || []).forEach(ev => { if (ev.stats) games.push(ev); });
-        });
-      });
-      const evMeta = data.events || {};
-      const rows = games.map(g => {
-        const meta = evMeta[g.eventId] || {};
-        return { stats: g.stats, home: meta.atVs === 'vs', date: meta.gameDate };
-      }).sort((a,b)=> new Date(b.date||0) - new Date(a.date||0));
       const num = (r, k) => { const i = idx(k); return i === -1 ? null : Number(r.stats[i]); };
       const avg = (list, k) => {
         const v = list.map(r => num(r, k)).filter(x => x !== null && !isNaN(x));
         return v.length ? Math.round(v.reduce((s,x)=>s+x,0) / v.length * 10) / 10 : null;
       };
       const pack = list => ({ games: list.length, pts: avg(list,'PTS'), reb: avg(list,'REB'), ast: avg(list,'AST'), min: avg(list,'MIN'), fgPct: avg(list,'FG%') });
-      res.json({
-        last10: pack(rows.slice(0, 10)),
-        season: pack(rows),
-        home: pack(rows.filter(r=>r.home)),
-        away: pack(rows.filter(r=>!r.home))
-      });
+
+      // Current-season rows = most recent gamelog's worth (first fetch covers it);
+      // season splits below intentionally use only the newest ~season of rows.
+      const seasonRows = wantVs ? allRows.slice(0, 82).filter(r => new Date(r.date) > new Date(now() - 370*86400000)) : allRows;
+      const out = {
+        last10: pack(seasonRows.slice(0, 10)),
+        season: pack(seasonRows),
+        home: pack(seasonRows.filter(r=>r.home)),
+        away: pack(seasonRows.filter(r=>!r.home))
+      };
+      if (wantVs) {
+        const vsRows = allRows.filter(r => r.oppId === String(vsTeam));
+        out.vsOpponent = {
+          ...pack(vsRows),
+          abbrev: vsRows[0] ? vsRows[0].oppAbbrev : null,
+          meetings: vsRows.slice(0, 5).map(r => ({
+            date: r.date ? String(r.date).slice(0, 10) : null,
+            home: r.home,
+            pts: num(r,'PTS'), reb: num(r,'REB'), ast: num(r,'AST')
+          }))
+        };
+      }
+      res.json(out);
     })().catch(err => sendUpstreamError(res, err));
   });
 
@@ -754,23 +815,26 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
   // label positions in order.
   app.get('/api/nfl/player-form', (req, res) => {
     (async () => {
-      const { id } = req.query;
+      const { id, vsTeam } = req.query;
       if (!/^\d{1,10}$/.test(String(id||''))) return res.status(400).json({ error: 'player id required' });
-      const data = await fetchExternal(
-        `https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/${id}/gamelog`,
-        STATS_TTL_MS
-      );
-      const labels = data.labels || data.names || [];
-      const games = [];
-      Object.values(data.seasonTypes || {}).forEach(stype => {
-        ((stype && stype.categories) || []).forEach(cat => {
-          (cat.events || []).forEach(ev => { if (ev.stats) games.push(ev.stats); });
-        });
-      });
+      const wantVs = /^\d{1,4}$/.test(String(vsTeam||''));
+      const endYear = new Date(now()).getFullYear();
+
+      let labels, allRows;
+      if (wantVs) {
+        ({ labels, rows: allRows } = await gamelogMultiSeason('football/nfl', id, endYear));
+      } else {
+        const data = await fetchExternal(
+          `https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/${id}/gamelog`,
+          STATS_TTL_MS
+        );
+        labels = data.labels || data.names || [];
+        allRows = gamelogRows(data).sort((a,b)=> new Date(b.date||0) - new Date(a.date||0));
+      }
       const idxAll = key => labels.map((l,i)=> l === key ? i : -1).filter(i=>i!==-1);
       const avgAt = (list, i) => {
         if (i === undefined) return null;
-        const v = list.map(r => Number(r[i])).filter(x => !isNaN(x));
+        const v = list.map(r => Number(r.stats[i])).filter(x => !isNaN(x));
         return v.length ? Math.round(v.reduce((s,x)=>s+x,0) / v.length * 10) / 10 : null;
       };
       const yds = idxAll('YDS'), td = idxAll('TD'), rec = idxAll('REC');
@@ -780,7 +844,22 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
         td1: avgAt(list, td[0]), td2: avgAt(list, td[1]),
         rec: avgAt(list, rec[0])
       });
-      res.json({ labels, last5: pack(games.slice(0, 5)), season: pack(games) });
+      const seasonRows = wantVs ? allRows.filter(r => new Date(r.date) > new Date(now() - 370*86400000)) : allRows;
+      const out = { labels, last5: pack(seasonRows.slice(0, 5)), season: pack(seasonRows) };
+      if (wantVs) {
+        const vsRows = allRows.filter(r => r.oppId === String(vsTeam));
+        const at = (r, i) => i === undefined ? null : (isNaN(Number(r.stats[i])) ? null : Number(r.stats[i]));
+        out.vsOpponent = {
+          ...pack(vsRows),
+          abbrev: vsRows[0] ? vsRows[0].oppAbbrev : null,
+          meetings: vsRows.slice(0, 5).map(r => ({
+            date: r.date ? String(r.date).slice(0, 10) : null,
+            home: r.home,
+            yds1: at(r, yds[0]), yds2: at(r, yds[1]), td1: at(r, td[0]), rec: at(r, rec[0])
+          }))
+        };
+      }
+      res.json(out);
     })().catch(err => sendUpstreamError(res, err));
   });
 
