@@ -23,6 +23,15 @@
     requestAnimationFrame(()=>{ renderScheduled = false; if(state.games.length) renderGames(); });
   }
 
+  // Nav deep-links (e.g. the NBA/NFL group's "Board" item) land here as
+  // /board.html?sport=basketball_nba — honor it before anything else reads
+  // the persisted sport, so both the chip and the nav's active-group
+  // highlight are correct on first paint, not just after a manual click.
+  (function applySportFromUrl(){
+    const requested = new URLSearchParams(location.search).get('sport');
+    if(requested && SPORTS.some(([k])=>k===requested)) setSport(requested);
+  })();
+
   renderNav('board');
   renderSportChips(document.getElementById('sportChips'), ()=>{
     state.propsCache = {}; state.propRegistry = {}; state.marketCollapsed = {};

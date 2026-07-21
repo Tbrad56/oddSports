@@ -248,27 +248,95 @@ function setSport(key){
 }
 
 // ---------- nav rail ----------
+// Grouped by sport so the rail reads as "MLB / NBA / NFL / More / Tools"
+// instead of nine flat, same-weight links. Each sport-group's Board link
+// deep-links straight to that sport (?sport=...), which board.js honors on
+// load — so picking "NBA" from the nav actually lands on the NBA board,
+// not just the Board page in general.
+const NAV_GROUPS = [
+  { key:'home', href:'/', icon:'🏠', label:'Home' },
+  { key:'mlb', icon:'⚾', label:'MLB', children:[
+    ['board','/board.html?sport=baseball_mlb','📊','Board'],
+    ['getprops','/getprops.html','🎯','Get Props'],
+    ['record','/record.html','📈','Record']
+  ]},
+  { key:'nba', icon:'🏀', label:'NBA', children:[
+    ['board','/board.html?sport=basketball_nba','📊','Board'],
+    ['nba','/nba.html','📈','Dashboard']
+  ]},
+  { key:'nfl', icon:'🏈', label:'NFL', children:[
+    ['board','/board.html?sport=americanfootball_nfl','📊','Board'],
+    ['nfl','/nfl.html','📈','Dashboard']
+  ]},
+  { key:'more', icon:'🏆', label:'More', children:[
+    ['board','/board.html?sport=icehockey_nhl','🏒','NHL'],
+    ['board','/board.html?sport=americanfootball_ncaaf','🎓','NCAA Football'],
+    ['board','/board.html?sport=basketball_ncaab','🎓','NCAA Basketball'],
+    ['board','/board.html?sport=soccer_epl','⚽','EPL Soccer'],
+    ['board','/board.html?sport=mma_mixed_martial_arts','🥊','MMA']
+  ]},
+  { key:'tools', icon:'🧰', label:'Tools', children:[
+    ['stats','/stats.html','🔎','Stats'],
+    ['cheatsheet','/cheatsheet.html','📋','Cheatsheet']
+  ]},
+  { key:'slip', href:'/slip.html', icon:'🎟️', label:'Slip', badge:true }
+];
+// Which group lights up for a page not itself in the group list.
+const PAGE_TO_GROUP = { getprops:'mlb', record:'mlb', nba:'nba', nfl:'nfl', stats:'tools', cheatsheet:'tools' };
+const SPORT_TO_GROUP = { baseball_mlb:'mlb', basketball_nba:'nba', americanfootball_nfl:'nfl' };
+
 function renderNav(activePage){
   const rail = document.getElementById('navRail');
   if(!rail) return;
-  const items = [
-    ['home','/','🏠','Home'],
-    ['board','/board.html','📊','Board'],
-    ['getprops','/getprops.html','🎯','Get Props'],
-    ['stats','/stats.html','🔎','Stats'],
-    ['nba','/nba.html','🏀','NBA'],
-    ['nfl','/nfl.html','🏈','NFL'],
-    ['cheatsheet','/cheatsheet.html','📋','Cheatsheet'],
-    ['record','/record.html','📈','Record'],
-    ['slip','/slip.html','🎟️','Slip']
-  ];
-  rail.innerHTML = '<a class="rail-logo" href="/">LW</a>' + items.map(([key,href,icon,label])=>
-    `<a class="rail-btn${key===activePage?' active':''}" href="${href}">
-      <span aria-hidden="true">${icon}</span><span class="rail-label">${label}${key==='slip'?'<span class="slip-badge" id="slipBadge"></span>':''}</span>
-    </a>`).join('') +
+
+  // On the Board page itself, highlight whichever sport group matches the
+  // currently-selected sport chip rather than guessing.
+  let activeGroup = PAGE_TO_GROUP[activePage] || activePage;
+  if(activePage === 'board') activeGroup = SPORT_TO_GROUP[getSport()] || 'more';
+
+  const groupHtml = NAV_GROUPS.map(g=>{
+    if(!g.children){
+      return `<a class="rail-btn${g.key===activePage?' active':''}" href="${g.href}">
+        <span aria-hidden="true">${g.icon}</span><span class="rail-label">${escapeHtml(g.label)}${g.badge?'<span class="slip-badge" id="slipBadge"></span>':''}</span>
+      </a>`;
+    }
+    const isActive = g.key === activeGroup;
+    return `<div class="rail-group${isActive?' active':''}">
+      <button type="button" class="rail-btn rail-group-btn" data-group="${g.key}" aria-expanded="false">
+        <span aria-hidden="true">${g.icon}</span><span class="rail-label">${escapeHtml(g.label)}<span class="rail-caret" aria-hidden="true">▾</span></span>
+      </button>
+      <div class="rail-flyout" data-group-menu="${g.key}">
+        ${g.children.map(([key,href,icon,label])=>
+          `<a class="rail-flyout-item" href="${href}">
+            <span aria-hidden="true">${icon}</span>${escapeHtml(label)}
+          </a>`).join('')}
+      </div>
+    </div>`;
+  }).join('');
+
+  rail.innerHTML = '<a class="rail-logo" href="/">LW</a>' + groupHtml +
     `<button class="rail-btn" id="lockBtn" title="Lock LineWatch" type="button">
       <span aria-hidden="true">🔒</span><span class="rail-label">Lock</span>
     </button>`;
+
+  // Click-to-toggle (not hover — behaves the same on touch and desktop).
+  // Exactly one flyout open at a time; outside click or Escape closes it.
+  function closeAllGroups(){
+    rail.querySelectorAll('.rail-group.open').forEach(g=>g.classList.remove('open'));
+    rail.querySelectorAll('.rail-group-btn[aria-expanded="true"]').forEach(b=>b.setAttribute('aria-expanded','false'));
+  }
+  rail.querySelectorAll('.rail-group-btn').forEach(btn=>{
+    btn.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      const groupEl = btn.closest('.rail-group');
+      const willOpen = !groupEl.classList.contains('open');
+      closeAllGroups();
+      if(willOpen){ groupEl.classList.add('open'); btn.setAttribute('aria-expanded','true'); }
+    });
+  });
+  document.addEventListener('click', closeAllGroups);
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeAllGroups(); });
+
   const lockBtn = document.getElementById('lockBtn');
   if(lockBtn) lockBtn.addEventListener('click', async ()=>{
     try{ await fetch('/api/auth/logout', {method:'POST'}); }catch(e){}
