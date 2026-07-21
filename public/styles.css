@@ -359,6 +359,26 @@
   .cheat-row .cheat-sub{color:var(--text-faint); font-size:11px;}
   .cheat-row .cheat-odds{font-family:var(--font-mono); color:var(--warn); font-weight:700;}
 
+  /* ---------- Cheatsheet: Value Finder ---------- */
+  .value-row{
+    display:grid; grid-template-columns:1fr auto auto auto;
+    align-items:center; gap:14px; padding:10px 8px;
+    border-bottom:1px solid var(--border-soft); transition:background .15s ease;
+  }
+  .value-row:last-child{border-bottom:none;}
+  .value-row:hover{background:rgba(187,0,0,0.05);}
+  .value-row-side{font-weight:700; font-size:13.5px;}
+  .value-row-sub{font-size:11px; color:var(--text-faint); margin-top:1px;}
+  .value-row-edge{text-align:center; white-space:nowrap;}
+  .value-edge-pct{display:block; font-family:var(--font-mono); font-weight:800; font-size:14px; color:var(--good);}
+  .value-edge-label{font-size:9px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.4px;}
+  .value-row-book{display:flex; align-items:center; gap:8px; white-space:nowrap;}
+  .value-row-book .odds{font-family:var(--font-mono); font-weight:700;}
+  @media (max-width:640px){
+    .value-row{grid-template-columns:1fr auto; row-gap:8px;}
+    .value-row-book, .value-add-btn{grid-column:1/2;}
+  }
+
   /* ---------- Sidebar / Slip ---------- */
   .sidebar{display:flex; flex-direction:column; gap:18px;}
   .panel{
