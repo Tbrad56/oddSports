@@ -6,6 +6,118 @@
   renderNav('cheatsheet');
   renderSportChips(document.getElementById('sportChips'), ()=>{ loadAndScan(); });
 
+  // ---------- Team search + full stat glossary (any team, any sport we track) ----------
+  const teamState = { query: '', results: [], team: null, stats: null, loading: false, searchTimer: null, searchSeq: 0 };
+
+  document.getElementById('teamSearchInput').addEventListener('input', (e)=>{
+    teamState.query = e.target.value.trim();
+    clearTimeout(teamState.searchTimer);
+    if(teamState.query.length < 2){
+      teamState.results = [];
+      renderTeamSearch();
+      return;
+    }
+    teamState.searchTimer = setTimeout(runTeamSearch, 250);
+  });
+
+  async function runTeamSearch(){
+    const seq = ++teamState.searchSeq;
+    try{
+      const res = await fetch(`/api/teams/search?q=${encodeURIComponent(teamState.query)}`);
+      if(!res.ok) throw new Error('Team search failed — try again shortly.');
+      const data = await res.json();
+      if(seq !== teamState.searchSeq) return;
+      teamState.results = data.results || [];
+      renderTeamSearch();
+    }catch(e){
+      if(seq === teamState.searchSeq) showError(e.message || 'Team search failed.');
+    }
+  }
+
+  function renderTeamSearch(){
+    const host = document.getElementById('teamSearchResults');
+    if(!teamState.query || teamState.query.length < 2){
+      host.innerHTML = '';
+      return;
+    }
+    if(!teamState.results.length){
+      host.innerHTML = `<div class="empty-state"><h3>No teams found</h3><p>No matches for "${escapeHtml(teamState.query)}" across NBA, NFL, or MLB.</p></div>`;
+      return;
+    }
+    host.innerHTML = teamState.results.map(r=>`<div class="game-card team-result" data-sport="${escapeHtml(r.sport)}" data-id="${escapeHtml(String(r.id))}">
+      ${r.logo ? `<img src="${escapeHtml(r.logo)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : ''}
+      <div class="team-result-name">${escapeHtml(r.name)}</div>
+      <span class="team-result-sport">${escapeHtml(r.sportLabel)}</span>
+    </div>`).join('');
+    host.querySelectorAll('.team-result').forEach(el=>{
+      el.addEventListener('click', ()=>loadTeamStats(el.dataset.sport, el.dataset.id));
+    });
+  }
+
+  async function loadTeamStats(sport, id){
+    teamState.loading = true;
+    teamState.stats = null;
+    teamState.results = [];
+    document.getElementById('teamSearchInput').value = '';
+    teamState.query = '';
+    renderTeamSearch();
+    renderTeamStats();
+    clearError();
+    try{
+      const res = await fetch(`/api/teams/stats?sport=${encodeURIComponent(sport)}&id=${encodeURIComponent(id)}`);
+      if(!res.ok){
+        let msg = 'Could not load stats for this team.';
+        try{ const j = await res.json(); if(j.error) msg = j.error; }catch(_){}
+        throw new Error(msg);
+      }
+      teamState.stats = await res.json();
+    }catch(e){
+      showError(e.message || 'Could not load stats for this team.');
+    }finally{
+      teamState.loading = false;
+      renderTeamStats();
+    }
+  }
+
+  function glossaryRow(row){
+    const cls = row.available ? 'glossary-value' : 'glossary-value na';
+    const title = !row.available && row.why ? ` title="${escapeHtml(row.why)}"` : '';
+    return `<div class="glossary-row">
+      <span class="glossary-label">${escapeHtml(row.label)}</span>
+      <span class="${cls}"${title}>${row.available ? escapeHtml(row.value) : 'N/A'}</span>
+    </div>`;
+  }
+
+  function renderTeamStats(){
+    const area = document.getElementById('teamStatsArea');
+    if(teamState.loading){
+      area.innerHTML = `<div class="panel"><div class="hr-note"><span class="spinner"></span> Loading team stats…</div></div>`;
+      return;
+    }
+    const s = teamState.stats;
+    if(!s){
+      area.innerHTML = '';
+      return;
+    }
+    area.innerHTML = `<div class="panel">
+      <div class="glossary-head">
+        ${s.team.logo ? `<img src="${escapeHtml(s.team.logo)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : ''}
+        <div>
+          <div class="glossary-head-name">${escapeHtml(s.team.name)}</div>
+          <div class="glossary-head-record">${s.record ? escapeHtml(s.record) : 'Record unavailable'}${s.homeRecord ? ` · Home ${escapeHtml(s.homeRecord)}` : ''}${s.roadRecord ? ` · Road ${escapeHtml(s.roadRecord)}` : ''}</div>
+        </div>
+      </div>
+      <div class="glossary-groups">
+        ${s.groups.map(g=>`<div class="game-card" style="padding:14px 16px;">
+          <div class="glossary-group-title">${escapeHtml(g.title)}</div>
+          ${g.rows.map(glossaryRow).join('')}
+        </div>`).join('')}
+      </div>
+      <div class="hr-note" style="margin-top:10px;">Stats marked <em>N/A</em> aren't available from any free public data source — hover for why. Everything else is pulled live from ESPN / MLB StatsAPI.</div>
+    </div>`;
+    staggerIn(area.querySelector('.panel'), 20);
+  }
+
   // Pool of books to scan: My Books if set (same rule the Board and Slip
   // already use), else every tracked book. Never scans a book you can't
   // actually see prices from elsewhere in the app.

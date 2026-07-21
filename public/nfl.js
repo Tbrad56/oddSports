@@ -153,12 +153,19 @@
         </div>
       </div>`;
     const rush = { off:'Rush offense', def:'Points allowed', offVal:s=>fmt1(s.metrics.rushYpg)+' ypg', offRank:s=>s.ranks.rushYpg, defVal:s=>fmt1(s.pa)+' pa/g', defRank:s=>s.ranks.pa };
-    const pass = { off:'Pass offense', def:'Pass rush', offVal:s=>fmt1(s.metrics.passYpg)+' ypg', offRank:s=>s.ranks.passYpg, defVal:s=>fmt1(s.metrics.sacks)+' sacks/g', defRank:s=>s.ranks.sacks };
+    const pass = { off:'Pass offense', def:'Pass rush', offVal:s=>fmt1(s.metrics.passYpg)+' ypg', offRank:s=>s.ranks.passYpg, defVal:s=>fmt1(s.metrics.sacksMadePerGame)+' sacks/g', defRank:s=>s.ranks.sacksMadePerGame };
     const rows = [
+      ['Total YPG', s=>`${fmt1(s.metrics.ypg)} ${rankChip(s.ranks.ypg)}`],
+      ['Yards/Play', s=>`${s.metrics.ypp !== null ? s.metrics.ypp.toFixed(2) : '—'}`],
+      ['Comp %', s=>`${fmt1(s.metrics.completionPct)}%`],
+      ['Time of Poss.', s=>s.metrics.topSecPerGame !== null ? `${Math.floor(s.metrics.topSecPerGame/60)}:${String(Math.round(s.metrics.topSecPerGame%60)).padStart(2,'0')}` : '—'],
       ['Red Zone TD%', s=>`${fmt1(s.metrics.redZoneTdPct)}% ${rankChip(s.ranks.redZoneTdPct)}`],
       ['Third Down %', s=>`${fmt1(s.metrics.thirdDownPct)}% ${rankChip(s.ranks.thirdDownPct)}`],
+      ['ANY/A', s=>`${s.metrics.anyA !== null ? s.metrics.anyA.toFixed(2) : '—'} ${rankChip(s.ranks.anyA)}`],
       ['Explosive plays/g (20+ yds)', s=>`${fmt1(s.metrics.explosive)} ${rankChip(s.ranks.explosive)}`],
-      ['Takeaway INTs/g', s=>`${fmt1(s.metrics.ints)} ${rankChip(s.ranks.ints)}`]
+      ['Sacks allowed/g', s=>`${fmt1(s.metrics.sacksAllowedPerGame)} ${rankChip(s.ranks.sacksAllowedPerGame)}`],
+      ['Takeaway INTs/g', s=>`${fmt1(s.metrics.intsCaughtPerGame)} ${rankChip(s.ranks.intsCaughtPerGame)}`],
+      ['Turnover margin/g', s=>`${s.metrics.turnoverMargin !== null ? (s.metrics.turnoverMargin>0?'+':'')+s.metrics.turnoverMargin.toFixed(2) : '—'} ${rankChip(s.ranks.turnoverMargin)}`]
     ];
     return card('Matchup Breakdown', `
       ${cross(m.away, m.home, rush)}
