@@ -583,7 +583,8 @@
   background:var(--bg-raised); border:1px solid var(--border); color:var(--text-faint);
   text-transform:uppercase; letter-spacing:.4px;
 }
-.weather-slots{display:flex; gap:6px; overflow-x:auto; padding-bottom:2px;}
+.weather-body-row{display:flex; align-items:flex-start; gap:14px;}
+.weather-slots{display:flex; gap:6px; overflow-x:auto; padding-bottom:2px; flex:1; min-width:0;}
 .weather-slot{
   min-width:86px; padding:7px 9px; border-radius:8px;
   background:var(--bg-raised); border:1px solid var(--border-soft);
@@ -625,6 +626,22 @@
 }
 .weather-note{font-size:11px; color:var(--text-faint);}
 .analyze-cost{font-size:10.5px; color:var(--text-faint); margin-left:8px;}
+
+/* ---------- Top HR hitters box (sits beside the weather slots) ---------- */
+.top-hitters-box{
+  flex-shrink:0; width:184px; background:var(--bg-raised); border:1px solid var(--border-soft);
+  border-radius:8px; padding:8px 10px;
+}
+.top-hitters-title{
+  font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:.5px;
+  color:var(--text-faint); margin-bottom:6px;
+}
+.hitter-row{display:flex; justify-content:space-between; align-items:center; gap:8px; padding:4px 0;}
+.hitter-row + .hitter-row{border-top:1px solid var(--border-soft);}
+.hitter-name{font-weight:600; color:var(--text); font-size:11.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.hitter-team{font-size:9.5px; color:var(--text-faint); display:block; margin-top:1px;}
+.hitter-stat{font-family:var(--font-mono); font-weight:700; color:var(--good); font-size:13px; flex-shrink:0; text-align:right;}
+.hitter-stat-sub{font-size:9px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.3px; display:block; text-align:right;}
 
 /* ---------- Shared motion utilities ---------- */
 @keyframes enterUp{
@@ -695,6 +712,12 @@
 @media (max-width:480px){
   .book-row{flex-wrap:wrap; row-gap:6px;}
   .book-odds{margin-left:0;}
+}
+
+/* ---------- Weather row + top-hitters box stack on narrow cards ---------- */
+@media (max-width:640px){
+  .weather-body-row{flex-direction:column;}
+  .top-hitters-box{width:100%;}
 }
 
 /* ---------- Mobile tap targets (audit 2.5) ---------- */
