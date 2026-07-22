@@ -1450,6 +1450,59 @@ function createApp({
     })().catch(err => sendUpstreamError(res, err));
   });
 
+  // Team roster for the "View Roster" button on a Cheatsheet glossary card.
+  // NBA/NFL already have per-sport roster routes (used by their dashboards)
+  // reusing ESPN athlete ids, so a roster player's `id` here plugs straight
+  // into /api/stats/player. MLB has no such route yet, and its team ids
+  // (MLB StatsAPI) aren't in the same numbering space as ESPN's — so its
+  // players carry an `mlbId` instead, resolved via /api/teams/roster-player.
+  app.get('/api/mlb/roster', (req, res) => {
+    (async () => {
+      const { team } = req.query;
+      const teams = await mlbTeamsList();
+      if (!teams.some(t => String(t.id) === String(team))) return res.status(400).json({ error: 'Unknown team id' });
+      const data = await fetchStats(`/api/v1/teams/${team}/roster?rosterType=active`, MLB_TTL_MS);
+      const players = (data.roster || []).map(r => ({
+        id: r.person.id, mlbId: r.person.id, name: r.person.fullName,
+        position: r.position?.abbreviation || '',
+        headshot: `https://img.mlbstatic.com/mlb-photos/image/upload/w_180,q_100/v1/people/${r.person.id}/headshot/67/current.png`
+      }));
+      res.json({ players });
+    })().catch(err => sendUpstreamError(res, err));
+  });
+
+  // Direct MLB player lookup by StatsAPI person id — for roster-driven clicks,
+  // where we already have the exact id and don't need the ESPN-athlete-id +
+  // name-matching dance that /api/stats/player's MLB branch does for the
+  // global player search (which only starts from a name, not a known id).
+  app.get('/api/teams/roster-player', (req, res) => {
+    (async () => {
+      const { mlbId } = req.query;
+      if (!/^\d{1,10}$/.test(String(mlbId || ''))) return res.status(400).json({ error: 'Bad player id' });
+      const season = new Date(now()).getFullYear();
+      const data = await fetchStats(
+        `/api/v1/people/${mlbId}?hydrate=stats(group=[hitting,pitching],type=[season],season=${season}),currentTeam`,
+        STATS_TTL_MS
+      );
+      const person = (data.people || [])[0];
+      if (!person) return res.status(404).json({ error: 'Player not found' });
+      const groups = {};
+      (person.stats || []).forEach(sg => {
+        const grp = sg.group && sg.group.displayName;
+        const split = (sg.splits || [])[0];
+        if (grp && split && split.stat) groups[grp] = split.stat;
+      });
+      res.json({
+        mlb: {
+          mlbId: Number(mlbId), name: person.fullName,
+          team: person.currentTeam ? person.currentTeam.name : null,
+          position: person.primaryPosition ? person.primaryPosition.abbreviation : null,
+          season, hitting: groups.hitting || null, pitching: groups.pitching || null
+        }
+      });
+    })().catch(err => sendUpstreamError(res, err));
+  });
+
   // ---------- Player stat search (all free, keyless public APIs) ----------
   // ESPN's search covers every league we track and returns headshots;
   // stats come from ESPN's athlete overview, except MLB which gets the far
