@@ -2143,22 +2143,18 @@ if (require.main === module) {
   // ODDS_CACHE_MINUTES stretches how long odds/props responses are reused
   // before spending fresh credits. Default 10; raise to 30–60 to sip quota.
   const cacheMinutes = Math.max(1, Number(process.env.ODDS_CACHE_MINUTES) || 10);
-  // The lock screen is always on in the real server. SESSION_SECRET should be
-  // set so logins survive a restart/redeploy; without it a random secret is
-  // generated each boot, which works fine but signs everyone out on restart.
-  let sessionSecret = process.env.SESSION_SECRET;
-  if (!sessionSecret) {
-    console.warn('auth: SESSION_SECRET not set — using a random one for this boot only. Set SESSION_SECRET in your environment so logins survive a restart.');
-    sessionSecret = crypto.randomBytes(32).toString('hex');
-  }
+  // Lock screen turned off for now (single-user password gate isn't what's
+  // needed yet — real multi-user accounts are the eventual plan). The whole
+  // feature (auth.js, lock.html, WebAuthn routes) is untouched and still
+  // covered by test/auth.test.js — flip this back to true + pass a
+  // sessionSecret to re-enable it.
   createApp({
     apiKey: process.env.ODDS_API_KEY,
     cacheTtlMs: cacheMinutes * 60 * 1000,
     dataDir: process.env.RAILWAY_VOLUME_MOUNT_PATH || process.env.DATA_DIR || './data',
     enableSweep: true,
-    enableAuth: true,
-    sessionSecret
+    enableAuth: false
   }).listen(port, () => {
-    console.log(`LineWatch listening on :${port} (odds cached ${cacheMinutes} min, lock screen on)`);
+    console.log(`LineWatch listening on :${port} (odds cached ${cacheMinutes} min)`);
   });
 }

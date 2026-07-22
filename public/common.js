@@ -314,10 +314,7 @@ function renderNav(activePage){
     </div>`;
   }).join('');
 
-  rail.innerHTML = '<a class="rail-logo" href="/">LW</a>' + groupHtml +
-    `<button class="rail-btn" id="lockBtn" title="Lock LineWatch" type="button">
-      <span aria-hidden="true">🔒</span><span class="rail-label">Lock</span>
-    </button>`;
+  rail.innerHTML = '<a class="rail-logo" href="/">LW</a>' + groupHtml;
 
   // Click-to-toggle (not hover — behaves the same on touch and desktop).
   // Exactly one flyout open at a time; outside click or Escape closes it.
@@ -336,12 +333,6 @@ function renderNav(activePage){
   });
   document.addEventListener('click', closeAllGroups);
   document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeAllGroups(); });
-
-  const lockBtn = document.getElementById('lockBtn');
-  if(lockBtn) lockBtn.addEventListener('click', async ()=>{
-    try{ await fetch('/api/auth/logout', {method:'POST'}); }catch(e){}
-    window.location.href = '/lock.html';
-  });
   updateSlipBadge();
 }
 // Seed from the persisted slip so a non-empty slip doesn't fake-trigger the
@@ -665,7 +656,7 @@ function windFieldSvg(windFromDeg, windMph, bearing){
   const rotation = ((windFromDeg + 180) - bearing + 360) % 360; // 0 = out to CF
   const arrowColor = rel.label === 'out' ? 'var(--good)' : rel.label === 'in' ? 'var(--bad)' : 'var(--warn)';
   return `<span class="wind-field-wrap" title="Wind ${Math.round(windMph)} mph, blowing ${rel.label === 'cross' ? 'across the field' : rel.label + (rel.label==='out' ? ' toward CF' : ' from CF')} (field shown with CF up; park orientation approx.)">
-    <svg class="wind-field" viewBox="0 0 100 100" width="46" height="46" aria-hidden="true">
+    <svg class="wind-field" viewBox="0 0 100 100" width="64" height="64" aria-hidden="true">
       <path d="M50,92 L13,55 A 52 52 0 0 1 87,55 Z" fill="none" stroke="var(--border)" stroke-width="3"/>
       <path d="M50,92 L36,78 L50,64 L64,78 Z" fill="none" stroke="var(--border-soft)" stroke-width="2.5"/>
       <g transform="rotate(${rotation.toFixed(0)} 50 54)">
