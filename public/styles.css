@@ -616,11 +616,11 @@
 .pitcher-team{font-size:10.5px; color:var(--text-faint);}
 .pitcher-vs{font-size:11px; color:var(--text-faint); font-weight:600; text-transform:uppercase; flex-shrink:0;}
 .wind-field-wrap{
-  margin-left:auto; display:flex; align-items:center; gap:6px; flex-shrink:0;
+  margin-left:auto; display:flex; align-items:center; gap:8px; flex-shrink:0;
 }
 .wind-field{display:block;}
 .wind-mph{
-  font-family:var(--font-mono); font-size:10px; line-height:1.2;
+  font-family:var(--font-mono); font-size:13px; font-weight:600; line-height:1.25;
   color:var(--text-dim); text-align:center; text-transform:none; letter-spacing:0;
 }
 .weather-note{font-size:11px; color:var(--text-faint);}
