@@ -52,7 +52,8 @@ const MLB_MARKET_STATS = {
 
 function createApp({
   apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now = Date.now, dataDir = null, enableSweep = false,
-  enableAuth = false, sessionSecret = null
+  enableAuth = false, sessionSecret = null, enableNotify = false,
+  notifySports = ['americanfootball_nfl', 'basketball_nba', 'baseball_mlb'], notifyScanMinutes = 60
 } = {}) {
   const app = express();
   app.set('trust proxy', 1); // Railway terminates TLS; this makes req.secure/req.protocol honor X-Forwarded-Proto
@@ -364,6 +365,126 @@ function createApp({
     res.set('x-cache-age-seconds', String(r.cacheAge));
     res.json(r.body);
   }
+
+  // ---------- Live notifications (Telegram) ----------
+  // Push-to-phone for Value Finder edges, without a native app: a Telegram
+  // bot message lands as a real phone notification on any platform, with
+  // none of Web Push's iOS/PWA friction. No-ops silently if unconfigured.
+  async function sendTelegram(text){
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    const chatId = process.env.TELEGRAM_CHAT_ID;
+    if (!token || !chatId) return false;
+    try {
+      const r = await fetchFn(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true })
+      });
+      if (!r.ok) console.error(`telegram send failed: HTTP ${r.status}`);
+      return r.ok;
+    } catch (e) {
+      console.error(`telegram send failed: ${e.message}`);
+      return false;
+    }
+  }
+
+  // Same de-vig math as public/common.js's Value Finder (americanToDecimal /
+  // computeFairDecimal), duplicated here because the scan has to run
+  // server-side on a timer — Value Finder itself only runs while a browser
+  // tab has the Cheatsheet open, which doesn't help for a phone notification.
+  const NOTIFY_TRACKED_KEYS = ['fanduel', 'draftkings', 'betmgm', 'williamhill_us', 'caesars', 'espnbet', 'bet365', 'fanatics', 'betrivers', 'pointsbetus'];
+  const NOTIFY_EDGE_THRESHOLD = 0.02;
+  const NOTIFY_COOLDOWN_MS = 3 * 60 * 60 * 1000; // don't re-ping the same edge for 3h even if it persists
+  const notifiedEdges = new Map(); // "sport|eventId|side" -> last-notified timestamp
+
+  function notifyAmericanToDecimal(a){
+    a = Number(a);
+    return a > 0 ? 1 + a / 100 : 1 + 100 / Math.abs(a);
+  }
+  function notifyFairDecimal(sideARows, sideBRows){
+    const byBookB = {};
+    sideBRows.forEach(r => { byBookB[r.bookKey] = r.odds; });
+    const fairProbs = [];
+    sideARows.forEach(r => {
+      if (byBookB[r.bookKey] === undefined) return;
+      const pA = 1 / notifyAmericanToDecimal(r.odds);
+      const pB = 1 / notifyAmericanToDecimal(byBookB[r.bookKey]);
+      const sum = pA + pB;
+      if (sum > 0) fairProbs.push(pA / sum);
+    });
+    if (!fairProbs.length) return null;
+    return 1 / (fairProbs.reduce((a, b) => a + b, 0) / fairProbs.length);
+  }
+  function notifyRows(pool, outcomeName){
+    const rows = [];
+    pool.forEach(bm => {
+      const market = bm.markets.find(m => m.key === 'h2h');
+      if (!market) return;
+      const outcome = market.outcomes.find(o => o.name === outcomeName);
+      if (!outcome) return;
+      rows.push({ bookKey: bm.key, bookTitle: bm.title, odds: outcome.price });
+    });
+    rows.sort((a, b) => notifyAmericanToDecimal(b.odds) - notifyAmericanToDecimal(a.odds));
+    return rows;
+  }
+
+  // Moneyline-only for now (the simplest, universally-available market across
+  // every sport we track) — spreads/totals value alerts can be added later
+  // if useful, matching Value Finder's own MLB-specific extension.
+  function scanGameForNotify(game){
+    const tracked = game.bookmakers.filter(b => NOTIFY_TRACKED_KEYS.includes(b.key.toLowerCase()));
+    const pool = tracked.length ? tracked : game.bookmakers;
+    const out = [];
+    const consider = (sideRows, oppRows, label) => {
+      if (!sideRows.length || !oppRows.length) return;
+      const fair = notifyFairDecimal(sideRows, oppRows);
+      if (!fair) return;
+      const best = sideRows[0];
+      const edge = notifyAmericanToDecimal(best.odds) / fair - 1;
+      if (edge < NOTIFY_EDGE_THRESHOLD) return;
+      out.push({ side: label, edge, bookTitle: best.bookTitle, odds: best.odds });
+    };
+    const away = notifyRows(pool, game.away_team);
+    const home = notifyRows(pool, game.home_team);
+    consider(away, home, `${game.away_team} to win`);
+    consider(home, away, `${game.home_team} to win`);
+    return out;
+  }
+
+  // Scans each configured sport's moneylines for a market-beating price and
+  // Telegrams anything new. Reuses getUpstream's normal cache, so this only
+  // spends a fresh Odds API credit when the cache has actually expired —
+  // same cost as a user loading that sport, not on top of it. The real cost
+  // is running unattended: on a quiet night with nobody browsing, this scan
+  // is the ONLY thing hitting the API, at one credit per sport per interval.
+  // Tune NOTIFY_SCAN_MINUTES / NOTIFY_SPORTS in .env to control that spend.
+  async function runNotifyScan(sports){
+    for (const sport of sports) {
+      try {
+        const { body: games } = await getUpstream(`/v4/sports/${sport}/odds/?regions=us&markets=h2h&oddsFormat=american&includeLinks=true&includeSids=true`);
+        (games || []).forEach(game => {
+          scanGameForNotify(game).forEach(c => {
+            const key = `${sport}|${game.id}|${c.side}`;
+            const last = notifiedEdges.get(key);
+            if (last && (now() - last) < NOTIFY_COOLDOWN_MS) return;
+            notifiedEdges.set(key, now());
+            const pct = (c.edge * 100).toFixed(1);
+            const oddsStr = c.odds > 0 ? `+${c.odds}` : String(c.odds);
+            sendTelegram(`📈 <b>Value edge</b>\n${c.side}\n+${pct}% vs consensus — ${c.bookTitle} ${oddsStr}`);
+          });
+        });
+      } catch (e) { /* one sport failing (quota, upstream down) shouldn't kill the rest of the scan */ }
+    }
+    for (const [key, ts] of notifiedEdges) {
+      if (now() - ts > 24 * 60 * 60 * 1000) notifiedEdges.delete(key); // games are long over by then
+    }
+  }
+
+  app.get('/api/notify/test', (req, res) => {
+    sendTelegram('✅ LineWatch notifications are working.')
+      .then(ok => ok ? res.json({ ok: true }) : res.status(502).json({ error: 'Telegram send failed — check TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID and server logs.' }))
+      .catch(() => res.status(502).json({ error: 'Telegram send failed.' }));
+  });
 
   async function fetchStats(path, ttlMs){
     const hit = statsCache.get(path);
@@ -2118,6 +2239,15 @@ function createApp({
     interval.unref();
   }
 
+  if (enableNotify) {
+    const sports = notifySports.filter(s => SPORTS.has(s));
+    console.log(`notify: scanning ${sports.join(', ')} every ${notifyScanMinutes}min for Telegram value alerts`);
+    const boot = setTimeout(() => runNotifyScan(sports).catch(e => console.error(`notify scan failed: ${e.message}`)), 45 * 1000);
+    boot.unref();
+    const interval = setInterval(() => runNotifyScan(sports).catch(e => console.error(`notify scan failed: ${e.message}`)), notifyScanMinutes * 60 * 1000);
+    interval.unref();
+  }
+
   app.get('/api/record', (req, res) => {
     res.json(computeRecord(store.all()));
   });
@@ -2151,13 +2281,24 @@ if (require.main === module) {
     console.warn('auth: SESSION_SECRET not set — using a random one for this boot only. Set SESSION_SECRET in your environment so logins survive a restart.');
     sessionSecret = crypto.randomBytes(32).toString('hex');
   }
+  // Telegram notifications auto-enable only when both env vars are set —
+  // no separate on/off flag to forget, and zero extra Odds API spend for
+  // anyone who hasn't configured a bot.
+  const notifyEnabled = !!(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID);
+  const notifyScanMinutes = Math.max(15, Number(process.env.NOTIFY_SCAN_MINUTES) || 60);
+  const notifySports = (process.env.NOTIFY_SPORTS || 'americanfootball_nfl,basketball_nba,baseball_mlb')
+    .split(',').map(s => s.trim()).filter(Boolean);
+
   createApp({
     apiKey: process.env.ODDS_API_KEY,
     cacheTtlMs: cacheMinutes * 60 * 1000,
     dataDir: process.env.RAILWAY_VOLUME_MOUNT_PATH || process.env.DATA_DIR || './data',
     enableSweep: true,
     enableAuth: true,
-    sessionSecret
+    sessionSecret,
+    enableNotify: notifyEnabled,
+    notifySports,
+    notifyScanMinutes
   }).listen(port, () => {
     console.log(`LineWatch listening on :${port} (odds cached ${cacheMinutes} min, lock screen on)`);
   });
