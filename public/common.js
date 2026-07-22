@@ -656,20 +656,28 @@ function windFieldSvg(windFromDeg, windMph, bearing){
   const rotation = ((windFromDeg + 180) - bearing + 360) % 360; // 0 = out to CF
   const arrowColor = rel.label === 'out' ? 'var(--good)' : rel.label === 'in' ? 'var(--bad)' : 'var(--warn)';
   return `<span class="wind-field-wrap" title="Wind ${Math.round(windMph)} mph, blowing ${rel.label === 'cross' ? 'across the field' : rel.label + (rel.label==='out' ? ' toward CF' : ' from CF')} (field shown with CF up; park orientation approx.)">
-    <svg class="wind-field" viewBox="0 0 100 100" width="64" height="64" aria-hidden="true">
-      <path d="M50,92 L13,55 A 52 52 0 0 1 87,55 Z" fill="none" stroke="var(--border)" stroke-width="3"/>
-      <path d="M50,92 L36,78 L50,64 L64,78 Z" fill="none" stroke="var(--border-soft)" stroke-width="2.5"/>
-      <g transform="rotate(${rotation.toFixed(0)} 50 54)">
-        <circle cx="50" cy="54" r="15" fill="${arrowColor}" opacity="0.92"/>
-        <path d="M50,62 L50,47 M50,47 l-5.5,5.5 M50,47 l5.5,5.5" stroke="#1B1B1B" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+    <svg class="wind-field" viewBox="0 0 100 100" width="88" height="88" aria-hidden="true">
+      <path d="M50,88 L4,44 A65,65 0 0 1 96,44 Z" fill="#2F6B3C" stroke="#1C3F24" stroke-width="2"/>
+      <path d="M50,88 L74,64 L50,40 L26,64 Z" fill="#A5713F" stroke="#7A4F28" stroke-width="1.5"/>
+      <path d="M50,76 L63,64 L50,52 L37,64 Z" fill="#3D8A4F" stroke="#276334" stroke-width="1"/>
+      <circle cx="50" cy="64" r="4" fill="#8A5A34" stroke="#6B4527" stroke-width="1"/>
+      <rect x="71.7" y="61.7" width="4.6" height="4.6" fill="#F5F5F5" stroke="#999" stroke-width="0.6" transform="rotate(45 74 64)"/>
+      <rect x="47.7" y="37.7" width="4.6" height="4.6" fill="#F5F5F5" stroke="#999" stroke-width="0.6" transform="rotate(45 50 40)"/>
+      <rect x="23.7" y="61.7" width="4.6" height="4.6" fill="#F5F5F5" stroke="#999" stroke-width="0.6" transform="rotate(45 26 64)"/>
+      <path d="M46,88 L54,88 L54,84 L50,80 L46,84 Z" fill="#F5F5F5" stroke="#999" stroke-width="0.6"/>
+      <g transform="rotate(${rotation.toFixed(0)} 50 33)">
+        <circle cx="50" cy="33" r="12" fill="${arrowColor}" opacity="0.94" stroke="#1B1B1B" stroke-width="1"/>
+        <path d="M50,41 L50,25 M50,25 l-6,6 M50,25 l6,6" stroke="#1B1B1B" stroke-width="3.5" fill="none" stroke-linecap="round"/>
       </g>
     </svg>
     <span class="wind-mph">${Math.round(windMph)}<br>mph</span>
   </span>`;
 }
 
-// Builds the hourly weather strip for an MLB game card (first pitch through +4 hours)
-function buildWeatherStrip(game){
+// Builds the hourly weather strip for an MLB game card (first pitch through +4 hours).
+// extraHtml (e.g. a top-HR-hitters box) renders alongside the slots, filling
+// the leftover horizontal space to the right of them on wider cards.
+function buildWeatherStrip(game, extraHtml){
   const stadium = MLB_STADIUMS[game.home_team];
   if(!stadium) return '';
   const w = weatherCache[game.home_team];
@@ -728,7 +736,7 @@ function buildWeatherStrip(game){
 
   return `<div class="weather-strip">
     <div class="weather-head">☁ ${escapeHtml(stadium.park)} ${roofTag} ${ratingTag} ${fieldSvg}</div>
-    ${body}
+    <div class="weather-body-row">${body}${extraHtml || ''}</div>
   </div>`;
 }
 

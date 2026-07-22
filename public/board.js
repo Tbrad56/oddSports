@@ -58,6 +58,7 @@
       if(sport === 'baseball_mlb' && games.length){
         fetchStadiumWeather(games).then(scheduleRender).catch(()=>{});
         fetchStartingPitchers(games).then(scheduleRender).catch(()=>{});
+        fetchTopHitters(games).then(scheduleRender).catch(()=>{});
       }
       // Live scores: fetch now, then keep polling every 30s while this sport is loaded
       state.scores = []; state.mlbLive = [];
@@ -342,6 +343,44 @@
     }));
   }
 
+  // Same endpoint the opt-in HR Matchups section below uses — fetching it up
+  // front here means that section finds state.hrCache already warm and skips
+  // its own fetch (see the hrAlreadyLoaded check further down), so this box
+  // doesn't cost a second StatsAPI call per game.
+  async function fetchTopHitters(games){
+    await Promise.all(games.map(async game=>{
+      if(state.hrCache[game.id]) return;
+      const dateStr = new Date(game.commence_time).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+      try{
+        const res = await fetch(`/api/hr-matchups/mlb?home=${encodeURIComponent(game.home_team)}&away=${encodeURIComponent(game.away_team)}&date=${dateStr}`);
+        if(!res.ok) return;
+        state.hrCache[game.id] = await res.json();
+      }catch(e){ /* best-effort */ }
+    }));
+  }
+
+  // Top 3 home-run threats across both lineups (by season HR count), shown
+  // beside the weather slots — empty until lineups post (2-4 hours before
+  // first pitch), same as the opt-in HR Matchups section below.
+  function buildTopHittersHtml(game){
+    const data = state.hrCache[game.id];
+    if(!data || !data.matched) return '';
+    const withTeam = (batters, team) => (batters || []).map(b=>({...b, team}));
+    const pool = [
+      ...withTeam(data.away.batters, game.away_team),
+      ...withTeam(data.home.batters, game.home_team)
+    ].filter(b => b.hr !== null && b.hr !== undefined);
+    if(!pool.length) return '';
+    const top = pool.sort((a,b)=>b.hr-a.hr).slice(0,3);
+    return `<div class="top-hitters-box">
+      <div class="top-hitters-title">Top HR threats</div>
+      ${top.map(b=>`<div class="hitter-row">
+        <div><div class="hitter-name">${escapeHtml(b.name)}</div><div class="hitter-team">${escapeHtml(b.team)}</div></div>
+        <div><span class="hitter-stat">${b.hr}</span><span class="hitter-stat-sub">HR</span></div>
+      </div>`).join('')}
+    </div>`;
+  }
+
   function buildStartingPitchersHtml(game){
     const info = state.pitchers[game.id];
     if(!info || !info.matched) return '';
@@ -566,7 +605,7 @@
 
       // MLB: stadium weather strip, then both starting pitchers with photos
       if(sportKey === 'baseball_mlb'){
-        const weatherHtml = buildWeatherStrip(game);
+        const weatherHtml = buildWeatherStrip(game, buildTopHittersHtml(game));
         if(weatherHtml){
           const w = document.createElement('div');
           w.innerHTML = weatherHtml;
