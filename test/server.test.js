@@ -72,6 +72,23 @@ test('non-MLB odds request does not include F5 markets', async () => {
   assert.doesNotMatch(f.calls[0], /1st_5_innings/);
 });
 
+test('NFL odds request includes full-game spreads/totals in one call, same as MLB', async () => {
+  const f = fakeFetch(() => okResponse([]));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/odds/americanfootball_nfl');
+  assert.equal(res.status, 200);
+  assert.equal(f.calls.length, 1);
+  assert.match(f.calls[0], /markets=h2h,spreads,totals&/);
+});
+
+test('NHL odds request stays moneyline-only (grid is MLB/NFL only)', async () => {
+  const f = fakeFetch(() => okResponse([]));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/odds/icehockey_nhl');
+  assert.equal(res.status, 200);
+  assert.match(f.calls[0], /markets=h2h&/);
+});
+
 test('second request within TTL is served from cache', async () => {
   let t = 1000000;
   const f = fakeFetch(() => okResponse([{ id: 'x' }]));

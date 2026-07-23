@@ -60,6 +60,13 @@
         fetchStartingPitchers(games).then(scheduleRender).catch(()=>{});
         fetchTopHitters(games).then(scheduleRender).catch(()=>{});
       }
+      // NFL: same free Open-Meteo forecast pull, no top-performers box yet —
+      // season stat leaders aren't available cheaply pregame (see note where
+      // this was scoped) and the season hasn't started as of this feature
+      // landing, so there's nothing real to show there yet anyway.
+      if(sport === 'americanfootball_nfl' && games.length){
+        fetchNflStadiumWeather(games).then(scheduleRender).catch(()=>{});
+      }
       // Live scores: fetch now, then keep polling every 30s while this sport is loaded
       state.scores = []; state.mlbLive = [];
       clearInterval(state.scoresTimer);
@@ -618,6 +625,16 @@
           card.appendChild(p.firstElementChild);
         }
       }
+      // NFL: stadium weather/wind strip (no top-performers box yet — see note
+      // in buildNflWeatherStrip's caller in refresh() about why).
+      if(sportKey === 'americanfootball_nfl'){
+        const weatherHtml = buildNflWeatherStrip(game);
+        if(weatherHtml){
+          const w = document.createElement('div');
+          w.innerHTML = weatherHtml;
+          card.appendChild(w.firstElementChild);
+        }
+      }
 
       // MLB only: Spread/Total/Moneyline grid like a sportsbook's own game-lines
       // page, one row per team. Each cell is the best price across whichever
@@ -821,21 +838,25 @@
       }
 
       // MLB: F5 toggle swaps the same grid between full-game and first-5-innings lines.
-      if(sportKey === 'baseball_mlb'){
-        const view = state.oddsView[game.id] === 'f5' ? 'f5' : 'full';
-        const tabs = document.createElement('div');
-        tabs.className = 'f5-tabs';
-        tabs.innerHTML = `
-          <button class="f5-tab${view==='full'?' active':''}" data-view="full">Full game</button>
-          <button class="f5-tab${view==='f5'?' active':''}" data-view="f5">First 5 innings</button>
-        `;
-        tabs.querySelectorAll('.f5-tab').forEach(btn=>{
-          btn.addEventListener('click', ()=>{
-            state.oddsView[game.id] = btn.dataset.view;
-            renderGames();
+      // NFL: same Spread/Total/Money grid, just without the F5 tabs (no NFL period-market equivalent yet).
+      if(sportKey === 'baseball_mlb' || sportKey === 'americanfootball_nfl'){
+        let view = 'full';
+        if(sportKey === 'baseball_mlb'){
+          view = state.oddsView[game.id] === 'f5' ? 'f5' : 'full';
+          const tabs = document.createElement('div');
+          tabs.className = 'f5-tabs';
+          tabs.innerHTML = `
+            <button class="f5-tab${view==='full'?' active':''}" data-view="full">Full game</button>
+            <button class="f5-tab${view==='f5'?' active':''}" data-view="f5">First 5 innings</button>
+          `;
+          tabs.querySelectorAll('.f5-tab').forEach(btn=>{
+            btn.addEventListener('click', ()=>{
+              state.oddsView[game.id] = btn.dataset.view;
+              renderGames();
+            });
           });
-        });
-        card.appendChild(tabs);
+          card.appendChild(tabs);
+        }
 
         const renderedAny = renderGameLinesGrid(view);
         if(!renderedAny){
