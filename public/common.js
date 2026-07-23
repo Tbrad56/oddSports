@@ -740,6 +740,157 @@ function buildWeatherStrip(game, extraHtml){
   </div>`;
 }
 
+// ---------- NFL stadium weather/wind (same free Open-Meteo source as MLB,
+// separate cache since it's a different set of lat/lons and only needs the
+// current game-day slots, not a 7-day hourly window). bearing is each
+// stadium's approximate long-axis/end-zone orientation (±15° estimates, same
+// caveat as MLB_STADIUMS) so wind can be described as blowing end-zone to
+// end-zone rather than just a raw compass direction. ----------
+const NFL_STADIUMS = {
+  "Arizona Cardinals":{bearing:135,lat:33.5276,lon:-112.2626,park:"State Farm Stadium, Glendale",dome:true},
+  "Atlanta Falcons":{bearing:45,lat:33.7554,lon:-84.4008,park:"Mercedes-Benz Stadium, Atlanta",dome:true},
+  "Baltimore Ravens":{bearing:20,lat:39.2780,lon:-76.6227,park:"M&T Bank Stadium, Baltimore",dome:false},
+  "Buffalo Bills":{bearing:0,lat:42.7738,lon:-78.7870,park:"Highmark Stadium, Orchard Park",dome:false},
+  "Carolina Panthers":{bearing:20,lat:35.2258,lon:-80.8528,park:"Bank of America Stadium, Charlotte",dome:false},
+  "Chicago Bears":{bearing:0,lat:41.8623,lon:-87.6167,park:"Soldier Field, Chicago",dome:false},
+  "Cincinnati Bengals":{bearing:5,lat:39.0955,lon:-84.5161,park:"Paycor Stadium, Cincinnati",dome:false},
+  "Cleveland Browns":{bearing:355,lat:41.5061,lon:-81.6995,park:"Huntington Bank Field, Cleveland",dome:false},
+  "Dallas Cowboys":{bearing:45,lat:32.7473,lon:-97.0945,park:"AT&T Stadium, Arlington",dome:true},
+  "Denver Broncos":{bearing:20,lat:39.7439,lon:-105.0201,park:"Empower Field at Mile High, Denver",dome:false},
+  "Detroit Lions":{bearing:0,lat:42.3400,lon:-83.0456,park:"Ford Field, Detroit",dome:true},
+  "Green Bay Packers":{bearing:10,lat:44.5013,lon:-88.0622,park:"Lambeau Field, Green Bay",dome:false},
+  "Houston Texans":{bearing:150,lat:29.6847,lon:-95.4107,park:"NRG Stadium, Houston",dome:true},
+  "Indianapolis Colts":{bearing:150,lat:39.7601,lon:-86.1639,park:"Lucas Oil Stadium, Indianapolis",dome:true},
+  "Jacksonville Jaguars":{bearing:20,lat:30.3240,lon:-81.6373,park:"EverBank Stadium, Jacksonville",dome:false},
+  "Kansas City Chiefs":{bearing:135,lat:39.0489,lon:-94.4839,park:"GEHA Field at Arrowhead Stadium, Kansas City",dome:false},
+  "Las Vegas Raiders":{bearing:0,lat:36.0909,lon:-115.1833,park:"Allegiant Stadium, Las Vegas",dome:true},
+  "Los Angeles Chargers":{bearing:135,lat:33.9535,lon:-118.3392,park:"SoFi Stadium, Inglewood",dome:true},
+  "Los Angeles Rams":{bearing:135,lat:33.9535,lon:-118.3392,park:"SoFi Stadium, Inglewood",dome:true},
+  "Miami Dolphins":{bearing:135,lat:25.9580,lon:-80.2389,park:"Hard Rock Stadium, Miami Gardens",dome:false},
+  "Minnesota Vikings":{bearing:0,lat:44.9736,lon:-93.2575,park:"U.S. Bank Stadium, Minneapolis",dome:true},
+  "New England Patriots":{bearing:135,lat:42.0909,lon:-71.2643,park:"Gillette Stadium, Foxborough",dome:false},
+  "New Orleans Saints":{bearing:0,lat:29.9511,lon:-90.0812,park:"Caesars Superdome, New Orleans",dome:true},
+  "New York Giants":{bearing:135,lat:40.8128,lon:-74.0742,park:"MetLife Stadium, East Rutherford",dome:false},
+  "New York Jets":{bearing:135,lat:40.8128,lon:-74.0742,park:"MetLife Stadium, East Rutherford",dome:false},
+  "Philadelphia Eagles":{bearing:20,lat:39.9008,lon:-75.1675,park:"Lincoln Financial Field, Philadelphia",dome:false},
+  "Pittsburgh Steelers":{bearing:20,lat:40.4468,lon:-80.0158,park:"Acrisure Stadium, Pittsburgh",dome:false},
+  "Seattle Seahawks":{bearing:20,lat:47.5952,lon:-122.3316,park:"Lumen Field, Seattle",dome:false},
+  "San Francisco 49ers":{bearing:135,lat:37.4030,lon:-121.9696,park:"Levi's Stadium, Santa Clara",dome:false},
+  "Tampa Bay Buccaneers":{bearing:20,lat:27.9759,lon:-82.5033,park:"Raymond James Stadium, Tampa",dome:false},
+  "Tennessee Titans":{bearing:20,lat:36.1665,lon:-86.7713,park:"Nissan Stadium, Nashville",dome:false},
+  "Washington Commanders":{bearing:135,lat:38.9076,lon:-76.8645,park:"Northwest Stadium, Landover",dome:false}
+};
+
+let nflWeatherCache = {}; // home team name -> {time[], temp[], precip[], wind[], windDir[]}
+
+async function fetchNflStadiumWeather(games){
+  nflWeatherCache = {};
+  const teams = [...new Set(games.map(g=>g.home_team).filter(t=>NFL_STADIUMS[t] && !NFL_STADIUMS[t].dome))];
+  if(!teams.length) return;
+  const lats = teams.map(t=>NFL_STADIUMS[t].lat).join(',');
+  const lons = teams.map(t=>NFL_STADIUMS[t].lon).join(',');
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lons}`
+    + `&hourly=temperature_2m,precipitation_probability,wind_speed_10m,wind_direction_10m`
+    + `&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=UTC&forecast_days=7`;
+  const res = await fetch(url);
+  if(!res.ok) return;
+  let data = await res.json();
+  if(!Array.isArray(data)) data = [data];
+  teams.forEach((team, i)=>{
+    const h = data[i] && data[i].hourly;
+    if(!h || !h.time) return;
+    nflWeatherCache[team] = { time: h.time, temp: h.temperature_2m, precip: h.precipitation_probability, wind: h.wind_speed_10m, windDir: h.wind_direction_10m };
+  });
+}
+
+// Football cares about raw wind speed (passing/kicking) more than direction,
+// but the field diagram still shows direction relative to the "downfield" axis.
+function nflWindImpact(windMph){
+  if(windMph >= 20) return {cls:'w-bad', label:'High-wind game', dot:'▼'};
+  if(windMph >= 15) return {cls:'w-mod', label:'Windy', dot:'●'};
+  return {cls:'w-good', label:'Calm', dot:'▲'};
+}
+
+// Mini football field with a wind arrow: end zone shading, yard-line ticks,
+// midfield logo dot — drawn relative to the stadium's long axis (bearing),
+// same rotation convention as windFieldSvg (0 = blowing straight downfield).
+function footballFieldSvg(windFromDeg, windMph, bearing){
+  const windTo = (windFromDeg + 180) % 360;
+  const rotation = (windTo - bearing + 360) % 360;
+  const arrowColor = windMph >= 20 ? 'var(--bad)' : windMph >= 15 ? 'var(--warn)' : 'var(--good)';
+  let yardLines = '';
+  for(let y = 18; y <= 90; y += 9){
+    yardLines += `<line x1="14" y1="${y}" x2="86" y2="${y}" stroke="#1C3F24" stroke-width="0.6" opacity="0.55"/>`;
+  }
+  return `<span class="wind-field-wrap" title="Wind ${Math.round(windMph)} mph relative to the field's long axis (orientation approx.)">
+    <svg class="wind-field" viewBox="0 0 100 100" width="88" height="88" aria-hidden="true">
+      <rect x="14" y="8" width="72" height="12" fill="#265C33" stroke="#1C3F24" stroke-width="1.5"/>
+      <rect x="14" y="80" width="72" height="12" fill="#265C33" stroke="#1C3F24" stroke-width="1.5"/>
+      <rect x="14" y="20" width="72" height="60" fill="#2F6B3C" stroke="#1C3F24" stroke-width="2"/>
+      ${yardLines}
+      <line x1="14" y1="50" x2="86" y2="50" stroke="#F5F5F5" stroke-width="1.4" opacity="0.85"/>
+      <circle cx="50" cy="50" r="5" fill="none" stroke="#F5F5F5" stroke-width="1" opacity="0.7"/>
+      <g transform="rotate(${rotation.toFixed(0)} 50 50)">
+        <circle cx="50" cy="50" r="12" fill="${arrowColor}" opacity="0.94" stroke="#1B1B1B" stroke-width="1"/>
+        <path d="M50,58 L50,42 M50,42 l-6,6 M50,42 l6,6" stroke="#1B1B1B" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+      </g>
+    </svg>
+    <span class="wind-mph">${Math.round(windMph)}<br>mph</span>
+  </span>`;
+}
+
+// Builds the hourly weather strip for an NFL game card — same layout/classes
+// as buildWeatherStrip so it shares all of that section's CSS, just swapping
+// the baseball-specific carry-condition rating for a wind-impact-on-the-
+// passing/kicking game rating (mirrors the thresholds nfl.js's Dashboard tab
+// already uses).
+function buildNflWeatherStrip(game){
+  const stadium = NFL_STADIUMS[game.home_team];
+  if(!stadium) return '';
+  if(stadium.dome){
+    return `<div class="weather-strip">
+      <div class="weather-head">☁ ${escapeHtml(stadium.park)} <span class="roof-tag">Dome — weather n/a</span></div>
+      <div class="weather-body-row"><div class="weather-note">Indoor stadium — conditions don't affect play.</div></div>
+    </div>`;
+  }
+  const w = nflWeatherCache[game.home_team];
+  let slotsHtml = '';
+  let firstPitchRating = null;
+  let firstPitchWind = null;
+  if(w){
+    const gameHourUtc = game.commence_time.slice(0,13) + ':00';
+    const startIdx = w.time.indexOf(gameHourUtc);
+    if(startIdx !== -1){
+      for(let i = startIdx; i < Math.min(startIdx + 5, w.time.length); i++){
+        const local = new Date(w.time[i] + ':00Z');
+        const precip = w.precip[i];
+        const rating = nflWindImpact(w.wind[i]);
+        if(i === startIdx){
+          firstPitchRating = rating;
+          firstPitchWind = {dir: w.windDir[i], mph: w.wind[i]};
+        }
+        slotsHtml += `<div class="weather-slot ${rating.cls}" title="${rating.label} · wind ${windCompass(w.windDir[i])} ${Math.round(w.wind[i])} mph (field orientation approx.)">
+          <div class="w-time">${local.toLocaleTimeString([], {hour:'numeric'})}${i===startIdx ? ' · kickoff' : ''}</div>
+          <div class="w-temp">${Math.round(w.temp[i])}°F</div>
+          <div class="w-wind">${Math.round(w.wind[i])} mph</div>
+          <div class="w-rain${precip >= 30 ? ' wet' : ''}">${precip}% rain</div>
+        </div>`;
+      }
+    }
+  }
+  const ratingTag = firstPitchRating
+    ? `<span class="rating-tag ${firstPitchRating.cls}" title="Wind-speed heuristic at kickoff — 15+ mph starts affecting passing/kicking, 20+ is a real factor. Not a betting signal.">${firstPitchRating.dot} ${firstPitchRating.label}</span>`
+    : '';
+  const fieldSvg = firstPitchWind ? footballFieldSvg(firstPitchWind.dir, firstPitchWind.mph, stadium.bearing) : '';
+  const body = slotsHtml
+    ? `<div class="weather-slots">${slotsHtml}</div>`
+    : (w ? '<div class="weather-note">Game is beyond the 7-day forecast window — check back closer to kickoff.</div>' : '<div class="weather-note">Forecast unavailable right now.</div>');
+  return `<div class="weather-strip">
+    <div class="weather-head">☁ ${escapeHtml(stadium.park)} ${ratingTag} ${fieldSvg}</div>
+    <div class="weather-body-row">${body}</div>
+  </div>`;
+}
+
 // ---------- team logos ----------
 // ESPN's public logo CDN, keyed by the exact team-name strings The Odds API
 // returns. Only the four major pro leagues are mapped — NCAA football/
