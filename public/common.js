@@ -61,11 +61,13 @@ const BOOK_LINKS = {
 // Player prop markets to try per sport when the user opts in on a game.
 // These are real market keys from The Odds API. Note: quota cost per props
 // load = number of markets × number of regions, so this list is deliberately capped.
+// College sports (NCAAF, NCAAB) intentionally have no entry here — many
+// states, including Ohio, prohibit betting on individual college athletes'
+// performance, so the "Load player props" UI never appears for those sports
+// (every call site below already guards on PROP_MARKETS[sportKey] existing).
 const PROP_MARKETS = {
   americanfootball_nfl:["player_pass_yds","player_pass_tds","player_rush_yds","player_receptions","player_reception_yds","player_anytime_td"],
-  americanfootball_ncaaf:["player_pass_yds","player_pass_tds","player_rush_yds","player_receptions","player_reception_yds","player_anytime_td"],
   basketball_nba:["player_points","player_rebounds","player_assists","player_threes","player_points_rebounds_assists"],
-  basketball_ncaab:["player_points","player_rebounds","player_assists","player_threes"],
   baseball_mlb:["batter_hits","batter_home_runs","batter_total_bases","batter_rbis","pitcher_strikeouts"],
   icehockey_nhl:["player_points","player_assists","player_shots_on_goal","player_goal_scorer_anytime"]
 };
@@ -946,7 +948,7 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
   const sit = scoreEntry && scoreEntry.situation;
   const started = !!sit;
   const live = !!(sit && sit.down > 0 && sit.distance >= 0);
-  let losMark = '', ballMark = '', firstDownMark = '', dirArrow = '';
+  let losMark = '', ballMark = '', firstDownMark = '', dirArrow = '', possessionMark = '';
   let badgeX = 150;
   if(live && sit.yardLine != null && sit.yardLine >= 0 && sit.yardLine <= 100){
     const x = 24 + (sit.yardLine / 100) * 252;
@@ -965,6 +967,16 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
       const ax = x + driveDir * 18;
       const tip = ax + driveDir * 10;
       dirArrow = `<path d="M${ax.toFixed(1)},52 L${tip.toFixed(1)},60 L${ax.toFixed(1)},68 Z" fill="#F5F5F5" opacity="0.9"/>`;
+      // A small logo of whichever team actually has the ball, right above it —
+      // the midfield logo is always the home team's turf logo, so on its own
+      // it can't answer "who has the ball" once the away team is on offense.
+      const posLogoUrl = espnTeamLogoUrl(sportKey, sit.possessionTeamId);
+      if(posLogoUrl){
+        possessionMark = `<g>
+          <circle cx="${x.toFixed(1)}" cy="38" r="13" fill="#F5F5F5" opacity="0.95"/>
+          <image href="${posLogoUrl}" x="${(x-11).toFixed(1)}" y="27" width="22" height="22" preserveAspectRatio="xMidYMid meet"/>
+        </g>`;
+      }
     }
     // Down & distance badge sits behind the LOS (the offense's own side, away
     // from the first-down marker) so it never covers the ball or the marker.
@@ -1009,7 +1021,34 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
   const kickoffNote = !started
     ? `<div class="field-note">Kickoff ${new Date(game.commence_time).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'})} — live tracker starts at kickoff</div>`
     : '';
+  // Live scorebox: score, timeouts, and a possession highlight for each team —
+  // a fuller in-widget summary instead of relying only on the small score
+  // badge above the card. Only renders once the game has actually started
+  // (scoreEntry.scores is null pre-kickoff).
+  let scorebox = '';
+  if(scoreEntry && scoreEntry.scores){
+    const homeScore = scoreEntry.scores.find(s => s.name === game.home_team);
+    const awayScore = scoreEntry.scores.find(s => s.name === game.away_team);
+    const timeoutPips = (n) => n == null ? '' : '<span class="fs-timeouts">' + '●'.repeat(Math.max(0, n)) + '○'.repeat(Math.max(0, 3 - n)) + '</span>';
+    const teamRow = (teamId, name, score, timeouts) => {
+      const logo = espnTeamLogoUrl(sportKey, teamId);
+      const hasBall = started && sit.possessionTeamId && sit.possessionTeamId === teamId;
+      return `<div class="fs-team${hasBall ? ' fs-possession' : ''}">
+        ${logo ? `<img class="fs-logo" src="${logo}" width="20" height="20" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : ''}
+        <span class="fs-name">${escapeHtml(name)}</span>
+        <span class="fs-score">${score != null ? escapeHtml(String(score)) : '—'}</span>
+        ${timeoutPips(timeouts)}
+      </div>`;
+    };
+    if(homeScore && awayScore){
+      scorebox = `<div class="field-scorebox">
+        ${teamRow(sit && sit.awayTeamId, game.away_team, awayScore.score, sit && sit.awayTimeouts)}
+        ${teamRow(sit && sit.homeTeamId, game.home_team, homeScore.score, sit && sit.homeTimeouts)}
+      </div>`;
+    }
+  }
   return `<div class="nfl-field-wrap">
+    ${scorebox}
     ${banner}
     <svg class="nfl-field" viewBox="0 0 300 120" width="100%" height="120" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
       <rect x="0" y="8" width="24" height="104" fill="#265C33" stroke="#1C3F24" stroke-width="1.5"/>
@@ -1023,6 +1062,7 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
       ${losMark}
       ${dirArrow}
       ${ballMark}
+      ${possessionMark}
       ${downBadge}
     </svg>
     ${kickoffNote}

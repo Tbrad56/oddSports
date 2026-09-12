@@ -670,6 +670,17 @@
 }
 .nfl-field{display:block; border-radius:6px;}
 .field-note{font-size:11px; color:var(--text-faint); margin-top:8px;}
+.field-scorebox{
+  display:flex; flex-direction:column; gap:6px;
+  margin-bottom:10px; padding-bottom:10px; border-bottom:1px solid var(--border-soft);
+}
+.fs-team{display:flex; align-items:center; gap:8px; padding:4px 8px; border-radius:6px; border:1px solid transparent;}
+.fs-team.fs-possession{background:rgba(187,0,0,0.1); border-color:rgba(187,0,0,0.3);}
+.fs-logo{display:block; border-radius:50%; background:#fff; object-fit:contain; flex-shrink:0;}
+.fs-name{flex:1; min-width:0; font-size:12.5px; font-weight:600; color:var(--text-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.fs-team.fs-possession .fs-name{color:var(--text);}
+.fs-score{font-family:var(--font-mono); font-size:15px; font-weight:700; color:var(--text); min-width:22px; text-align:right;}
+.fs-timeouts{font-size:9px; letter-spacing:2px; color:var(--text-faint);}
 
 /* ---------- Top HR hitters box (sits beside the weather slots) ---------- */
 .top-hitters-box{
