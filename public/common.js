@@ -12,6 +12,22 @@ const SPORTS = [
   ["mma_mixed_martial_arts","MMA"]
 ];
 
+// ESPN's public logo CDN, one real per-league mark per sport (verified live
+// against ESPN's own API responses, not guessed URLs). NCAA football/
+// basketball don't have a distinct per-sport crest on ESPN's side — their
+// own scoreboard API returns the same generic sport-icon ESPN itself uses,
+// so that's what's used here too.
+const SPORT_LOGOS = {
+  americanfootball_nfl: "https://a.espncdn.com/i/teamlogos/leagues/500/nfl.png",
+  basketball_nba: "https://a.espncdn.com/i/teamlogos/leagues/500/nba.png",
+  baseball_mlb: "https://a.espncdn.com/i/teamlogos/leagues/500/mlb.png",
+  icehockey_nhl: "https://a.espncdn.com/i/teamlogos/leagues/500/nhl.png",
+  americanfootball_ncaaf: "https://a.espncdn.com/redesign/assets/img/icons/ESPN-icon-football-college.png",
+  basketball_ncaab: "https://a.espncdn.com/redesign/assets/img/icons/ESPN-icon-basketball.png",
+  soccer_epl: "https://a.espncdn.com/i/leaguelogos/soccer/500/23.png",
+  mma_mixed_martial_arts: "https://a.espncdn.com/i/teamlogos/leagues/500/ufc.png"
+};
+
 const BOOK_STYLES = {
   fanduel:      {name:"FanDuel",   color:"#1493FF"},
   draftkings:   {name:"DraftKings",color:"#53D337"},
@@ -493,7 +509,8 @@ function renderSportChips(containerEl, onSelect){
     const chip = document.createElement('button');
     chip.type = 'button';
     chip.className = 'chip' + (key===current ? ' active' : '');
-    chip.textContent = label;
+    const logo = SPORT_LOGOS[key];
+    chip.innerHTML = (logo ? `<img class="chip-logo" src="${logo}" width="16" height="16" alt="" loading="lazy" onerror="this.style.display='none'">` : '') + escapeHtml(label);
     chip.addEventListener('click', ()=>{
       setSport(key);
       [...containerEl.children].forEach(c=>c.classList.remove('active'));
