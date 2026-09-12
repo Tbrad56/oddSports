@@ -54,6 +54,10 @@ const PROP_MARKETS = {
   icehockey_nhl:["player_points","player_assists","player_shots_on_goal","player_goal_scorer_anytime"]
 };
 
+// Binary anytime-scorer markets have exactly one line (yes/no) — no alt
+// lines exist for these (mirrors server.js's NO_ALT_MARKETS).
+const NO_ALT_MARKETS = new Set(['player_anytime_td', 'player_goal_scorer_anytime']);
+
 // ---------- odds math ----------
 function americanToDecimal(a){
   a = Number(a);

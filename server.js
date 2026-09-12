@@ -28,6 +28,14 @@ const PROP_MARKETS = {
   icehockey_nhl: ['player_points', 'player_assists', 'player_shots_on_goal', 'player_goal_scorer_anytime']
 };
 
+// Every numeric over/under prop market has a "give me every line, not just
+// the book's main one" alternate variant (verified live: e.g.
+// batter_hits_alternate, player_pass_yds_alternate, player_points_alternate
+// all return real data). The two binary anytime-scorer markets don't — The
+// Odds API rejects them with 422 INVALID_MARKET (also verified live) since
+// there's only one line to begin with (yes/no).
+const NO_ALT_MARKETS = new Set(['player_anytime_td', 'player_goal_scorer_anytime']);
+
 // MLB "first 5 innings" alternate-period markets. NOTE: the bulk /odds
 // endpoint used below only serves h2h/spreads/totals — asking it for these
 // period markets returns 422 INVALID_MARKET for the *entire* request, which
@@ -703,16 +711,16 @@ function createApp({
     })().catch(err => sendUpstreamError(res, err));
   });
 
+  async function nbaRosterPlayers(teamId){
+    const data = await fetchExternal(`${ESPN_NBA}/teams/${teamId}/roster`, NBA_TTL_MS);
+    return (data.athletes || []).map(a => ({ id: a.id, name: a.displayName, position: a.position?.abbreviation || '', headshot: a.headshot?.href || null }));
+  }
+
   app.get('/api/nba/roster', (req, res) => {
     (async () => {
       const { team } = req.query;
       if (!/^\d{1,4}$/.test(String(team||''))) return res.status(400).json({ error: 'team id required' });
-      const data = await fetchExternal(`${ESPN_NBA}/teams/${team}/roster`, NBA_TTL_MS);
-      const players = [];
-      (data.athletes || []).forEach(a => {
-        players.push({ id: a.id, name: a.displayName, position: a.position?.abbreviation || '', headshot: a.headshot?.href || null });
-      });
-      res.json({ players });
+      res.json({ players: await nbaRosterPlayers(team) });
     })().catch(err => sendUpstreamError(res, err));
   });
 
@@ -1144,18 +1152,22 @@ function createApp({
     })().catch(err => sendUpstreamError(res, err));
   });
 
+  async function nflRosterPlayers(teamId){
+    const data = await fetchExternal(`${ESPN_NFL}/teams/${teamId}/roster`, NFL_TTL_MS);
+    const players = [];
+    (data.athletes || []).forEach(group => {
+      (group.items || []).forEach(a => {
+        players.push({ id: a.id, name: a.displayName, position: a.position?.abbreviation || '', headshot: a.headshot?.href || null });
+      });
+    });
+    return players;
+  }
+
   app.get('/api/nfl/roster', (req, res) => {
     (async () => {
       const { team } = req.query;
       if (!/^\d{1,4}$/.test(String(team||''))) return res.status(400).json({ error: 'team id required' });
-      const data = await fetchExternal(`${ESPN_NFL}/teams/${team}/roster`, NFL_TTL_MS);
-      const players = [];
-      (data.athletes || []).forEach(group => {
-        (group.items || []).forEach(a => {
-          players.push({ id: a.id, name: a.displayName, position: a.position?.abbreviation || '', headshot: a.headshot?.href || null });
-        });
-      });
-      res.json({ players });
+      res.json({ players: await nflRosterPlayers(team) });
     })().catch(err => sendUpstreamError(res, err));
   });
 
@@ -1724,6 +1736,27 @@ function createApp({
     });
   });
 
+  // Opt-in: every alternate line for one market on one game, fetched only
+  // when the client asks (switching a prop category's tab to "Alt Lines")
+  // — not bundled into the main props call, so browsing props at the
+  // default one-line-per-player view costs exactly what it always did.
+  app.get('/api/props-alt/:sport/:eventId/:market', (req, res) => {
+    handlePropsAltRequest(req, res).catch(err => {
+      console.error(`Alt props fetch failed: ${err && err.message || err}`);
+      if (!res.headersSent) sendUpstreamError(res, err);
+    });
+  });
+
+  async function handlePropsAltRequest(req, res){
+    const { sport, eventId, market } = req.params;
+    const markets = PROP_MARKETS[sport];
+    if (!markets) return res.status(400).json({ error: 'Props not supported for this sport' });
+    if (!markets.includes(market)) return res.status(400).json({ error: 'Unknown market for this sport' });
+    if (NO_ALT_MARKETS.has(market)) return res.status(400).json({ error: 'This market has only one line — no alternates exist' });
+    if (!/^[a-z0-9]{1,64}$/i.test(eventId)) return res.status(400).json({ error: 'Bad event id' });
+    await proxy(`/v4/sports/${sport}/events/${eventId}/odds/?regions=us&markets=${market}_alternate&oddsFormat=american&includeLinks=true&includeSids=true`, res);
+  }
+
   async function handlePropsRequest(req, res){
     const { sport, eventId } = req.params;
     const markets = PROP_MARKETS[sport];
@@ -1738,24 +1771,42 @@ function createApp({
     }
 
     let body = r.body;
-    // MLB only: resolve each player name to a StatsAPI personId (cached lookup,
-    // same helper /api/analyze uses) so the frontend can show a real headshot.
+    // Resolve each prop's player name to a real headshot URL — MLB via
+    // StatsAPI personId (same helper /api/analyze uses), NBA/NFL via the two
+    // teams' ESPN rosters (already fetched/cached for the roster pages, so
+    // this doesn't cost a fresh request beyond the two roster calls
+    // themselves). Best-effort throughout — a miss just means that player's
+    // row falls back to the blank avatar placeholder, never an error.
+    const names = new Set();
+    (body.bookmakers || []).forEach(bm => (bm.markets || []).forEach(m => (m.outcomes || []).forEach(o => {
+      const nm = o.description || o.name;
+      if (nm) names.add(nm);
+    })));
+    const headshots = {};
     if (sport === 'baseball_mlb') {
-      const names = new Set();
-      (body.bookmakers || []).forEach(bm => (bm.markets || []).forEach(m => (m.outcomes || []).forEach(o => {
-        const nm = o.description || o.name;
-        if (nm) names.add(nm);
-      })));
       const season = new Date(now()).getFullYear();
-      const mlbIds = {};
       for (const nm of names) {
         try {
           const id = await mlbPlayerId(nm, season);
-          if (id) mlbIds[nm.toLowerCase()] = id;
-        } catch (e) { /* best-effort — a missed id just means no photo for that player */ }
+          if (id) headshots[nm.toLowerCase()] = `https://img.mlbstatic.com/mlb-photos/image/upload/w_180,q_100/v1/people/${id}/headshot/67/current.png`;
+        } catch (e) { /* a missed id just means no photo for that player */ }
       }
-      body = { ...body, mlbIds };
+    } else if (names.size && (sport === 'basketball_nba' || sport === 'americanfootball_nfl')) {
+      try {
+        const teams = sport === 'basketball_nba' ? await nbaTeams() : await nflTeams();
+        const rosterFn = sport === 'basketball_nba' ? nbaRosterPlayers : nflRosterPlayers;
+        const sides = [body.home_team, body.away_team]
+          .map(teamName => teams.find(t => t.name === teamName))
+          .filter(Boolean);
+        const rosters = (await Promise.all(sides.map(t => rosterFn(t.id).catch(() => [])))).flat();
+        names.forEach(nm => {
+          const target = normName(nm);
+          const player = rosters.find(p => normName(p.name) === target);
+          if (player && player.headshot) headshots[nm.toLowerCase()] = player.headshot;
+        });
+      } catch (e) { /* couldn't resolve either team/roster — props still work, just no photos */ }
     }
+    if (Object.keys(headshots).length) body = { ...body, headshots };
 
     if (r.remaining) res.set('x-requests-remaining', r.remaining);
     res.set('x-cache-age-seconds', String(r.cacheAge));
