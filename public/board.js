@@ -335,9 +335,10 @@
       bookmakersToUse = bookmakersToUse.filter(b => b.key.toLowerCase() === state.propsBookFilter);
     }
 
-    let html = '<div class="props-block">';
-    let any = false;
-    markets.forEach(marketKey=>{
+    // First pass: which markets actually have rows for this game (with the
+    // current book filter applied) — needed up front to build the quick
+    // category-filter chips before the sections themselves.
+    const marketData = markets.map(marketKey=>{
       const perPlayer = {}; // "playerName|side|point" -> {player, side, point, rows}
       bookmakersToUse.forEach(bm=>{
         const market = bm.markets.find(m=>m.key===marketKey);
@@ -349,11 +350,33 @@
           perPlayer[rowKey].rows.push({bookKey:bm.key, bookTitle:bm.title, odds:o.price, link:o.link||bm.link||null, sid:o.sid||null, marketSid:market.sid||null});
         });
       });
-      const rowKeys = Object.keys(perPlayer);
-      if(!rowKeys.length) return;
-      any = true;
+      return { marketKey, perPlayer, rowKeys: Object.keys(perPlayer) };
+    }).filter(m => m.rowKeys.length);
+
+    let html = '<div class="props-block">';
+
+    // Quick category filter: every prop market shows collapsed by default (a
+    // game can have 5-6 of these — all expanded at once is exactly what was
+    // jumbled) — tap a chip to jump straight to just that category, or "All"
+    // to go back to browsing them yourself. Same chips row style/behavior
+    // works for every sport since it's just built off whatever markets this
+    // game actually has data for.
+    if(marketData.length > 1){
+      const noneForcedOpen = marketData.every(m => state.marketCollapsed[game.id+'|'+m.marketKey] !== false);
+      html += `<div class="chip-row props-market-filter" data-game-id="${escapeHtml(String(game.id))}" style="margin:0 0 10px;">
+        <span class="chip prop-filter-chip${noneForcedOpen?' active':''}" data-filter="all">All</span>
+        ${marketData.map(m=>{
+          const active = state.marketCollapsed[game.id+'|'+m.marketKey] === false;
+          return `<span class="chip prop-filter-chip${active?' active':''}" data-filter="${escapeHtml(m.marketKey)}">${escapeHtml(marketLabel(m.marketKey))}</span>`;
+        }).join('')}
+      </div>`;
+    }
+
+    marketData.forEach(({marketKey, perPlayer, rowKeys})=>{
       const sectionKey = game.id + '|' + marketKey;
-      const collapsed = !!state.marketCollapsed[sectionKey];
+      // Collapsed by default — only stays open once the user (or a filter
+      // chip) has explicitly opened it.
+      const collapsed = state.marketCollapsed[sectionKey] !== false;
       html += `<div class="props-market-label prop-market-head" data-section-key="${escapeHtml(sectionKey)}" tabindex="0" role="button" aria-expanded="${!collapsed}" title="Click to ${collapsed?'expand':'collapse'}">
         <span class="market-arrow">${collapsed?'▸':'▾'}</span>${escapeHtml(marketLabel(marketKey))}
         <span class="market-count">(${rowKeys.length})</span>
@@ -388,7 +411,7 @@
       });
       html += `</tbody></table></div></div>`;
     });
-    if(!any){
+    if(!marketData.length){
       if(state.propsBookFilter !== 'all'){
         const filterStyle = bookStyleFor(state.propsBookFilter);
         const filterName = filterStyle ? filterStyle.name : state.propsBookFilter;
@@ -527,7 +550,7 @@
     }
     const rows = [['season','Season'], ['vl','vs LHB'], ['vr','vs RHB']];
     let html = `<div class="hr-pitcher">${playerAvatarHtml(pitcher.id, 28)}Facing: ${escapeHtml(pitcher.name)} <span class="hand-tag">${escapeHtml(pitcher.hand)}HP</span></div>`;
-    html += `<table class="props-table"><thead><tr><th>Split</th><th>IP</th><th>WHIP</th><th>HR</th><th>HR/9</th></tr></thead><tbody>`;
+    html += `<div class="table-scroll"><table class="props-table"><thead><tr><th>Split</th><th>IP</th><th>WHIP</th><th>HR</th><th>HR/9</th></tr></thead><tbody>`;
     rows.forEach(([code, label])=>{
       const st = pitcher.rows[code];
       if(!st) return;
@@ -536,7 +559,7 @@
         + statCell(st.hr9, 1.4, 0.8, n=>n.toFixed(2))
         + `</tr>`;
     });
-    html += `</tbody></table>`;
+    html += `</tbody></table></div>`;
     return html;
   }
 
@@ -547,7 +570,7 @@
     }
     const scCols = statcast ? '<th>EV</th><th>Barrel%</th><th>HardHit%</th>' : '';
     let html = `<div class="hr-pitcher" style="margin-top:12px;">${escapeHtml(teamName)} lineup <span class="lineup-tag confirmed">✓ Confirmed</span></div>`;
-    html += `<table class="props-table"><thead><tr><th>Batter</th><th>HR odds</th><th>vs This P</th><th>HR</th><th>BA</th><th>OBP</th><th>SLG</th><th>ISO</th>${scCols}</tr></thead><tbody>`;
+    html += `<div class="table-scroll"><table class="props-table"><thead><tr><th>Batter</th><th>HR odds</th><th>vs This P</th><th>HR</th><th>BA</th><th>OBP</th><th>SLG</th><th>ISO</th>${scCols}</tr></thead><tbody>`;
     side.batters.forEach(b=>{
       const odds = hrOdds[b.name.toLowerCase()];
       const style = odds ? bookStyleFor(odds.bookKey) : null;
@@ -578,7 +601,7 @@
         + scCells
         + `</tr>`;
     });
-    html += `</tbody></table>`;
+    html += `</tbody></table></div>`;
     return html;
   }
 
@@ -637,7 +660,27 @@
     marketHead.setAttribute('aria-expanded', String(!nowCollapsed));
   }
 
+  // Jump straight to one prop category: collapses every other market for
+  // this game and opens just the clicked one (or, for "All", back to
+  // everything collapsed — the default browsing state). Re-renders that
+  // game's props host in place, same as the book-filter chips already do.
+  function applyPropFilter(gameId, marketKey){
+    const cached = state.propsCache[gameId];
+    if(!cached) return;
+    (PROP_MARKETS[getSport()] || []).forEach(mk=>{
+      state.marketCollapsed[gameId+'|'+mk] = (marketKey !== 'all' && mk === marketKey) ? false : true;
+    });
+    const host = document.querySelector(`.props-host[data-game-id="${CSS.escape(String(gameId))}"]`);
+    if(host) host.innerHTML = buildPropsHtml(cached.game, cached.data, PROP_MARKETS[getSport()] || []);
+  }
+
   document.getElementById('gamesArea').addEventListener('click', (e)=>{
+    const filterChip = e.target.closest('.prop-filter-chip');
+    if(filterChip){
+      const gameId = filterChip.closest('.props-market-filter').dataset.gameId;
+      applyPropFilter(gameId, filterChip.dataset.filter);
+      return;
+    }
     const marketHead = e.target.closest('.prop-market-head');
     if(marketHead){
       toggleMarketHead(marketHead);
