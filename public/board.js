@@ -1069,8 +1069,6 @@
           const rows = rowsByTeam[team];
           if(!rows.length) return;
           renderedAny = true;
-          const otherTeam = teams.find(t=>t!==team);
-          const fairDecimal = computeFairDecimal(rows, rowsByTeam[otherTeam] || []);
           const sideLabel = marketKey === 'h2h' ? team : team + ' (F5)';
 
           const block = document.createElement('div');
@@ -1125,15 +1123,15 @@
               block.appendChild(hint);
             }
           } else {
-            rows.forEach((r, idx)=>{
+            // No Best/Value badges here — rows are already sorted best price
+            // first, and book selection (with that book's own price) happens
+            // on the Slip page, so a per-row ranking badge is redundant noise.
+            rows.forEach((r)=>{
               const row = document.createElement('div');
-              const isValue = fairDecimal && americanToDecimal(r.odds) > fairDecimal * 1.015;
-              row.className = 'book-row' + (idx===0 ? ' best' : '');
+              row.className = 'book-row';
               const style = bookStyleFor(r.bookKey);
               const link = BOOK_LINKS[r.bookKey.toLowerCase()];
               row.innerHTML = `
-                ${idx===0 ? '<span class="best-tag">Best</span>' : ''}
-                ${isValue ? '<span class="value-tag" title="Pays better than the market-consensus fair line">Value</span>' : ''}
                 <span class="book-odds ${Number(r.odds)>0?'pos':'neg'}">${fmtAmerican(r.odds)}</span>
                 <button class="add-leg-btn">+ Slip</button>
                 ${link ? `<a class="book-link-btn" href="${link}" target="_blank" rel="noopener" title="Open ${escapeHtml(style?style.name:r.bookTitle)}">↗</a>` : ''}
