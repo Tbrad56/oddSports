@@ -1663,9 +1663,19 @@ function createApp({
     soccer_epl: 'soccer/eng.1',
     mma_mixed_martial_arts: 'mma/ufc'
   };
+  // ESPN's scoreboard defaults to a trimmed, "nationally relevant" slate for
+  // college sports (verified: NCAAF returned only 24 of ~86 real FBS games
+  // for the day without this) — group 80 is FBS, and a high limit keeps every
+  // game in that group instead of truncating. Harmless no-op for the pro
+  // leagues, which already return their full (much smaller) daily slate.
+  const ESPN_SCOREBOARD_PARAMS = {
+    americanfootball_ncaaf: '?groups=80&limit=300',
+    basketball_ncaab: '?limit=400'
+  };
   async function getScores(sport){
     const path = ESPN_SCOREBOARDS[sport];
-    const data = await fetchExternal(`https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard`, SCORES_TTL_MS);
+    const params = ESPN_SCOREBOARD_PARAMS[sport] || '';
+    const data = await fetchExternal(`https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard${params}`, SCORES_TTL_MS);
     return (data.events || []).map(ev => {
       const comp = (ev.competitions || [])[0] || {};
       const state = ev.status && ev.status.type && ev.status.type.state;
