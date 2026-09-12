@@ -172,8 +172,14 @@
     display:grid; grid-template-columns:76px 1fr 360px;
     gap:0; flex:1;
   }
-  .layout main{padding:24px;}
+  .layout main{padding:24px; position:relative;}
   .layout .sidebar{padding:24px 24px 24px 0;}
+  .sport-watermark{
+    position:absolute; top:0; right:0; width:320px; height:320px;
+    background-size:contain; background-repeat:no-repeat; background-position:center;
+    opacity:0.05; pointer-events:none; z-index:0;
+  }
+  @media (max-width:980px){ .sport-watermark{display:none;} }
   @media (max-width:980px){
     .layout{grid-template-columns:1fr;}
     .nav-rail{

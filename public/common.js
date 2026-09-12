@@ -502,9 +502,21 @@ function renderSkeletonCards(container, count){
 }
 
 // ---------- sport chips ----------
+// Faint full-size league logo behind the page content, if that page has a
+// #sportWatermark element — a no-op everywhere else. Kept in one place so
+// every page that uses renderSportChips gets it automatically instead of
+// each page having to wire it up itself.
+function updateSportWatermark(sportKey){
+  const el = document.getElementById('sportWatermark');
+  if(!el) return;
+  const logo = SPORT_LOGOS[sportKey];
+  el.style.backgroundImage = logo ? `url("${logo}")` : 'none';
+}
+
 function renderSportChips(containerEl, onSelect){
   containerEl.innerHTML = '';
   const current = getSport();
+  updateSportWatermark(current);
   SPORTS.forEach(([key,label])=>{
     const chip = document.createElement('button');
     chip.type = 'button';
@@ -515,6 +527,7 @@ function renderSportChips(containerEl, onSelect){
       setSport(key);
       [...containerEl.children].forEach(c=>c.classList.remove('active'));
       chip.classList.add('active');
+      updateSportWatermark(key);
       onSelect(key);
     });
     containerEl.appendChild(chip);
