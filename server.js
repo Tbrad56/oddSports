@@ -19,11 +19,13 @@ const SPORTS = new Set([
 
 // Server-controlled prop markets per sport (quota protection: clients
 // cannot request arbitrary markets). Copied from the prototype.
+// College sports (NCAAF, NCAAB) intentionally have no entry here — many
+// states, including Ohio, prohibit betting on individual college athletes'
+// performance, so no player-props endpoint is offered for those sports at
+// all (handlePropsRequest/handlePropsAltRequest both 400 on an unlisted sport).
 const PROP_MARKETS = {
   americanfootball_nfl: ['player_pass_yds', 'player_pass_tds', 'player_rush_yds', 'player_receptions', 'player_reception_yds', 'player_anytime_td'],
-  americanfootball_ncaaf: ['player_pass_yds', 'player_pass_tds', 'player_rush_yds', 'player_receptions', 'player_reception_yds', 'player_anytime_td'],
   basketball_nba: ['player_points', 'player_rebounds', 'player_assists', 'player_threes', 'player_points_rebounds_assists'],
-  basketball_ncaab: ['player_points', 'player_rebounds', 'player_assists', 'player_threes'],
   baseball_mlb: ['batter_hits', 'batter_home_runs', 'batter_total_bases', 'batter_rbis', 'pitcher_strikeouts'],
   icehockey_nhl: ['player_points', 'player_assists', 'player_shots_on_goal', 'player_goal_scorer_anytime']
 };
@@ -1710,7 +1712,9 @@ function createApp({
           isRedZone: !!sit.isRedZone,
           possessionTeamId: sit.possession || null,
           homeTeamId: (home.team && home.team.id) || null,
-          awayTeamId: (away.team && away.team.id) || null
+          awayTeamId: (away.team && away.team.id) || null,
+          homeTimeouts: sit.homeTimeouts != null ? sit.homeTimeouts : null,
+          awayTimeouts: sit.awayTimeouts != null ? sit.awayTimeouts : null
         };
       }
       return out;
