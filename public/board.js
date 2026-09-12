@@ -400,8 +400,8 @@
           side: `${entry.player} ${pointTxt} ${marketLabel(marketKey)}`,
           matchup: `${game.away_team} @ ${game.home_team}`, rows
         };
-        const mlbId = data.mlbIds && data.mlbIds[entry.player.toLowerCase()];
-        const avatar = mlbId ? playerAvatarHtml(mlbId, 20) : emptyAvatarHtml(20);
+        const headshotUrl = data.headshots && data.headshots[entry.player.toLowerCase()];
+        const avatar = headshotUrl ? avatarUrlHtml(headshotUrl, 20) : emptyAvatarHtml(20);
         html += `<tr>
           <td style="font-weight:600; white-space:nowrap;">${avatar}${escapeHtml(entry.player)}</td>
           <td style="color:var(--text-dim); white-space:nowrap;">${escapeHtml(pointTxt)}</td>
@@ -471,6 +471,14 @@
   // Placeholder bubble for sports without a wired-up photo source yet (everything but MLB).
   function emptyAvatarHtml(size){
     return `<span class="player-avatar player-avatar-empty" style="width:${size}px; height:${size}px;"></span>`;
+  }
+
+  // Same markup as playerAvatarHtml, but for a ready-made URL — used by the
+  // props table, where the server already resolved a headshot per sport
+  // (MLB/NBA/NFL alike) instead of just an MLB id.
+  function avatarUrlHtml(url, size){
+    if(!url) return '';
+    return `<img class="player-avatar" src="${escapeHtml(url)}" width="${size}" height="${size}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
   }
 
   // Both starting pitchers, one request per game (server-cached per date so

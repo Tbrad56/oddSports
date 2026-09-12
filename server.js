@@ -703,16 +703,16 @@ function createApp({
     })().catch(err => sendUpstreamError(res, err));
   });
 
+  async function nbaRosterPlayers(teamId){
+    const data = await fetchExternal(`${ESPN_NBA}/teams/${teamId}/roster`, NBA_TTL_MS);
+    return (data.athletes || []).map(a => ({ id: a.id, name: a.displayName, position: a.position?.abbreviation || '', headshot: a.headshot?.href || null }));
+  }
+
   app.get('/api/nba/roster', (req, res) => {
     (async () => {
       const { team } = req.query;
       if (!/^\d{1,4}$/.test(String(team||''))) return res.status(400).json({ error: 'team id required' });
-      const data = await fetchExternal(`${ESPN_NBA}/teams/${team}/roster`, NBA_TTL_MS);
-      const players = [];
-      (data.athletes || []).forEach(a => {
-        players.push({ id: a.id, name: a.displayName, position: a.position?.abbreviation || '', headshot: a.headshot?.href || null });
-      });
-      res.json({ players });
+      res.json({ players: await nbaRosterPlayers(team) });
     })().catch(err => sendUpstreamError(res, err));
   });
 
@@ -1144,18 +1144,22 @@ function createApp({
     })().catch(err => sendUpstreamError(res, err));
   });
 
+  async function nflRosterPlayers(teamId){
+    const data = await fetchExternal(`${ESPN_NFL}/teams/${teamId}/roster`, NFL_TTL_MS);
+    const players = [];
+    (data.athletes || []).forEach(group => {
+      (group.items || []).forEach(a => {
+        players.push({ id: a.id, name: a.displayName, position: a.position?.abbreviation || '', headshot: a.headshot?.href || null });
+      });
+    });
+    return players;
+  }
+
   app.get('/api/nfl/roster', (req, res) => {
     (async () => {
       const { team } = req.query;
       if (!/^\d{1,4}$/.test(String(team||''))) return res.status(400).json({ error: 'team id required' });
-      const data = await fetchExternal(`${ESPN_NFL}/teams/${team}/roster`, NFL_TTL_MS);
-      const players = [];
-      (data.athletes || []).forEach(group => {
-        (group.items || []).forEach(a => {
-          players.push({ id: a.id, name: a.displayName, position: a.position?.abbreviation || '', headshot: a.headshot?.href || null });
-        });
-      });
-      res.json({ players });
+      res.json({ players: await nflRosterPlayers(team) });
     })().catch(err => sendUpstreamError(res, err));
   });
 
@@ -1738,24 +1742,42 @@ function createApp({
     }
 
     let body = r.body;
-    // MLB only: resolve each player name to a StatsAPI personId (cached lookup,
-    // same helper /api/analyze uses) so the frontend can show a real headshot.
+    // Resolve each prop's player name to a real headshot URL — MLB via
+    // StatsAPI personId (same helper /api/analyze uses), NBA/NFL via the two
+    // teams' ESPN rosters (already fetched/cached for the roster pages, so
+    // this doesn't cost a fresh request beyond the two roster calls
+    // themselves). Best-effort throughout — a miss just means that player's
+    // row falls back to the blank avatar placeholder, never an error.
+    const names = new Set();
+    (body.bookmakers || []).forEach(bm => (bm.markets || []).forEach(m => (m.outcomes || []).forEach(o => {
+      const nm = o.description || o.name;
+      if (nm) names.add(nm);
+    })));
+    const headshots = {};
     if (sport === 'baseball_mlb') {
-      const names = new Set();
-      (body.bookmakers || []).forEach(bm => (bm.markets || []).forEach(m => (m.outcomes || []).forEach(o => {
-        const nm = o.description || o.name;
-        if (nm) names.add(nm);
-      })));
       const season = new Date(now()).getFullYear();
-      const mlbIds = {};
       for (const nm of names) {
         try {
           const id = await mlbPlayerId(nm, season);
-          if (id) mlbIds[nm.toLowerCase()] = id;
-        } catch (e) { /* best-effort — a missed id just means no photo for that player */ }
+          if (id) headshots[nm.toLowerCase()] = `https://img.mlbstatic.com/mlb-photos/image/upload/w_180,q_100/v1/people/${id}/headshot/67/current.png`;
+        } catch (e) { /* a missed id just means no photo for that player */ }
       }
-      body = { ...body, mlbIds };
+    } else if (names.size && (sport === 'basketball_nba' || sport === 'americanfootball_nfl')) {
+      try {
+        const teams = sport === 'basketball_nba' ? await nbaTeams() : await nflTeams();
+        const rosterFn = sport === 'basketball_nba' ? nbaRosterPlayers : nflRosterPlayers;
+        const sides = [body.home_team, body.away_team]
+          .map(teamName => teams.find(t => t.name === teamName))
+          .filter(Boolean);
+        const rosters = (await Promise.all(sides.map(t => rosterFn(t.id).catch(() => [])))).flat();
+        names.forEach(nm => {
+          const target = normName(nm);
+          const player = rosters.find(p => normName(p.name) === target);
+          if (player && player.headshot) headshots[nm.toLowerCase()] = player.headshot;
+        });
+      } catch (e) { /* couldn't resolve either team/roster — props still work, just no photos */ }
     }
+    if (Object.keys(headshots).length) body = { ...body, headshots };
 
     if (r.remaining) res.set('x-requests-remaining', r.remaining);
     res.set('x-cache-age-seconds', String(r.cacheAge));

@@ -189,6 +189,68 @@ test('props: proxies valid request with server-side market list', async () => {
   assert.match(f.calls[0], /\/v4\/sports\/basketball_nba\/events\/0a1b2c3d4e5f\/odds\/\?regions=us&markets=player_points,player_rebounds,player_assists,player_threes,player_points_rebounds_assists&oddsFormat=american&includeLinks=true&includeSids=true&apiKey=k$/);
 });
 
+test('props: empty bookmakers skips headshot resolution entirely (no extra fetches)', async () => {
+  const payload = { id: 'e1', bookmakers: [] };
+  const f = fakeFetch(() => okResponse(payload));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  await request(app).get('/api/props/basketball_nba/0a1b2c3d4e5f');
+  assert.equal(f.calls.length, 1, 'no team/roster lookups should fire when there are no player names to resolve');
+});
+
+test('props: MLB resolves a real headshot URL per matched player', async () => {
+  const propsPayload = {
+    id: 'ev1', home_team: 'Los Angeles Dodgers', away_team: 'Colorado Rockies',
+    bookmakers: [{ key: 'draftkings', title: 'DraftKings', markets: [{ key: 'batter_home_runs',
+      outcomes: [{ name: 'Over', description: 'Shohei Ohtani', price: 150, point: 0.5 }] }] }]
+  };
+  const f = routedFetch([
+    ['/events/ev1/odds', okResponse(propsPayload)],
+    ['/api/v1/sports/1/players', okResponse({ people: [{ id: 660271, fullName: 'Shohei Ohtani' }] })]
+  ]);
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/props/baseball_mlb/ev1');
+  assert.equal(res.status, 200);
+  assert.equal(res.body.headshots['shohei ohtani'], 'https://img.mlbstatic.com/mlb-photos/image/upload/w_180,q_100/v1/people/660271/headshot/67/current.png');
+});
+
+test('props: NBA resolves headshots via the two teams\' ESPN rosters, matched name-insensitively', async () => {
+  const propsPayload = {
+    id: 'ev2', home_team: 'Los Angeles Lakers', away_team: 'Boston Celtics',
+    bookmakers: [{ key: 'fanduel', title: 'FanDuel', markets: [{ key: 'player_points',
+      outcomes: [{ name: 'Over', description: 'Jayson Tatum', price: -110, point: 27.5 }] }] }]
+  };
+  const teamsPayload = { sports: [{ leagues: [{ teams: [
+    { team: { id: '2', displayName: 'Boston Celtics', abbreviation: 'BOS', logos: [] } },
+    { team: { id: '13', displayName: 'Los Angeles Lakers', abbreviation: 'LAL', logos: [] } }
+  ] }] }] };
+  const f = routedFetch([
+    ['/events/ev2/odds', okResponse(propsPayload)],
+    ['/teams?limit=32', okResponse(teamsPayload)],
+    ['/teams/2/roster', okResponse({ athletes: [{ id: '4065648', displayName: 'Jayson Tatum', position: { abbreviation: 'SF' }, headshot: { href: 'https://a.espncdn.com/tatum.png' } }] })],
+    ['/teams/13/roster', okResponse({ athletes: [] })]
+  ]);
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/props/basketball_nba/ev2');
+  assert.equal(res.status, 200);
+  assert.equal(res.body.headshots['jayson tatum'], 'https://a.espncdn.com/tatum.png');
+});
+
+test('props: NBA gracefully has no headshots if team/roster lookup fails (props still work)', async () => {
+  const propsPayload = {
+    id: 'ev3', home_team: 'Unknown Team', away_team: 'Also Unknown',
+    bookmakers: [{ key: 'fanduel', title: 'FanDuel', markets: [{ key: 'player_points',
+      outcomes: [{ name: 'Over', description: 'Some Player', price: -110, point: 10.5 }] }] }]
+  };
+  const f = routedFetch([
+    ['/events/ev3/odds', okResponse(propsPayload)],
+    ['/teams?limit=32', () => { throw new Error('ESPN unreachable'); }]
+  ]);
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/props/basketball_nba/ev3');
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, propsPayload);
+});
+
 // ---------- /api/analyze/mlb ----------
 function routedFetch(routes){
   const fn = async (url) => {
