@@ -228,11 +228,24 @@
   async function refreshScores(){
     const sport = getSport();
     try{
+      const completedBefore = new Set(
+        state.games.filter(g => (findScoreFor(state.scores, g) || {}).completed).map(g => g.id)
+      );
       state.scores = await fetchScoresFor(sport);
       if(sport === 'baseball_mlb'){
         state.mlbLive = await fetchMlbLive().catch(()=>[]);
       }
-      if(state.games.length) patchScores();
+      if(state.games.length){
+        // A game just finishing means renderGames() needs to drop its card —
+        // patchScores() only updates the score badge in place, it can't remove
+        // a card. Everything else (nothing newly completed) stays on the cheap
+        // in-place patch so open props/scroll position survive the 30s poll.
+        const justFinished = state.games.some(g =>
+          !completedBefore.has(g.id) && (findScoreFor(state.scores, g) || {}).completed
+        );
+        if(justFinished) renderGames();
+        else patchScores();
+      }
     }catch(e){
       // scores are a bonus overlay — quietly skip on failure, odds board still works
     }
@@ -881,12 +894,19 @@
     }
 
     const term = state.searchTerm.trim().toLowerCase();
-    const gamesToShow = term
+    const termFiltered = term
       ? state.games.filter(g => (g.home_team+' '+g.away_team).toLowerCase().includes(term))
       : state.games;
+    // Drop finished games once ESPN's score poll confirms them complete — keeps
+    // the list scrolled to live/upcoming games instead of growing all session.
+    const gamesToShow = termFiltered.filter(g => !(findScoreFor(state.scores, g) || {}).completed);
 
-    if(!gamesToShow.length){
+    if(!termFiltered.length){
       area.innerHTML = `<div class="empty-state"><h3>No matches</h3><p>Nothing found for "${escapeHtml(state.searchTerm)}". Try a different team name.</p></div>`;
+      return;
+    }
+    if(!gamesToShow.length){
+      area.innerHTML = '<div class="empty-state"><h3>All caught up</h3><p>Every game on this slate has finished — check back for the next one, or hit Get Odds to refresh.</p></div>';
       return;
     }
 
