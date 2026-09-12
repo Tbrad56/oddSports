@@ -1146,8 +1146,11 @@
       }
 
       // MLB: F5 toggle swaps the same grid between full-game and first-5-innings lines.
-      // NFL: same Spread/Total/Money grid, just without the F5 tabs (no NFL period-market equivalent yet).
-      if(sportKey === 'baseball_mlb' || sportKey === 'americanfootball_nfl'){
+      // NFL/NCAAF/NCAAB: same Spread/Total/Money grid, just without the F5 tabs
+      // (no period-market equivalent fetched for those). College sports stop
+      // here — no player props, no moneyline-only "to win" view, just this grid.
+      if(sportKey === 'baseball_mlb' || sportKey === 'americanfootball_nfl'
+        || sportKey === 'americanfootball_ncaaf' || sportKey === 'basketball_ncaab'){
         let view = 'full';
         if(sportKey === 'baseball_mlb'){
           view = state.oddsView[game.id] === 'f5' ? 'f5' : 'full';

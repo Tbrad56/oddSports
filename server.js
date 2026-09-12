@@ -1624,12 +1624,16 @@ function createApp({
   app.get('/api/odds/:sport', (req, res) => {
     const { sport } = req.params;
     if (!SPORTS.has(sport)) return res.status(400).json({ error: 'Unknown sport' });
-    // MLB and NFL: full-game spreads/totals alongside moneyline — Board's Game
-    // Lines grid needs Spread/Total/Money for these two specifically (costs
-    // 3x the credits of a moneyline-only call, same tradeoff already made for
-    // MLB). F5 markets are deliberately NOT requested here (see MLB_F5_MARKETS
-    // above — the bulk endpoint 422s the whole request if asked for them).
-    const gridSports = sport === 'baseball_mlb' || sport === 'americanfootball_nfl';
+    // MLB, NFL, and college football/basketball: full-game spreads/totals
+    // alongside moneyline — Board's Game Lines grid needs Spread/Total/Money
+    // for these (costs 3x the credits of a moneyline-only call, same tradeoff
+    // already made for MLB). College sports get spread/total/moneyline only —
+    // no player props — since that's what's actually legal to bet on in states
+    // like Ohio. F5 markets are deliberately NOT requested here (see
+    // MLB_F5_MARKETS above — the bulk endpoint 422s the whole request if asked
+    // for them).
+    const gridSports = sport === 'baseball_mlb' || sport === 'americanfootball_nfl'
+      || sport === 'americanfootball_ncaaf' || sport === 'basketball_ncaab';
     const markets = gridSports ? ['h2h', 'spreads', 'totals'] : ['h2h'];
     const upstreamPath = `/v4/sports/${sport}/odds/?regions=us&markets=${markets.join(',')}&oddsFormat=american&includeLinks=true&includeSids=true`;
     // Pages that aren't actually about odds (Cheatsheet's team search, Slip,
