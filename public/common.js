@@ -977,13 +977,25 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
   const homeLogoMark = homeLogoUrl
     ? `<image href="${homeLogoUrl}" x="122" y="32" width="56" height="56" opacity="0.3" preserveAspectRatio="xMidYMid meet"/>`
     : '';
+  // Down & distance as a bold, centered badge ON the field itself (like a
+  // broadcast scoreboard bug) instead of small corner text — reads at a
+  // glance regardless of where the ball actually is.
+  let downBadge = '';
+  const badgeLabel = live ? (sit.downDistanceText || sit.possessionText || '') : (started ? 'BETWEEN PLAYS' : '');
+  if(badgeLabel){
+    const label = badgeLabel.toUpperCase();
+    const w = Math.max(76, label.length * 8.2 + 24);
+    downBadge = `<g>
+      <rect x="${(150 - w/2).toFixed(1)}" y="47" width="${w.toFixed(1)}" height="26" rx="13" fill="#141414" opacity="0.72"/>
+      <text x="150" y="64" text-anchor="middle" font-size="15" font-weight="800" fill="#F5F5F5" letter-spacing="0.4">${escapeHtml(label)}</text>
+    </g>`;
+  }
   const clockBits = [];
   if(started && sit.period) clockBits.push('Q' + sit.period);
   if(started && sit.displayClock) clockBits.push(sit.displayClock);
-  const bannerText = live ? (sit.downDistanceText || sit.possessionText || 'Live') : (started ? 'Between plays' : '');
   const redZoneTag = live && sit.isRedZone ? '<span class="rz-tag">RED ZONE</span>' : '';
   const banner = started
-    ? `<div class="field-banner"><span>${escapeHtml(clockBits.join(' · '))}</span>${redZoneTag}<strong>${escapeHtml(bannerText)}</strong></div>`
+    ? `<div class="field-banner"><span>${escapeHtml(clockBits.join(' · '))}</span>${redZoneTag}</div>`
     : '';
   const kickoffNote = !started
     ? `<div class="field-note">Kickoff ${new Date(game.commence_time).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'})} — live tracker starts at kickoff</div>`
@@ -1002,6 +1014,7 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
       ${losMark}
       ${dirArrow}
       ${ballMark}
+      ${downBadge}
     </svg>
     ${kickoffNote}
   </div>`;
