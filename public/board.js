@@ -12,7 +12,10 @@
     hrCache: {},   // gameId -> hr-matchups API response
     statcast: undefined, // batters map from /statcast/statcast.json, or null if unavailable
     oddsView: {},  // gameId -> 'full' | 'f5', survives re-renders like propsOpen
-    pitchers: {}   // gameId -> {matched, home:{id,name}|null, away:{id,name}|null}
+    pitchers: {},  // gameId -> {matched, home:{id,name}|null, away:{id,name}|null}
+    altPropsCache: {},   // "gameId|marketKey" -> raw {market}_alternate response body, once loaded
+    altPropsLoading: {}, // "gameId|marketKey" -> bool, while that fetch is in flight
+    altPropsView: {}     // "gameId|marketKey" -> 'standard' | 'alt' (default standard)
   };
   let renderScheduled = false;
   // Coalesces multiple renderGames() requests (weather/pitchers post-fetches, audit 6.2)
@@ -36,6 +39,7 @@
   renderSportChips(document.getElementById('sportChips'), ()=>{
     state.propsCache = {}; state.propRegistry = {}; state.marketCollapsed = {};
     state.propsBookFilter = 'all'; state.propsOpen = {}; state.propsUnavailable = {};
+    state.altPropsCache = {}; state.altPropsLoading = {}; state.altPropsView = {};
     refresh();
   });
   renderMyBooksList();
@@ -328,20 +332,34 @@
     }
   }
 
-  function buildPropsHtml(game, data, markets){
-    let bms = (data.bookmakers || []).filter(b => TRACKED_KEYS.includes(b.key.toLowerCase()));
-    let bookmakersToUse = bms.length ? bms : (data.bookmakers || []);
+  function filterBookmakers(bookmakers){
+    const tracked = (bookmakers || []).filter(b => TRACKED_KEYS.includes(b.key.toLowerCase()));
+    let out = tracked.length ? tracked : (bookmakers || []);
     if(state.propsBookFilter !== 'all'){
-      bookmakersToUse = bookmakersToUse.filter(b => b.key.toLowerCase() === state.propsBookFilter);
+      out = out.filter(b => b.key.toLowerCase() === state.propsBookFilter);
     }
+    return out;
+  }
+
+  function buildPropsHtml(game, data, markets){
+    const bookmakersToUse = filterBookmakers(data.bookmakers);
 
     // First pass: which markets actually have rows for this game (with the
     // current book filter applied) — needed up front to build the quick
     // category-filter chips before the sections themselves.
+    // Each market section can independently be toggled to its "Alt Lines"
+    // tab (every line the books quote, not just the one standard line) —
+    // once that data's been fetched for this game it's cached, so flipping
+    // the tab back and forth afterward is instant/free.
     const marketData = markets.map(marketKey=>{
+      const sectionKey = game.id+'|'+marketKey;
+      const altBody = state.altPropsCache[sectionKey];
+      const useAlt = state.altPropsView[sectionKey] === 'alt' && !!altBody;
+      const effectiveKey = useAlt ? marketKey+'_alternate' : marketKey;
+      const sourceBookmakers = useAlt ? filterBookmakers(altBody.bookmakers) : bookmakersToUse;
       const perPlayer = {}; // "playerName|side|point" -> {player, side, point, rows}
-      bookmakersToUse.forEach(bm=>{
-        const market = bm.markets.find(m=>m.key===marketKey);
+      sourceBookmakers.forEach(bm=>{
+        const market = bm.markets.find(m=>m.key===effectiveKey);
         if(!market) return;
         market.outcomes.forEach(o=>{
           const playerName = o.description || o.name;
@@ -350,8 +368,11 @@
           perPlayer[rowKey].rows.push({bookKey:bm.key, bookTitle:bm.title, odds:o.price, link:o.link||bm.link||null, sid:o.sid||null, marketSid:market.sid||null});
         });
       });
-      return { marketKey, perPlayer, rowKeys: Object.keys(perPlayer) };
-    }).filter(m => m.rowKeys.length);
+      return {
+        marketKey, perPlayer, rowKeys: Object.keys(perPlayer),
+        useAlt, altLoaded: !!altBody, altLoading: !!state.altPropsLoading[sectionKey]
+      };
+    }).filter(m => m.rowKeys.length || m.altLoading);
 
     let html = '<div class="props-block">';
 
@@ -372,7 +393,7 @@
       </div>`;
     }
 
-    marketData.forEach(({marketKey, perPlayer, rowKeys})=>{
+    marketData.forEach(({marketKey, perPlayer, rowKeys, useAlt, altLoaded, altLoading})=>{
       const sectionKey = game.id + '|' + marketKey;
       // Collapsed by default — only stays open once the user (or a filter
       // chip) has explicitly opened it.
@@ -381,9 +402,29 @@
         <span class="market-arrow">${collapsed?'▸':'▾'}</span>${escapeHtml(marketLabel(marketKey))}
         <span class="market-count">(${rowKeys.length})</span>
       </div>`;
-      html += `<div class="market-body" style="${collapsed?'display:none;':''}"><div class="table-scroll">`;
+      html += `<div class="market-body" style="${collapsed?'display:none;':''}">`;
+      // Alt Lines sub-tab: every line the books quote for this stat, not
+      // just the one standard line — a real sub-tab within the category,
+      // same as Board's Full game/First 5 innings tabs. Anytime-scorer
+      // markets skip this entirely since there's only ever one line.
+      if(!NO_ALT_MARKETS.has(marketKey)){
+        html += `<div class="line-view-tabs" data-game-id="${escapeHtml(String(game.id))}" data-market-key="${escapeHtml(marketKey)}">
+          <button type="button" class="line-view-tab${!useAlt?' active':''}" data-view="standard">Standard</button>
+          <button type="button" class="line-view-tab${useAlt?' active':''}" data-view="alt">${altLoading ? '<span class="spinner"></span> Alt Lines' : 'Alt Lines'}</button>
+        </div>`;
+      }
+      html += `<div class="table-scroll">`;
       html += `<table class="props-table"><thead><tr><th>Player</th><th>Line</th><th>Line shop (best → worst)</th><th></th></tr></thead><tbody>`;
-      rowKeys.slice(0,20).forEach(rk=>{
+      // Alt view groups each player's lines together (low to high) instead of
+      // raw API order, and lifts the display cap — a market that was ~1
+      // row/player in Standard can now be several rows/player in Alt Lines.
+      const orderedKeys = useAlt
+        ? rowKeys.slice().sort((a,b)=>{
+            const ea = perPlayer[a], eb = perPlayer[b];
+            return ea.player !== eb.player ? ea.player.localeCompare(eb.player) : (ea.point ?? 0) - (eb.point ?? 0);
+          })
+        : rowKeys;
+      orderedKeys.slice(0, useAlt ? 100 : 20).forEach(rk=>{
         const entry = perPlayer[rk];
         const rows = entry.rows.sort((a,b)=>americanToDecimal(b.odds)-americanToDecimal(a.odds));
         const pointTxt = entry.point !== undefined && entry.point !== null ? `${entry.side} ${entry.point}` : entry.side;
@@ -673,16 +714,57 @@
   // everything collapsed — the default browsing state). Re-renders that
   // game's props host in place, same as the book-filter chips already do.
   function applyPropFilter(gameId, marketKey){
-    const cached = state.propsCache[gameId];
-    if(!cached) return;
+    if(!state.propsCache[gameId]) return;
     (PROP_MARKETS[getSport()] || []).forEach(mk=>{
       state.marketCollapsed[gameId+'|'+mk] = (marketKey !== 'all' && mk === marketKey) ? false : true;
     });
+    rerenderPropsHost(gameId);
+  }
+
+  function rerenderPropsHost(gameId){
+    const cached = state.propsCache[gameId];
+    if(!cached) return;
     const host = document.querySelector(`.props-host[data-game-id="${CSS.escape(String(gameId))}"]`);
     if(host) host.innerHTML = buildPropsHtml(cached.game, cached.data, PROP_MARKETS[getSport()] || []);
   }
 
+  // Opt-in fetch of every line for one market on one game — the credit cost
+  // (a second upstream request, same as the standard props call) only
+  // happens the first time someone actually flips a category to its Alt
+  // Lines tab; flipping back and forth after that is free (already cached).
+  async function loadAltLines(gameId, marketKey){
+    const key = gameId+'|'+marketKey;
+    if(state.altPropsCache[key] || state.altPropsLoading[key]) return;
+    state.altPropsLoading[key] = true;
+    rerenderPropsHost(gameId);
+    try{
+      const res = await fetch(`/api/props-alt/${getSport()}/${gameId}/${marketKey}`);
+      if(res.ok) state.altPropsCache[key] = await res.json();
+    }catch(e){ /* best-effort — tab just stays on Standard so it can be retried */ }
+    finally{
+      state.altPropsLoading[key] = false;
+      rerenderPropsHost(gameId);
+    }
+  }
+
+  function setLineView(gameId, marketKey, view){
+    const key = gameId+'|'+marketKey;
+    if(view === 'alt' && !state.altPropsCache[key]){
+      state.altPropsView[key] = 'alt'; // optimistic — the tab shows active/loading right away
+      loadAltLines(gameId, marketKey);
+      return;
+    }
+    state.altPropsView[key] = view;
+    rerenderPropsHost(gameId);
+  }
+
   document.getElementById('gamesArea').addEventListener('click', (e)=>{
+    const lineTab = e.target.closest('.line-view-tab');
+    if(lineTab){
+      const tabsEl = lineTab.closest('.line-view-tabs');
+      setLineView(tabsEl.dataset.gameId, tabsEl.dataset.marketKey, lineTab.dataset.view);
+      return;
+    }
     const filterChip = e.target.closest('.prop-filter-chip');
     if(filterChip){
       const gameId = filterChip.closest('.props-market-filter').dataset.gameId;

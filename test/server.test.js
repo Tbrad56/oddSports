@@ -251,6 +251,41 @@ test('props: NBA gracefully has no headshots if team/roster lookup fails (props 
   assert.deepEqual(res.body, propsPayload);
 });
 
+test('props-alt: fetches the {market}_alternate market for one game, opt-in', async () => {
+  const altPayload = { id: 'ev4', bookmakers: [{ key: 'draftkings', title: 'DraftKings', markets: [{ key: 'batter_hits_alternate',
+    outcomes: [{ name: 'Over', description: 'Shohei Ohtani', price: 200, point: 0.5 }, { name: 'Over', description: 'Shohei Ohtani', price: -150, point: 1.5 }] }] }] };
+  const f = fakeFetch(() => okResponse(altPayload));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/props-alt/baseball_mlb/ev4/batter_hits');
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, altPayload);
+  assert.match(f.calls[0], /\/v4\/sports\/baseball_mlb\/events\/ev4\/odds\/\?regions=us&markets=batter_hits_alternate&oddsFormat=american&includeLinks=true&includeSids=true&apiKey=k$/);
+});
+
+test('props-alt: rejects a binary anytime-scorer market — no alternates exist', async () => {
+  const f = fakeFetch(() => okResponse({}));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/props-alt/americanfootball_nfl/ev5/player_anytime_td');
+  assert.equal(res.status, 400);
+  assert.equal(f.calls.length, 0);
+});
+
+test('props-alt: rejects a market not offered for this sport', async () => {
+  const f = fakeFetch(() => okResponse({}));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/props-alt/baseball_mlb/ev6/batter_walks');
+  assert.equal(res.status, 400);
+  assert.equal(f.calls.length, 0);
+});
+
+test('props-alt: rejects a malformed event id, nothing fetched', async () => {
+  const f = fakeFetch(() => okResponse({}));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/props-alt/baseball_mlb/bad..id/batter_hits');
+  assert.equal(res.status, 400);
+  assert.equal(f.calls.length, 0);
+});
+
 // ---------- /api/analyze/mlb ----------
 function routedFetch(routes){
   const fn = async (url) => {

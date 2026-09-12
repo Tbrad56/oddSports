@@ -28,6 +28,14 @@ const PROP_MARKETS = {
   icehockey_nhl: ['player_points', 'player_assists', 'player_shots_on_goal', 'player_goal_scorer_anytime']
 };
 
+// Every numeric over/under prop market has a "give me every line, not just
+// the book's main one" alternate variant (verified live: e.g.
+// batter_hits_alternate, player_pass_yds_alternate, player_points_alternate
+// all return real data). The two binary anytime-scorer markets don't — The
+// Odds API rejects them with 422 INVALID_MARKET (also verified live) since
+// there's only one line to begin with (yes/no).
+const NO_ALT_MARKETS = new Set(['player_anytime_td', 'player_goal_scorer_anytime']);
+
 // MLB "first 5 innings" alternate-period markets. NOTE: the bulk /odds
 // endpoint used below only serves h2h/spreads/totals — asking it for these
 // period markets returns 422 INVALID_MARKET for the *entire* request, which
@@ -1727,6 +1735,27 @@ function createApp({
       if (!res.headersSent) sendUpstreamError(res, err);
     });
   });
+
+  // Opt-in: every alternate line for one market on one game, fetched only
+  // when the client asks (switching a prop category's tab to "Alt Lines")
+  // — not bundled into the main props call, so browsing props at the
+  // default one-line-per-player view costs exactly what it always did.
+  app.get('/api/props-alt/:sport/:eventId/:market', (req, res) => {
+    handlePropsAltRequest(req, res).catch(err => {
+      console.error(`Alt props fetch failed: ${err && err.message || err}`);
+      if (!res.headersSent) sendUpstreamError(res, err);
+    });
+  });
+
+  async function handlePropsAltRequest(req, res){
+    const { sport, eventId, market } = req.params;
+    const markets = PROP_MARKETS[sport];
+    if (!markets) return res.status(400).json({ error: 'Props not supported for this sport' });
+    if (!markets.includes(market)) return res.status(400).json({ error: 'Unknown market for this sport' });
+    if (NO_ALT_MARKETS.has(market)) return res.status(400).json({ error: 'This market has only one line — no alternates exist' });
+    if (!/^[a-z0-9]{1,64}$/i.test(eventId)) return res.status(400).json({ error: 'Bad event id' });
+    await proxy(`/v4/sports/${sport}/events/${eventId}/odds/?regions=us&markets=${market}_alternate&oddsFormat=american&includeLinks=true&includeSids=true`, res);
+  }
 
   async function handlePropsRequest(req, res){
     const { sport, eventId } = req.params;
