@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const crypto = require('crypto');
-const { analyzeProp, rankPicks } = require('./analysis');
+const { analyzeProp, rankPicks, classifyBattingGame } = require('./analysis');
 const { createStore, computeRecord } = require('./store');
 const { createAuthStore } = require('./auth');
 const {
@@ -446,7 +446,11 @@ function createApp({
     return splits.slice().reverse().map(s => ({
       value: Number((s.stat || {})[statName] || 0),
       started: Number((s.stat || {}).gamesStarted || 0) > 0,
-      date: s.date
+      date: s.date,
+      // Full per-game hitting line (same gameLog call, no extra fetch) — lets
+      // the recent-form dot timeline classify HR/XBH/1B/BB/OUT regardless of
+      // which specific stat this prop's window is built around.
+      stat: s.stat || {}
     }));
   }
 
@@ -2151,7 +2155,10 @@ function createApp({
         if (cfg.startsOnly) games = games.filter(g => g.started);
         const values = games.map(g => g.value);
         if (!values.length) { skipped.add(prop.player); continue; }
-        const pick = analyzeProp(prop, { recentValues: values.slice(0, cfg.window), seasonValues: values });
+        const recentOutcomes = cfg.group === 'hitting'
+          ? games.slice(0, cfg.window).map(g => classifyBattingGame(g.stat))
+          : null;
+        const pick = analyzeProp(prop, { recentValues: values.slice(0, cfg.window), seasonValues: values, recentOutcomes });
         if (pick) {
           if (cfg.group === 'hitting' && lineupStatus === 'pending') {
             pick.analysis.flags.push('lineup_unconfirmed');

@@ -84,3 +84,40 @@ test('rankPicks sorts by edge desc and drops nulls', () => {
   const ranked = A.rankPicks([{edge:0.05}, null, {edge:0.12}, {edge:0.03}]);
   assert.deepEqual(ranked.map(p=>p.edge), [0.12, 0.05, 0.03]);
 });
+
+test('classifyBattingGame: HR beats everything else in the same game', () => {
+  assert.equal(A.classifyBattingGame({homeRuns:1, doubles:1, hits:2, baseOnBalls:1}), 'HR');
+});
+test('classifyBattingGame: XBH (double or triple) beats a plain single', () => {
+  assert.equal(A.classifyBattingGame({homeRuns:0, doubles:1, hits:1, baseOnBalls:0}), 'XBH');
+  assert.equal(A.classifyBattingGame({homeRuns:0, triples:1, hits:1, baseOnBalls:0}), 'XBH');
+});
+test('classifyBattingGame: a hit with no extra bases is 1B', () => {
+  assert.equal(A.classifyBattingGame({homeRuns:0, doubles:0, triples:0, hits:1, baseOnBalls:1}), '1B');
+});
+test('classifyBattingGame: walk with no hit at all is BB', () => {
+  assert.equal(A.classifyBattingGame({homeRuns:0, hits:0, baseOnBalls:1}), 'BB');
+});
+test('classifyBattingGame: nothing at all is OUT, missing fields default to 0', () => {
+  assert.equal(A.classifyBattingGame({}), 'OUT');
+  assert.equal(A.classifyBattingGame(undefined), 'OUT');
+});
+
+test('analyzeProp: recentOutcomes passes through to analysis when provided', () => {
+  const prop = { player: 'P Six', market: 'batter_hits', line: 5.5,
+    overRows: [{bookKey:'fanduel', bookTitle:'FanDuel', odds:-110}],
+    underRows:[{bookKey:'fanduel', bookTitle:'FanDuel', odds:-110}] };
+  const stats = { recentValues: Array(10).fill(7), seasonValues: Array(10).fill(7), recentOutcomes: ['HR','1B','OUT'] };
+  const pick = A.analyzeProp(prop, stats);
+  assert.ok(pick);
+  assert.deepEqual(pick.analysis.recentOutcomes, ['HR','1B','OUT']);
+});
+test('analyzeProp: recentOutcomes is null when not provided (pitching props)', () => {
+  const prop = { player: 'P Seven', market: 'pitcher_strikeouts', line: 5.5,
+    overRows: [{bookKey:'fanduel', bookTitle:'FanDuel', odds:-110}],
+    underRows:[{bookKey:'fanduel', bookTitle:'FanDuel', odds:-110}] };
+  const stats = { recentValues: Array(10).fill(7), seasonValues: Array(10).fill(7) };
+  const pick = A.analyzeProp(prop, stats);
+  assert.ok(pick);
+  assert.equal(pick.analysis.recentOutcomes, null);
+});
