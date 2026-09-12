@@ -447,73 +447,49 @@
         </div>`;
       }
       html += `<div class="table-scroll">`;
-      if(useAlt){
-        // One row per player, not one row per (player, line) — a condensed
-        // ladder of thresholds (150+, 175+, 200+...) instead of book-shop
-        // chips; book comparison for whatever's actually in the slip lives
-        // on the Slip/Cheatsheet pages instead. Over only (matches how alt
-        // lines are framed everywhere else: "will he go over X").
-        const byPlayer = {};
-        rowKeys.forEach(rk=>{
-          const entry = perPlayer[rk];
-          if(entry.side !== 'Over' || entry.point === undefined || entry.point === null) return;
-          const best = entry.rows.slice().sort((a,b)=>americanToDecimal(b.odds)-americanToDecimal(a.odds))[0];
-          (byPlayer[entry.player] = byPlayer[entry.player] || []).push({ point: entry.point, best, rows: entry.rows });
-        });
-        const players = Object.keys(byPlayer).sort((a,b)=>a.localeCompare(b)).slice(0, 20);
-        html += `<table class="props-table alt-lines-table"><tbody>`;
-        players.forEach(playerName=>{
-          const pointRows = byPlayer[playerName].sort((a,b)=>a.point-b.point);
-          const condensed = condenseAltPoints(pointRows, 12);
-          const headshotUrl = data.headshots && data.headshots[playerName.toLowerCase()];
-          const avatar = headshotUrl ? avatarUrlHtml(headshotUrl, 20) : emptyAvatarHtml(20);
-          const pills = condensed.map(pr=>{
-            const propId = 'p' + (++state.propIdCounter);
-            state.propRegistry[propId] = {
-              side: `${playerName} Over ${pr.point} ${marketLabel(marketKey)}`,
-              matchup: `${game.away_team} @ ${game.home_team}`, rows: pr.rows
-            };
-            return `<button type="button" class="alt-line-pill prop-slip-btn" data-prop-id="${propId}" title="Best price across your tracked books">
-              <span class="alt-line-point">${Math.ceil(pr.point)}+</span>
-              <span class="alt-line-price">${fmtAmerican(pr.best.odds)}</span>
-            </button>`;
-          }).join('');
-          html += `<tr>
-            <td style="font-weight:600; white-space:nowrap;">${avatar}${escapeHtml(playerName)}</td>
-            <td><div class="alt-line-row">${pills}</div></td>
-          </tr>`;
-        });
-        html += `</tbody></table>`;
-      } else {
-        html += `<table class="props-table"><thead><tr><th>Player</th><th>Line</th><th>Line shop (best → worst)</th><th></th></tr></thead><tbody>`;
-        rowKeys.slice(0, 20).forEach(rk=>{
-          const entry = perPlayer[rk];
-          const rows = entry.rows.sort((a,b)=>americanToDecimal(b.odds)-americanToDecimal(a.odds));
-          const pointTxt = entry.point !== undefined && entry.point !== null ? `${entry.side} ${entry.point}` : entry.side;
-          const chips = rows.map((r,idx)=>{
-            const style = bookStyleFor(r.bookKey);
-            const label = style ? style.name : r.bookTitle;
-            const link = BOOK_LINKS[r.bookKey.toLowerCase()];
-            const chip = `<span class="odds-chip${idx===0?' best':''}" title="${escapeHtml(label)}">${escapeHtml(label)} ${fmtAmerican(r.odds)}</span>`;
-            return link ? `<a href="${link}" target="_blank" rel="noopener" style="text-decoration:none;">${chip}</a>` : chip;
-          }).join('');
-          // register this prop so the + Slip button can add it as a parlay leg
+      // One row per player, always — never the player's name repeated once
+      // per line/side. Standard shows a pill per side at the book's one
+      // line (Over/Under, or just "Yes" for anytime-scorer markets). Alt
+      // Lines shows a condensed ladder of Over thresholds (150+, 175+,
+      // 200+...) instead of every raw line the books happen to quote. No
+      // per-book chip list either way — book comparison for whatever
+      // ends up in the slip lives on the Slip/Cheatsheet pages instead.
+      const byPlayer = {};
+      rowKeys.forEach(rk=>{
+        const entry = perPlayer[rk];
+        if(useAlt && entry.side !== 'Over') return;
+        const best = entry.rows.slice().sort((a,b)=>americanToDecimal(b.odds)-americanToDecimal(a.odds))[0];
+        (byPlayer[entry.player] = byPlayer[entry.player] || []).push({ side: entry.side, point: entry.point, best, rows: entry.rows });
+      });
+      const players = Object.keys(byPlayer).sort((a,b)=>a.localeCompare(b)).slice(0, 20);
+      html += `<table class="props-table alt-lines-table"><tbody>`;
+      players.forEach(playerName=>{
+        let pointRows = byPlayer[playerName];
+        pointRows = useAlt
+          ? condenseAltPoints(pointRows.sort((a,b)=>a.point-b.point), 12)
+          : pointRows.sort((a,b)=> a.side === b.side ? 0 : a.side === 'Over' ? -1 : b.side === 'Over' ? 1 : a.side.localeCompare(b.side));
+        const headshotUrl = data.headshots && data.headshots[playerName.toLowerCase()];
+        const avatar = headshotUrl ? avatarUrlHtml(headshotUrl, 20) : emptyAvatarHtml(20);
+        const pills = pointRows.map(pr=>{
+          const hasPoint = pr.point !== undefined && pr.point !== null;
+          const sideLabel = useAlt ? 'Over' : pr.side;
+          const pillLabel = useAlt ? `${Math.ceil(pr.point)}+` : (hasPoint ? `${pr.side === 'Over' ? 'O' : pr.side === 'Under' ? 'U' : pr.side} ${pr.point}` : pr.side);
           const propId = 'p' + (++state.propIdCounter);
           state.propRegistry[propId] = {
-            side: `${entry.player} ${pointTxt} ${marketLabel(marketKey)}`,
-            matchup: `${game.away_team} @ ${game.home_team}`, rows
+            side: `${playerName} ${sideLabel}${hasPoint ? ' '+pr.point : ''} ${marketLabel(marketKey)}`,
+            matchup: `${game.away_team} @ ${game.home_team}`, rows: pr.rows
           };
-          const headshotUrl = data.headshots && data.headshots[entry.player.toLowerCase()];
-          const avatar = headshotUrl ? avatarUrlHtml(headshotUrl, 20) : emptyAvatarHtml(20);
-          html += `<tr>
-            <td style="font-weight:600; white-space:nowrap;">${avatar}${escapeHtml(entry.player)}</td>
-            <td style="color:var(--text-dim); white-space:nowrap;">${escapeHtml(pointTxt)}</td>
-            <td><div class="line-shop">${chips}</div></td>
-            <td><button class="add-leg-btn prop-slip-btn" data-prop-id="${propId}">+ Slip</button></td>
-          </tr>`;
-        });
-        html += `</tbody></table>`;
-      }
+          return `<button type="button" class="alt-line-pill prop-slip-btn" data-prop-id="${propId}" title="Best price across your tracked books">
+            <span class="alt-line-point">${escapeHtml(pillLabel)}</span>
+            <span class="alt-line-price">${fmtAmerican(pr.best.odds)}</span>
+          </button>`;
+        }).join('');
+        html += `<tr>
+          <td style="font-weight:600; white-space:nowrap;">${avatar}${escapeHtml(playerName)}</td>
+          <td><div class="alt-line-row">${pills}</div></td>
+        </tr>`;
+      });
+      html += `</tbody></table>`;
       html += `</div></div>`;
     });
     if(!marketData.length){
