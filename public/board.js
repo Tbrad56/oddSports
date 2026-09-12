@@ -40,6 +40,117 @@
   });
   renderMyBooksList();
 
+  // ---------- Value Finder (moved here from Cheatsheet — reuses the games
+  // this page already fetched, so it doesn't cost a second odds request) ----------
+  const EDGE_THRESHOLD = 0.02; // 2% — below this it's just book-to-book noise, not a real edge
+  const fmtPct = p => (p*100).toFixed(1) + '%';
+
+  // Scans one game's markets for outcomes whose best price beats the
+  // multi-book consensus fair line by at least EDGE_THRESHOLD. Reuses the
+  // exact devig math (computeFairDecimal) the Game Lines grid's single
+  // "Value" tag already relies on — this just runs it across every outcome
+  // and ranks the results instead of leaving it buried per-row.
+  function scanGame(game, sportKey){
+    const pool = poolFor(game.bookmakers);
+    const candidates = [];
+
+    function consider(sideRows, oppRows, label, marketLabel){
+      if(!sideRows.length || !oppRows.length) return;
+      const fair = computeFairDecimal(sideRows, oppRows);
+      if(!fair) return;
+      const best = sideRows[0];
+      const edge = americanToDecimal(best.odds) / fair - 1;
+      if(edge < EDGE_THRESHOLD) return;
+      candidates.push({ matchup: `${game.away_team} @ ${game.home_team}`, side: label, marketLabel, edge, rows: sideRows, best });
+    }
+
+    const ml = { away: rowsFor(pool, 'h2h', game.away_team), home: rowsFor(pool, 'h2h', game.home_team) };
+    consider(ml.away, ml.home, `${game.away_team} to win`, 'Moneyline');
+    consider(ml.home, ml.away, `${game.home_team} to win`, 'Moneyline');
+
+    // Spreads/totals are only fetched for MLB and NFL (see server.js's
+    // gridSports) — same two sports the Game Lines grid shows them for.
+    if(sportKey === 'baseball_mlb' || sportKey === 'americanfootball_nfl'){
+      const spread = { away: modalPointRows(pool, 'spreads', game.away_team), home: modalPointRows(pool, 'spreads', game.home_team) };
+      if(spread.away.length && spread.home.length && spread.away[0].point != null){
+        const p = spread.away[0].point;
+        consider(spread.away, spread.home, `${game.away_team} ${p>0?'+':''}${p}`, 'Spread');
+        const hp = spread.home[0].point;
+        consider(spread.home, spread.away, `${game.home_team} ${hp>0?'+':''}${hp}`, 'Spread');
+      }
+      const total = { over: modalPointRows(pool, 'totals', 'Over'), under: modalPointRows(pool, 'totals', 'Under') };
+      if(total.over.length && total.under.length){
+        consider(total.over, total.under, `Over ${total.over[0].point}`, 'Total');
+        consider(total.under, total.over, `Under ${total.under[0].point}`, 'Total');
+      }
+    }
+    return candidates;
+  }
+
+  function valueCard(c){
+    return `<div class="value-row">
+      <div class="value-row-main">
+        <div class="value-row-side">${escapeHtml(c.side)}</div>
+        <div class="value-row-sub">${escapeHtml(c.matchup)} · ${escapeHtml(c.marketLabel)}</div>
+      </div>
+      <div class="value-row-edge">
+        <span class="value-edge-pct">+${fmtPct(c.edge)}</span>
+        <span class="value-edge-label">vs consensus</span>
+      </div>
+      <div class="value-row-book">
+        ${linkedBadge(c.best.bookKey, c.best.bookTitle)}
+        <span class="odds">${fmtAmerican(c.best.odds)}</span>
+      </div>
+      <button class="add-leg-btn value-add-btn">+ Slip</button>
+    </div>`;
+  }
+
+  // Synchronous — runs over state.games, which refresh() already fetched, so
+  // picking a sport costs exactly one odds request, same as before this
+  // lived on its own page.
+  function renderValueFinder(){
+    const area = document.getElementById('valueArea');
+    if(!area) return;
+    if(!state.games.length){ area.innerHTML = ''; return; }
+    const sportKey = getSport();
+    const candidates = state.games.flatMap(g => scanGame(g, sportKey)).sort((a,b)=>b.edge-a.edge).slice(0, 25);
+    if(!candidates.length){
+      area.innerHTML = `<div class="panel"><h2>Value Finder</h2><div class="hr-note">Nothing beats the market consensus by ${fmtPct(EDGE_THRESHOLD)}+ right now — books are in close agreement. Check back closer to game time.</div></div>`;
+      return;
+    }
+    area.innerHTML = `<div class="panel">
+      <h2>Value Finder</h2>
+      <div class="hr-note" style="margin-bottom:10px;">Best price on each outcome vs. the de-vigged consensus of every book scanned — not a pick, just where the market disagrees with itself. Top ${candidates.length}, best edge first.</div>
+      ${candidates.map(valueCard).join('')}
+    </div>`;
+    area.querySelectorAll('.value-row').forEach((row, i)=>{
+      row.querySelector('.value-add-btn').addEventListener('click', ()=>{
+        const c = candidates[i];
+        addLegToSlip({ id: Date.now()+Math.random(), matchup: c.matchup, side: c.side, rows: c.rows });
+        showToast('Added ✓');
+        flashEl(row);
+      });
+    });
+    staggerIn(area.querySelector('.panel'), 20);
+  }
+
+  // Pages that used to live in a per-sport nav flyout (now flattened to one
+  // link per sport) but aren't part of this merged page — kept reachable via
+  // a quiet in-context row instead of nav clutter.
+  const RELATED_PAGES = {
+    baseball_mlb: [['/getprops.html','🎯','Get Props'], ['/record.html','📈','Record']],
+    basketball_nba: [['/nba.html','📈','NBA Dashboard']],
+    americanfootball_nfl: [['/nfl.html','📈','NFL Dashboard']]
+  };
+  function renderRelatedLinks(){
+    const el = document.getElementById('relatedLinks');
+    if(!el) return;
+    const pages = RELATED_PAGES[getSport()];
+    el.innerHTML = pages
+      ? 'Also see: ' + pages.map(([href,icon,label])=>`<a href="${href}">${icon} ${escapeHtml(label)}</a>`).join(' · ')
+      : '';
+  }
+
   async function refresh(){
     clearError();
     const btn = document.getElementById('fetchBtn');
@@ -50,6 +161,8 @@
       const {games, remaining, cacheAge} = await fetchOddsFor(getSport());
       state.games = games;
       renderGames();
+      renderValueFinder();
+      renderRelatedLinks();
       updateTicker(games);
       setStatus(true, oddsStatusText(games.length, remaining, cacheAge));
 
@@ -78,6 +191,8 @@
       setStatus(false, 'Fetch failed.');
       const message = e.message || 'Could not fetch odds — try again shortly.';
       showError(message);
+      state.games = [];
+      document.getElementById('valueArea').innerHTML = '';
       document.getElementById('gamesArea').innerHTML = '<div class="empty-state"><h3>Couldn\'t load games</h3><p>' + escapeHtml(message) + '</p><button class="primary" id="retryBtn">Retry</button></div>';
       const retryBtn = document.getElementById('retryBtn');
       if(retryBtn) retryBtn.addEventListener('click', refresh);
@@ -136,7 +251,7 @@
       row.querySelector('input').addEventListener('change', ()=>{
         const checked = [...host.querySelectorAll('input:checked')].map(i=>i.value);
         setMyBooks(checked);
-        if(state.games.length) renderGames();
+        if(state.games.length){ renderGames(); renderValueFinder(); }
       });
       host.appendChild(row);
     });
@@ -645,38 +760,11 @@
         const suffix = view === 'f5' ? '_1st_5_innings' : '';
         const tag = view === 'f5' ? ' (F5)' : '';
         const [awayTeam, homeTeam] = [game.away_team, game.home_team];
-        const trackedBookmakers = game.bookmakers.filter(b => TRACKED_KEYS.includes(b.key.toLowerCase()));
-        const bookmakersToUse = trackedBookmakers.length ? trackedBookmakers : game.bookmakers;
-        const myBooks = getMyBooks();
-        const scoped = myBooks.length ? bookmakersToUse.filter(b=>myBooks.includes(b.key.toLowerCase())) : [];
-        const pool = scoped.length ? scoped : bookmakersToUse;
+        const pool = poolFor(game.bookmakers);
 
-        function rowsFor(marketKey, outcomeName){
-          const rows = [];
-          pool.forEach(bm=>{
-            const market = bm.markets.find(m=>m.key===marketKey);
-            if(!market) return;
-            const outcome = market.outcomes.find(o=>o.name===outcomeName);
-            if(!outcome) return;
-            rows.push({bookKey:bm.key, bookTitle:bm.title, odds:outcome.price, point:outcome.point, link:outcome.link||bm.link||null, sid:outcome.sid||null, marketSid:market.sid||null});
-          });
-          rows.sort((a,b)=>americanToDecimal(b.odds)-americanToDecimal(a.odds));
-          return rows;
-        }
-        // Books can quote slightly different lines (mostly totals) — group by
-        // point, keep whichever point the most tracked books share, best price within it.
-        function modalPointRows(marketKey, outcomeName){
-          const all = rowsFor(marketKey, outcomeName);
-          if(!all.length) return [];
-          const byPoint = {};
-          all.forEach(r=>{ const k=String(r.point); (byPoint[k]=byPoint[k]||[]).push(r); });
-          const bestKey = Object.keys(byPoint).sort((a,b)=>byPoint[b].length-byPoint[a].length)[0];
-          return byPoint[bestKey];
-        }
-
-        const ml = { away: rowsFor('h2h'+suffix, awayTeam), home: rowsFor('h2h'+suffix, homeTeam) };
-        const spread = { away: modalPointRows('spreads'+suffix, awayTeam), home: modalPointRows('spreads'+suffix, homeTeam) };
-        const total = { over: modalPointRows('totals'+suffix, 'Over'), under: modalPointRows('totals'+suffix, 'Under') };
+        const ml = { away: rowsFor(pool, 'h2h'+suffix, awayTeam), home: rowsFor(pool, 'h2h'+suffix, homeTeam) };
+        const spread = { away: modalPointRows(pool, 'spreads'+suffix, awayTeam), home: modalPointRows(pool, 'spreads'+suffix, homeTeam) };
+        const total = { over: modalPointRows(pool, 'totals'+suffix, 'Over'), under: modalPointRows(pool, 'totals'+suffix, 'Under') };
 
         if(![ml.away, ml.home, spread.away, spread.home, total.over, total.under].some(r=>r.length)) return false;
 

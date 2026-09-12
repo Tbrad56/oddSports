@@ -89,6 +89,40 @@ function computeFairDecimal(sideARows, sideBRows){
   return 1/avg; // fair decimal odds for side A
 }
 
+// ---------- shared odds-scanning helpers (Board's Game Lines grid + Value Finder) ----------
+// Pool of books to scan/show: My Books if set, else every tracked book. Never
+// surfaces a book you can't actually see prices from elsewhere in the app.
+function poolFor(bookmakers){
+  const tracked = bookmakers.filter(b => TRACKED_KEYS.includes(b.key.toLowerCase()));
+  const bookmakersToUse = tracked.length ? tracked : bookmakers;
+  const myBooks = getMyBooks();
+  const scoped = myBooks.length ? bookmakersToUse.filter(b => myBooks.includes(b.key.toLowerCase())) : [];
+  return scoped.length ? scoped : bookmakersToUse;
+}
+function rowsFor(pool, marketKey, outcomeName){
+  const rows = [];
+  pool.forEach(bm=>{
+    const market = bm.markets.find(m=>m.key===marketKey);
+    if(!market) return;
+    const outcome = market.outcomes.find(o=>o.name===outcomeName);
+    if(!outcome) return;
+    rows.push({bookKey:bm.key, bookTitle:bm.title, odds:outcome.price, point:outcome.point, link:outcome.link||bm.link||null, sid:outcome.sid||null, marketSid:market.sid||null});
+  });
+  rows.sort((a,b)=>americanToDecimal(b.odds)-americanToDecimal(a.odds));
+  return rows;
+}
+// Books can quote slightly different lines (mostly spreads/totals) — group by
+// point, keep whichever point the most books share so the comparison stays
+// apples-to-apples, best price within it.
+function modalPointRows(pool, marketKey, outcomeName){
+  const all = rowsFor(pool, marketKey, outcomeName);
+  if(!all.length) return [];
+  const byPoint = {};
+  all.forEach(r=>{ const k=String(r.point); (byPoint[k]=byPoint[k]||[]).push(r); });
+  const bestKey = Object.keys(byPoint).sort((a,b)=>byPoint[b].length-byPoint[a].length)[0];
+  return byPoint[bestKey];
+}
+
 function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
@@ -236,6 +270,49 @@ function updateLegBook(id, bookKey){
   saveSlip(s);
 }
 
+// ---------- saved bets (localStorage) ----------
+// Distinct from the active slip: "Save Bet" archives the current slip's legs
+// as a dated snapshot here, then clears the active slip so a new one can be
+// built. Saved bets can be reloaded back into the active slip later, or just
+// kept around for reference.
+const SAVED_BETS_KEY = 'lw_saved_bets';
+function getSavedBets(){
+  try{
+    const v = JSON.parse(localStorage.getItem(SAVED_BETS_KEY));
+    return Array.isArray(v) ? v : [];
+  }catch(e){ return []; }
+}
+function saveSavedBets(list){
+  try{ localStorage.setItem(SAVED_BETS_KEY, JSON.stringify(list)); }catch(e){}
+}
+function saveCurrentSlipAsBet(){
+  const legs = getSlip();
+  if(!legs.length) return null;
+  const bet = { id: Date.now()+Math.random(), savedAt: Date.now(), legs };
+  const all = getSavedBets();
+  all.unshift(bet);
+  saveSavedBets(all);
+  saveSlip([]);
+  updateSlipBadge();
+  return bet;
+}
+function deleteSavedBet(id){
+  saveSavedBets(getSavedBets().filter(b=>b.id!==id));
+}
+// Loads a saved bet back into the active slip, adding to whatever's already
+// there rather than overwriting it (so you can combine a saved bet with legs
+// you're currently building) — removes it from Saved Bets in the same step.
+function loadSavedBetIntoSlip(id){
+  const all = getSavedBets();
+  const bet = all.find(b=>b.id===id);
+  if(!bet) return;
+  const s = getSlip();
+  bet.legs.forEach(leg=>s.push({...leg, id: Date.now()+Math.random()}));
+  saveSlip(s);
+  saveSavedBets(all.filter(b=>b.id!==id));
+  updateSlipBadge();
+}
+
 // ---------- sport persistence ----------
 const SPORT_KEY = 'lw_sport';
 function getSport(){
@@ -255,19 +332,9 @@ function setSport(key){
 // not just the Board page in general.
 const NAV_GROUPS = [
   { key:'home', href:'/', icon:'🏠', label:'Home' },
-  { key:'mlb', icon:'⚾', label:'MLB', children:[
-    ['board','/board.html?sport=baseball_mlb','📊','Board'],
-    ['getprops','/getprops.html','🎯','Get Props'],
-    ['record','/record.html','📈','Record']
-  ]},
-  { key:'nba', icon:'🏀', label:'NBA', children:[
-    ['board','/board.html?sport=basketball_nba','📊','Board'],
-    ['nba','/nba.html','📈','Dashboard']
-  ]},
-  { key:'nfl', icon:'🏈', label:'NFL', children:[
-    ['board','/board.html?sport=americanfootball_nfl','📊','Board'],
-    ['nfl','/nfl.html','📈','Dashboard']
-  ]},
+  { key:'mlb', href:'/board.html?sport=baseball_mlb', icon:'⚾', label:'MLB' },
+  { key:'nba', href:'/board.html?sport=basketball_nba', icon:'🏀', label:'NBA' },
+  { key:'nfl', href:'/board.html?sport=americanfootball_nfl', icon:'🏈', label:'NFL' },
   { key:'more', icon:'🏆', label:'More', children:[
     ['board','/board.html?sport=icehockey_nhl','🏒','NHL'],
     ['board','/board.html?sport=americanfootball_ncaaf','🎓','NCAA Football'],
@@ -296,7 +363,11 @@ function renderNav(activePage){
 
   const groupHtml = NAV_GROUPS.map(g=>{
     if(!g.children){
-      return `<a class="rail-btn${g.key===activePage?' active':''}" href="${g.href}">
+      // Flat sport links (MLB/NBA/NFL) light up off activeGroup, same as the
+      // flyout groups below, so landing on Board with that sport selected
+      // highlights the right one — not just an exact page-key match.
+      const flatActive = g.key===activePage || g.key===activeGroup;
+      return `<a class="rail-btn${flatActive?' active':''}" href="${g.href}">
         <span aria-hidden="true">${g.icon}</span><span class="rail-label">${escapeHtml(g.label)}${g.badge?'<span class="slip-badge" id="slipBadge"></span>':''}</span>
       </a>`;
     }
