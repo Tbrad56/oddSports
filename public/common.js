@@ -947,20 +947,28 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
   const started = !!sit;
   const live = !!(sit && sit.down > 0 && sit.distance >= 0);
   let losMark = '', ballMark = '', firstDownMark = '', dirArrow = '';
+  let badgeX = 150;
   if(live && sit.yardLine != null && sit.yardLine >= 0 && sit.yardLine <= 100){
     const x = 24 + (sit.yardLine / 100) * 252;
     losMark = `<line x1="${x.toFixed(1)}" y1="8" x2="${x.toFixed(1)}" y2="112" stroke="#F5D400" stroke-width="2"/>`;
     ballMark = `<ellipse cx="${x.toFixed(1)}" cy="60" rx="5" ry="3.2" fill="#7B4A22" stroke="#241609" stroke-width="1"/>`;
-    const fx = Math.max(24, Math.min(276, x + sit.distance * 2.52));
-    firstDownMark = `<line x1="${fx.toFixed(1)}" y1="8" x2="${fx.toFixed(1)}" y2="112" stroke="#FFA940" stroke-width="2" stroke-dasharray="4,3"/>`;
     // Possession drives toward the OPPONENT's goal: home team → toward the
-    // away end (x decreasing), away team → toward the home end (x increasing).
+    // away end (x decreasing, driveDir -1), away team → toward the home end
+    // (x increasing, driveDir +1). Both the first-down marker and the drive
+    // arrow have to move in that same direction from the LOS, or they end up
+    // pointing the wrong way whenever the home team has the ball.
+    const towardAway = sit.possessionTeamId && sit.possessionTeamId === sit.homeTeamId;
+    const driveDir = towardAway ? -1 : 1;
+    const fx = Math.max(24, Math.min(276, x + driveDir * sit.distance * 2.52));
+    firstDownMark = `<line x1="${fx.toFixed(1)}" y1="8" x2="${fx.toFixed(1)}" y2="112" stroke="#FFA940" stroke-width="2" stroke-dasharray="4,3"/>`;
     if(sit.possessionTeamId && (sit.possessionTeamId === sit.homeTeamId || sit.possessionTeamId === sit.awayTeamId)){
-      const towardAway = sit.possessionTeamId === sit.homeTeamId;
-      const ax = towardAway ? x - 18 : x + 18;
-      const tip = towardAway ? ax - 10 : ax + 10;
+      const ax = x + driveDir * 18;
+      const tip = ax + driveDir * 10;
       dirArrow = `<path d="M${ax.toFixed(1)},52 L${tip.toFixed(1)},60 L${ax.toFixed(1)},68 Z" fill="#F5F5F5" opacity="0.9"/>`;
     }
+    // Down & distance badge sits behind the LOS (the offense's own side, away
+    // from the first-down marker) so it never covers the ball or the marker.
+    badgeX = Math.max(60, Math.min(240, x - driveDir * 40));
   }
   let yardTicks = '', yardNumbers = '';
   const yardLabels = [10,20,30,40,50,40,30,20,10];
@@ -977,13 +985,26 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
   const homeLogoMark = homeLogoUrl
     ? `<image href="${homeLogoUrl}" x="122" y="32" width="56" height="56" opacity="0.3" preserveAspectRatio="xMidYMid meet"/>`
     : '';
+  // Down & distance as a bold, centered badge ON the field itself (like a
+  // broadcast scoreboard bug) instead of small corner text — reads at a
+  // glance regardless of where the ball actually is.
+  let downBadge = '';
+  const badgeLabel = live ? (sit.downDistanceText || sit.possessionText || '') : (started ? 'BETWEEN PLAYS' : '');
+  if(badgeLabel){
+    const label = badgeLabel.toUpperCase();
+    const w = Math.max(76, label.length * 8.2 + 24);
+    const bx = Math.max(26 + w/2, Math.min(274 - w/2, badgeX));
+    downBadge = `<g>
+      <rect x="${(bx - w/2).toFixed(1)}" y="47" width="${w.toFixed(1)}" height="26" rx="13" fill="#141414" opacity="0.72"/>
+      <text x="${bx.toFixed(1)}" y="64" text-anchor="middle" font-size="15" font-weight="800" fill="#F5F5F5" letter-spacing="0.4">${escapeHtml(label)}</text>
+    </g>`;
+  }
   const clockBits = [];
   if(started && sit.period) clockBits.push('Q' + sit.period);
   if(started && sit.displayClock) clockBits.push(sit.displayClock);
-  const bannerText = live ? (sit.downDistanceText || sit.possessionText || 'Live') : (started ? 'Between plays' : '');
   const redZoneTag = live && sit.isRedZone ? '<span class="rz-tag">RED ZONE</span>' : '';
   const banner = started
-    ? `<div class="field-banner"><span>${escapeHtml(clockBits.join(' · '))}</span>${redZoneTag}<strong>${escapeHtml(bannerText)}</strong></div>`
+    ? `<div class="field-banner"><span>${escapeHtml(clockBits.join(' · '))}</span>${redZoneTag}</div>`
     : '';
   const kickoffNote = !started
     ? `<div class="field-note">Kickoff ${new Date(game.commence_time).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'})} — live tracker starts at kickoff</div>`
@@ -1002,6 +1023,7 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
       ${losMark}
       ${dirArrow}
       ${ballMark}
+      ${downBadge}
     </svg>
     ${kickoffNote}
   </div>`;
