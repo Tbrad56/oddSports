@@ -331,6 +331,16 @@
   }
   .line-view-tab.active{background:rgba(187,0,0,0.16); border-color:var(--accent); color:var(--accent);}
   .line-view-tab .spinner{width:9px; height:9px; border-width:1.5px; margin-right:2px;}
+  .alt-lines-table td{vertical-align:middle; padding:8px;}
+  .alt-line-row{display:flex; flex-wrap:wrap; gap:6px;}
+  .alt-line-pill{
+    display:flex; flex-direction:column; align-items:center; gap:1px;
+    min-width:54px; padding:5px 8px; border-radius:8px;
+    background:var(--bg-raised); border:1px solid var(--border);
+  }
+  .alt-line-pill:hover{border-color:var(--accent-dim); background:var(--bg-card-hover);}
+  .alt-line-point{font-size:11.5px; font-weight:700; color:var(--text);}
+  .alt-line-price{font-family:var(--font-mono); font-size:11px; color:var(--good); font-weight:600;}
   .line-shop{display:flex; flex-wrap:wrap; gap:5px;}
   .odds-chip{
     font-family:var(--font-mono); font-size:10.5px; font-weight:600;
