@@ -455,12 +455,33 @@
       // per-book chip list either way — book comparison for whatever
       // ends up in the slip lives on the Slip/Cheatsheet pages instead.
       const byPlayer = {};
-      rowKeys.forEach(rk=>{
-        const entry = perPlayer[rk];
-        if(useAlt && entry.side !== 'Over') return;
-        const best = entry.rows.slice().sort((a,b)=>americanToDecimal(b.odds)-americanToDecimal(a.odds))[0];
-        (byPlayer[entry.player] = byPlayer[entry.player] || []).push({ side: entry.side, point: entry.point, best, rows: entry.rows });
-      });
+      if(useAlt){
+        rowKeys.forEach(rk=>{
+          const entry = perPlayer[rk];
+          if(entry.side !== 'Over') return;
+          const best = entry.rows.slice().sort((a,b)=>americanToDecimal(b.odds)-americanToDecimal(a.odds))[0];
+          (byPlayer[entry.player] = byPlayer[entry.player] || []).push({ side: entry.side, point: entry.point, best, rows: entry.rows });
+        });
+      } else {
+        // Standard is exactly one pill per side (Over/Under, or "Yes") —
+        // even when books quote slightly different points for that side,
+        // pick whichever point the most tracked books share (same "modal
+        // point" convention the Game Lines grid already uses for
+        // spreads/totals), then the best price within it.
+        const bySidePoint = {}; // "player|side" -> [{point, rows}]
+        rowKeys.forEach(rk=>{
+          const entry = perPlayer[rk];
+          const key = entry.player + '|' + entry.side;
+          (bySidePoint[key] = bySidePoint[key] || []).push({ point: entry.point, rows: entry.rows });
+        });
+        Object.keys(bySidePoint).forEach(key=>{
+          const sep = key.lastIndexOf('|');
+          const player = key.slice(0, sep), side = key.slice(sep+1);
+          const modal = bySidePoint[key].slice().sort((a,b)=>b.rows.length-a.rows.length)[0];
+          const best = modal.rows.slice().sort((a,b)=>americanToDecimal(b.odds)-americanToDecimal(a.odds))[0];
+          (byPlayer[player] = byPlayer[player] || []).push({ side, point: modal.point, best, rows: modal.rows });
+        });
+      }
       const players = Object.keys(byPlayer).sort((a,b)=>a.localeCompare(b)).slice(0, 20);
       html += `<table class="props-table alt-lines-table"><tbody>`;
       players.forEach(playerName=>{
