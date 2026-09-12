@@ -652,6 +652,25 @@
 .weather-note{font-size:11px; color:var(--text-faint);}
 .analyze-cost{font-size:10.5px; color:var(--text-faint); margin-left:8px;}
 
+/* ---------- NFL live field tracker (line of scrimmage / down / possession) ---------- */
+.nfl-field-wrap{
+  padding:10px 16px; border-bottom:1px solid var(--border-soft);
+  background:var(--bg-card);
+}
+.field-banner{
+  display:flex; align-items:center; gap:8px; margin-bottom:8px;
+  font-size:12px; color:var(--text-dim);
+}
+.field-banner strong{color:var(--text); font-weight:700;}
+.field-banner span{font-family:var(--font-mono); color:var(--text-faint);}
+.rz-tag{
+  font-size:10px; font-weight:700; padding:2px 7px; border-radius:4px;
+  background:rgba(187,0,0,0.14); border:1px solid var(--accent); color:var(--accent);
+  text-transform:uppercase; letter-spacing:.4px;
+}
+.nfl-field{display:block; border-radius:6px;}
+.field-note{font-size:11px; color:var(--text-faint); margin-top:8px;}
+
 /* ---------- Top HR hitters box (sits beside the weather slots) ---------- */
 .top-hitters-box{
   flex-shrink:0; width:184px; background:var(--bg-raised); border:1px solid var(--border-soft);
