@@ -1629,7 +1629,23 @@ function createApp({
     // above — the bulk endpoint 422s the whole request if asked for them).
     const gridSports = sport === 'baseball_mlb' || sport === 'americanfootball_nfl';
     const markets = gridSports ? ['h2h', 'spreads', 'totals'] : ['h2h'];
-    proxy(`/v4/sports/${sport}/odds/?regions=us&markets=${markets.join(',')}&oddsFormat=american&includeLinks=true&includeSids=true`, res);
+    const upstreamPath = `/v4/sports/${sport}/odds/?regions=us&markets=${markets.join(',')}&oddsFormat=american&includeLinks=true&includeSids=true`;
+    // Pages that aren't actually about odds (Cheatsheet's team search, Slip,
+    // Record, Stats) only want this to fill their decorative ticker banner —
+    // that's not worth spending a real credit over. ?cacheOnly=1 serves
+    // whatever's already cached (e.g. from someone using Board recently) and
+    // otherwise returns 204 with no upstream call at all, so "just looking
+    // at stats" never costs anything.
+    if (req.query.cacheOnly) {
+      const hit = cache.get(upstreamPath);
+      if (hit && now() < hit.expires) {
+        if (hit.remaining) res.set('x-requests-remaining', hit.remaining);
+        res.set('x-cache-age-seconds', String(Math.round((now() - hit.cachedAt) / 1000)));
+        return res.json(hit.body);
+      }
+      return res.status(204).end();
+    }
+    proxy(upstreamPath, res);
   });
 
   // Live/recent scores — served from ESPN's free public scoreboard instead of

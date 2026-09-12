@@ -79,5 +79,5 @@
 
   load();
 
-  fetchOddsFor(getSport()).then(r => updateTicker(r.games)).catch(()=>{});
+  fetchOddsFor(getSport(), {cacheOnly:true}).then(r => updateTicker(r.games)).catch(()=>{});
 })();

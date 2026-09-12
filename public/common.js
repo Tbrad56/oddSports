@@ -505,8 +505,15 @@ function renderSportChips(containerEl, onSelect){
 }
 
 // ---------- odds fetch ----------
-async function fetchOddsFor(sport){
-  const res = await fetch(`/api/odds/${sport}`);
+// cacheOnly: for pages where odds are just decoration (the ticker banner on
+// Cheatsheet/Slip/Record/Stats) — never spends a fresh credit. Serves
+// whatever's already cached server-side (e.g. from Board being used
+// recently) and otherwise comes back empty, no upstream call at all.
+async function fetchOddsFor(sport, { cacheOnly = false } = {}){
+  const res = await fetch(`/api/odds/${sport}${cacheOnly ? '?cacheOnly=1' : ''}`);
+  if(res.status === 204){
+    return { games: [], remaining: null, cacheAge: 0 };
+  }
   if(!res.ok){
     let msg = `Error ${res.status}`;
     try{ const j = await res.json(); if(j.error) msg = j.error; }catch(_){}
