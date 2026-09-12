@@ -1668,8 +1668,9 @@ function createApp({
     const data = await fetchExternal(`https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard`, SCORES_TTL_MS);
     return (data.events || []).map(ev => {
       const comp = (ev.competitions || [])[0] || {};
-      const started = (ev.status && ev.status.type && ev.status.type.state) !== 'pre';
-      return {
+      const state = ev.status && ev.status.type && ev.status.type.state;
+      const started = state !== 'pre';
+      const out = {
         id: ev.id,
         commence_time: ev.date,
         completed: !!(ev.status && ev.status.type && ev.status.type.completed),
@@ -1680,6 +1681,29 @@ function createApp({
           score: c.score != null ? String(c.score) : ''
         })) : null
       };
+      // Football only (NFL + college): live down/distance/possession state for
+      // the interactive field tracker. ESPN only populates `situation` while
+      // the game is actually in progress (state === 'in') — pre/post games
+      // get none of this, by design.
+      if((sport === 'americanfootball_nfl' || sport === 'americanfootball_ncaaf') && state === 'in'){
+        const sit = comp.situation || {};
+        const home = (comp.competitors || []).find(c => c.homeAway === 'home') || {};
+        const away = (comp.competitors || []).find(c => c.homeAway === 'away') || {};
+        out.situation = {
+          period: ev.status && ev.status.period != null ? ev.status.period : null,
+          displayClock: (ev.status && ev.status.displayClock) || null,
+          down: sit.down != null ? sit.down : null,
+          distance: sit.distance != null ? sit.distance : null,
+          yardLine: sit.yardLine != null ? sit.yardLine : null,
+          downDistanceText: sit.shortDownDistanceText || sit.downDistanceText || null,
+          possessionText: sit.possessionText || null,
+          isRedZone: !!sit.isRedZone,
+          possessionTeamId: sit.possession || null,
+          homeTeamId: (home.team && home.team.id) || null,
+          awayTeamId: (away.team && away.team.id) || null
+        };
+      }
+      return out;
     });
   }
   app.get('/api/scores/:sport', (req, res) => {

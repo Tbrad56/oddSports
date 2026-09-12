@@ -934,15 +934,23 @@
           card.appendChild(p.firstElementChild);
         }
       }
-      // NFL: stadium weather/wind strip (no top-performers box yet — see note
-      // in buildNflWeatherStrip's caller in refresh() about why).
-      if(sportKey === 'americanfootball_nfl'){
-        const weatherHtml = buildNflWeatherStrip(game);
-        if(weatherHtml){
-          const w = document.createElement('div');
-          w.innerHTML = weatherHtml;
-          card.appendChild(w.firstElementChild);
+      // NFL: stadium weather strip (no top-performers box yet — see note
+      // in buildNflWeatherStrip's caller in refresh() about why), plus the
+      // live line-of-scrimmage/down/possession field tracker. NCAAF gets the
+      // same field tracker (ESPN's live situation data works the same way)
+      // but no weather strip — hundreds of schools, no stadium map to key off.
+      if(sportKey === 'americanfootball_nfl' || sportKey === 'americanfootball_ncaaf'){
+        if(sportKey === 'americanfootball_nfl'){
+          const weatherHtml = buildNflWeatherStrip(game);
+          if(weatherHtml){
+            const w = document.createElement('div');
+            w.innerHTML = weatherHtml;
+            card.appendChild(w.firstElementChild);
+          }
         }
+        const f = document.createElement('div');
+        f.innerHTML = footballFieldTrackerSvg(sportKey, game, scoreEntry);
+        card.appendChild(f.firstElementChild);
       }
 
       // MLB only: Spread/Total/Moneyline grid like a sportsbook's own game-lines

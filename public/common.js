@@ -923,32 +923,88 @@ function nflWindImpact(windMph){
   return {cls:'w-good', label:'Calm', dot:'▲'};
 }
 
-// Mini football field with a wind arrow: end zone shading, yard-line ticks,
-// midfield logo dot — drawn relative to the stadium's long axis (bearing),
-// same rotation convention as windFieldSvg (0 = blowing straight downfield).
-function footballFieldSvg(windFromDeg, windMph, bearing){
-  const windTo = (windFromDeg + 180) % 360;
-  const rotation = (windTo - bearing + 360) % 360;
-  const arrowColor = windMph >= 20 ? 'var(--bad)' : windMph >= 15 ? 'var(--warn)' : 'var(--good)';
-  let yardLines = '';
-  for(let y = 18; y <= 90; y += 9){
-    yardLines += `<line x1="14" y1="${y}" x2="86" y2="${y}" stroke="#1C3F24" stroke-width="0.6" opacity="0.55"/>`;
+// ESPN's team-logo CDN, keyed by league path — driven by the numeric ESPN
+// team id ESPN's own scoreboard already hands us in `situation.homeTeamId`,
+// so this covers every NCAAF school with no name/abbreviation table to
+// maintain (unlike TEAM_LOGOS, which only has the 4 hand-mapped pro leagues).
+const ESPN_TEAM_LOGO_LEAGUE = { americanfootball_nfl: 'nfl', americanfootball_ncaaf: 'ncaa' };
+function espnTeamLogoUrl(sportKey, teamId){
+  const league = ESPN_TEAM_LOGO_LEAGUE[sportKey];
+  if(!league || !teamId) return null;
+  return `https://a.espncdn.com/i/teamlogos/${league}/500/${teamId}.png`;
+}
+
+// Interactive football field: same green field / end-zone styling the old
+// wind diagram used, now driven by ESPN's live `situation` (down, distance,
+// line of scrimmage, possession) instead of wind direction. Pre-kickoff (no
+// situation yet) it's just the bare field with a kickoff-time note — markers
+// only appear once the game is actually live.
+// `yardLine` (0=away goal → 100=home goal, left→right) and the down=-1/
+// distance=-1 "between plays" sentinel were both confirmed against real
+// live NCAAF games (Alabama@Kentucky, Arizona@BYU, 2026-09-12).
+function footballFieldTrackerSvg(sportKey, game, scoreEntry){
+  const sit = scoreEntry && scoreEntry.situation;
+  const started = !!sit;
+  const live = !!(sit && sit.down > 0 && sit.distance >= 0);
+  let losMark = '', ballMark = '', firstDownMark = '', dirArrow = '';
+  if(live && sit.yardLine != null && sit.yardLine >= 0 && sit.yardLine <= 100){
+    const x = 24 + (sit.yardLine / 100) * 252;
+    losMark = `<line x1="${x.toFixed(1)}" y1="8" x2="${x.toFixed(1)}" y2="112" stroke="#F5D400" stroke-width="2"/>`;
+    ballMark = `<ellipse cx="${x.toFixed(1)}" cy="60" rx="5" ry="3.2" fill="#7B4A22" stroke="#241609" stroke-width="1"/>`;
+    const fx = Math.max(24, Math.min(276, x + sit.distance * 2.52));
+    firstDownMark = `<line x1="${fx.toFixed(1)}" y1="8" x2="${fx.toFixed(1)}" y2="112" stroke="#FFA940" stroke-width="2" stroke-dasharray="4,3"/>`;
+    // Possession drives toward the OPPONENT's goal: home team → toward the
+    // away end (x decreasing), away team → toward the home end (x increasing).
+    if(sit.possessionTeamId && (sit.possessionTeamId === sit.homeTeamId || sit.possessionTeamId === sit.awayTeamId)){
+      const towardAway = sit.possessionTeamId === sit.homeTeamId;
+      const ax = towardAway ? x - 18 : x + 18;
+      const tip = towardAway ? ax - 10 : ax + 10;
+      dirArrow = `<path d="M${ax.toFixed(1)},52 L${tip.toFixed(1)},60 L${ax.toFixed(1)},68 Z" fill="#F5F5F5" opacity="0.9"/>`;
+    }
   }
-  return `<span class="wind-field-wrap" title="Wind ${Math.round(windMph)} mph relative to the field's long axis (orientation approx.)">
-    <svg class="wind-field" viewBox="0 0 100 100" width="88" height="88" aria-hidden="true">
-      <rect x="14" y="8" width="72" height="12" fill="#265C33" stroke="#1C3F24" stroke-width="1.5"/>
-      <rect x="14" y="80" width="72" height="12" fill="#265C33" stroke="#1C3F24" stroke-width="1.5"/>
-      <rect x="14" y="20" width="72" height="60" fill="#2F6B3C" stroke="#1C3F24" stroke-width="2"/>
-      ${yardLines}
-      <line x1="14" y1="50" x2="86" y2="50" stroke="#F5F5F5" stroke-width="1.4" opacity="0.85"/>
-      <circle cx="50" cy="50" r="5" fill="none" stroke="#F5F5F5" stroke-width="1" opacity="0.7"/>
-      <g transform="rotate(${rotation.toFixed(0)} 50 50)">
-        <circle cx="50" cy="50" r="12" fill="${arrowColor}" opacity="0.94" stroke="#1B1B1B" stroke-width="1"/>
-        <path d="M50,58 L50,42 M50,42 l-6,6 M50,42 l6,6" stroke="#1B1B1B" stroke-width="3.5" fill="none" stroke-linecap="round"/>
-      </g>
+  let yardTicks = '', yardNumbers = '';
+  const yardLabels = [10,20,30,40,50,40,30,20,10];
+  let li = 0;
+  for(let x = 49.2; x <= 250.8 + 0.1; x += 25.2, li++){
+    yardTicks += `<line x1="${x.toFixed(1)}" y1="8" x2="${x.toFixed(1)}" y2="112" stroke="#1C3F24" stroke-width="0.6" opacity="0.5"/>`;
+    const label = yardLabels[li];
+    if(label != null){
+      yardNumbers += `<text x="${x.toFixed(1)}" y="24" text-anchor="middle" font-size="11" font-weight="700" fill="#E8F0EA" opacity="0.55">${label}</text>`;
+      yardNumbers += `<text x="${x.toFixed(1)}" y="102" text-anchor="middle" font-size="11" font-weight="700" fill="#E8F0EA" opacity="0.55">${label}</text>`;
+    }
+  }
+  const homeLogoUrl = espnTeamLogoUrl(sportKey, sit && sit.homeTeamId);
+  const homeLogoMark = homeLogoUrl
+    ? `<image href="${homeLogoUrl}" x="122" y="32" width="56" height="56" opacity="0.3" preserveAspectRatio="xMidYMid meet"/>`
+    : '';
+  const clockBits = [];
+  if(started && sit.period) clockBits.push('Q' + sit.period);
+  if(started && sit.displayClock) clockBits.push(sit.displayClock);
+  const bannerText = live ? (sit.downDistanceText || sit.possessionText || 'Live') : (started ? 'Between plays' : '');
+  const redZoneTag = live && sit.isRedZone ? '<span class="rz-tag">RED ZONE</span>' : '';
+  const banner = started
+    ? `<div class="field-banner"><span>${escapeHtml(clockBits.join(' · '))}</span>${redZoneTag}<strong>${escapeHtml(bannerText)}</strong></div>`
+    : '';
+  const kickoffNote = !started
+    ? `<div class="field-note">Kickoff ${new Date(game.commence_time).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'})} — live tracker starts at kickoff</div>`
+    : '';
+  return `<div class="nfl-field-wrap">
+    ${banner}
+    <svg class="nfl-field" viewBox="0 0 300 120" width="100%" height="120" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+      <rect x="0" y="8" width="24" height="104" fill="#265C33" stroke="#1C3F24" stroke-width="1.5"/>
+      <rect x="276" y="8" width="24" height="104" fill="#265C33" stroke="#1C3F24" stroke-width="1.5"/>
+      <rect x="24" y="8" width="252" height="104" fill="#2F6B3C" stroke="#1C3F24" stroke-width="2"/>
+      ${yardTicks}
+      ${yardNumbers}
+      ${homeLogoMark}
+      <line x1="150" y1="8" x2="150" y2="112" stroke="#F5F5F5" stroke-width="1" opacity="0.6"/>
+      ${firstDownMark}
+      ${losMark}
+      ${dirArrow}
+      ${ballMark}
     </svg>
-    <span class="wind-mph">${Math.round(windMph)}<br>mph</span>
-  </span>`;
+    ${kickoffNote}
+  </div>`;
 }
 
 // Builds the hourly weather strip for an NFL game card — same layout/classes
@@ -968,7 +1024,6 @@ function buildNflWeatherStrip(game){
   const w = nflWeatherCache[game.home_team];
   let slotsHtml = '';
   let firstPitchRating = null;
-  let firstPitchWind = null;
   if(w){
     const gameHourUtc = game.commence_time.slice(0,13) + ':00';
     const startIdx = w.time.indexOf(gameHourUtc);
@@ -977,10 +1032,7 @@ function buildNflWeatherStrip(game){
         const local = new Date(w.time[i] + ':00Z');
         const precip = w.precip[i];
         const rating = nflWindImpact(w.wind[i]);
-        if(i === startIdx){
-          firstPitchRating = rating;
-          firstPitchWind = {dir: w.windDir[i], mph: w.wind[i]};
-        }
+        if(i === startIdx) firstPitchRating = rating;
         slotsHtml += `<div class="weather-slot ${rating.cls}" title="${rating.label} · wind ${windCompass(w.windDir[i])} ${Math.round(w.wind[i])} mph (field orientation approx.)">
           <div class="w-time">${local.toLocaleTimeString([], {hour:'numeric'})}${i===startIdx ? ' · kickoff' : ''}</div>
           <div class="w-temp">${Math.round(w.temp[i])}°F</div>
@@ -993,12 +1045,11 @@ function buildNflWeatherStrip(game){
   const ratingTag = firstPitchRating
     ? `<span class="rating-tag ${firstPitchRating.cls}" title="Wind-speed heuristic at kickoff — 15+ mph starts affecting passing/kicking, 20+ is a real factor. Not a betting signal.">${firstPitchRating.dot} ${firstPitchRating.label}</span>`
     : '';
-  const fieldSvg = firstPitchWind ? footballFieldSvg(firstPitchWind.dir, firstPitchWind.mph, stadium.bearing) : '';
   const body = slotsHtml
     ? `<div class="weather-slots">${slotsHtml}</div>`
     : (w ? '<div class="weather-note">Game is beyond the 7-day forecast window — check back closer to kickoff.</div>' : '<div class="weather-note">Forecast unavailable right now.</div>');
   return `<div class="weather-strip">
-    <div class="weather-head">☁ ${escapeHtml(stadium.park)} ${ratingTag} ${fieldSvg}</div>
+    <div class="weather-head">☁ ${escapeHtml(stadium.park)} ${ratingTag}</div>
     <div class="weather-body-row">${body}</div>
   </div>`;
 }
