@@ -101,6 +101,39 @@ test('second request within TTL is served from cache', async () => {
   assert.equal(res2.headers['x-cache-age-seconds'], '120');
 });
 
+test('?cacheOnly=1 with nothing cached returns 204, never calls upstream', async () => {
+  const f = fakeFetch(() => okResponse([{ id: 'x' }]));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/odds/basketball_nba?cacheOnly=1');
+  assert.equal(res.status, 204);
+  assert.equal(f.calls.length, 0, 'a decorative ticker fetch must never spend a real credit');
+});
+
+test('?cacheOnly=1 serves an existing cache hit without a fresh upstream call', async () => {
+  let t = 1000000;
+  const f = fakeFetch(() => okResponse([{ id: 'x' }], '77'));
+  const app = createApp({ apiKey: 'k', fetchFn: f, cacheTtlMs: 600000, now: () => t });
+  await request(app).get('/api/odds/basketball_nba'); // warms the cache (e.g. from Board)
+  t += 90000;
+  const res = await request(app).get('/api/odds/basketball_nba?cacheOnly=1');
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, [{ id: 'x' }]);
+  assert.equal(res.headers['x-cache-age-seconds'], '90');
+  assert.equal(res.headers['x-requests-remaining'], '77');
+  assert.equal(f.calls.length, 1, 'only the original warming call, not a second one for cacheOnly');
+});
+
+test('?cacheOnly=1 does not serve an expired cache entry — falls back to 204', async () => {
+  let t = 1000000;
+  const f = fakeFetch(() => okResponse([{ id: 'x' }]));
+  const app = createApp({ apiKey: 'k', fetchFn: f, cacheTtlMs: 600000, now: () => t });
+  await request(app).get('/api/odds/basketball_nba');
+  t += 600001; // past TTL
+  const res = await request(app).get('/api/odds/basketball_nba?cacheOnly=1');
+  assert.equal(res.status, 204);
+  assert.equal(f.calls.length, 1, 'expired cache must not trigger a fresh upstream call under cacheOnly');
+});
+
 test('cache expires after TTL', async () => {
   let t = 1000000;
   const f = fakeFetch(() => okResponse([]));

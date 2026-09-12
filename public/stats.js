@@ -169,7 +169,7 @@
   loadGamesTicker();
   async function loadGamesTicker(){
     try{
-      const {games} = await fetchOddsFor('baseball_mlb');
+      const {games} = await fetchOddsFor('baseball_mlb', {cacheOnly:true});
       updateTicker(games);
     }catch(e){ /* ticker is decorative here */ }
   }

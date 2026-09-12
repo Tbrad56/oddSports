@@ -350,6 +350,6 @@
   renderManual();
   renderSavedBets();
 
-  // fill the ticker quietly (server cache makes this cheap); ignore failures
-  fetchOddsFor(getSport()).then(r=>updateTicker(r.games)).catch(()=>{});
+  // fill the ticker quietly, cache-only — never spends a fresh credit just to decorate this page
+  fetchOddsFor(getSport(), {cacheOnly:true}).then(r=>updateTicker(r.games)).catch(()=>{});
 })();
