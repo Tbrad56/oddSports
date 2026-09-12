@@ -40,6 +40,7 @@
     countEl.textContent = slip.length + ' leg' + (slip.length===1?'':'s');
     legsEl.innerHTML = '';
     emptyEl.style.display = slip.length ? 'none' : 'block';
+    document.getElementById('saveBetBtn').disabled = !slip.length;
 
     slip.forEach(leg=>{
       const pickList = pickListFor(leg);
@@ -271,8 +272,83 @@
     staggerIn(area, 30);
   }
 
+  // ---------- saved bets ----------
+  // A saved leg's rows/selectedBookKey are a frozen snapshot from when it was
+  // saved — no My-Books re-filtering, no writing back to the active slip.
+  // Purely for display until (if) it's loaded back into the active slip.
+  function bestRowForSavedLeg(leg){
+    return (leg.rows || []).find(r=>r.bookKey===leg.selectedBookKey) || leg.rows[0] || null;
+  }
+  function fmtSavedDate(ts){
+    const d = new Date(ts);
+    const sameYear = d.getFullYear() === new Date().getFullYear();
+    return d.toLocaleDateString(undefined, {month:'short', day:'numeric', year: sameYear ? undefined : 'numeric'})
+      + ' · ' + d.toLocaleTimeString(undefined, {hour:'numeric', minute:'2-digit'});
+  }
+  function renderSavedBets(){
+    const saved = getSavedBets();
+    const area = document.getElementById('savedBetsArea');
+    const countEl = document.getElementById('savedBetsCount');
+    countEl.textContent = saved.length ? saved.length + ' saved' : '';
+    if(!saved.length){
+      area.innerHTML = `<div style="color:var(--text-faint); font-size:12.5px;">Bets you save from the slip above show up here — come back anytime to review or load one back in.</div>`;
+      return;
+    }
+    area.innerHTML = '';
+    saved.forEach(bet=>{
+      const card = document.createElement('div');
+      card.className = 'leg-item';
+      card.style.marginBottom = '10px';
+      const legsHtml = bet.legs.map(leg=>{
+        const row = bestRowForSavedLeg(leg);
+        const style = row ? bookStyleFor(row.bookKey) : null;
+        return `<div class="parlay-line" style="padding:4px 0;">
+          <div style="min-width:0;">
+            <div class="leg-title" style="font-size:12.5px;">${escapeHtml(leg.side)}</div>
+            <div class="leg-sub">${escapeHtml(leg.matchup)}</div>
+          </div>
+          ${row ? `<span class="odds" style="margin-left:auto; display:flex; align-items:center; gap:6px;">${escapeHtml(style ? style.name : row.bookTitle)} ${fmtAmerican(row.odds)}</span>` : ''}
+        </div>`;
+      }).join('');
+      card.innerHTML = `
+        <div class="leg-top">
+          <div>
+            <div class="leg-title">${bet.legs.length} leg${bet.legs.length===1?'':'s'}</div>
+            <div class="leg-sub">Saved ${escapeHtml(fmtSavedDate(bet.savedAt))}</div>
+          </div>
+          <button class="remove-btn" title="Delete">×</button>
+        </div>
+        ${legsHtml}
+        <button type="button" class="ghost load-saved-btn" style="width:100%; margin-top:8px; font-size:11.5px; padding:6px 10px;">↩ Load into Slip</button>
+      `;
+      card.querySelector('.remove-btn').addEventListener('click', ()=>{
+        card.classList.add('removing');
+        setTimeout(()=>{
+          deleteSavedBet(bet.id);
+          renderSavedBets();
+        }, 200);
+      });
+      card.querySelector('.load-saved-btn').addEventListener('click', ()=>{
+        loadSavedBetIntoSlip(bet.id);
+        showToast('Loaded into Slip ✓');
+        renderSlip();
+        renderSavedBets();
+      });
+      area.appendChild(card);
+    });
+    staggerIn(area, 30);
+  }
+
+  document.getElementById('saveBetBtn').addEventListener('click', ()=>{
+    if(!saveCurrentSlipAsBet()) return;
+    showToast('Bet saved ✓');
+    renderSlip();
+    renderSavedBets();
+  });
+
   renderSlip();
   renderManual();
+  renderSavedBets();
 
   // fill the ticker quietly (server cache makes this cheap); ignore failures
   fetchOddsFor(getSport()).then(r=>updateTicker(r.games)).catch(()=>{});
