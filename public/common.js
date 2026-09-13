@@ -948,7 +948,7 @@ function espnTeamLogoUrl(sportKey, teamId){
 function footballFieldTrackerSvg(sportKey, game, scoreEntry){
   const sit = scoreEntry && scoreEntry.situation;
   const started = !!sit;
-  const live = !!(sit && sit.down > 0 && sit.distance >= 0);
+  const live = !!(sit && !sit.isHalftime && sit.down > 0 && sit.distance >= 0);
   let losMark = '', ballMark = '', firstDownMark = '', dirArrow = '', possessionMark = '';
   let badgeX = 150;
   if(live && sit.yardLine != null && sit.yardLine >= 0 && sit.yardLine <= 100){
@@ -1002,7 +1002,8 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
   // broadcast scoreboard bug) instead of small corner text — reads at a
   // glance regardless of where the ball actually is.
   let downBadge = '';
-  const badgeLabel = live ? (sit.downDistanceText || sit.possessionText || '') : (started ? 'BETWEEN PLAYS' : '');
+  const badgeLabel = live ? (sit.downDistanceText || sit.possessionText || '')
+    : (started ? (sit.isHalftime ? 'HALFTIME' : 'BETWEEN PLAYS') : '');
   if(badgeLabel){
     const label = badgeLabel.toUpperCase();
     const w = Math.max(76, label.length * 8.2 + 24);
@@ -1013,8 +1014,8 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
     </g>`;
   }
   const clockBits = [];
-  if(started && sit.period) clockBits.push('Q' + sit.period);
-  if(started && sit.displayClock) clockBits.push(sit.displayClock);
+  if(started && !sit.isHalftime && sit.period) clockBits.push('Q' + sit.period);
+  if(started && !sit.isHalftime && sit.displayClock) clockBits.push(sit.displayClock);
   const redZoneTag = live && sit.isRedZone ? '<span class="rz-tag">RED ZONE</span>' : '';
   const banner = started
     ? `<div class="field-banner"><span>${escapeHtml(clockBits.join(' · '))}</span>${redZoneTag}</div>`
