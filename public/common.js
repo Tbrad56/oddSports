@@ -292,6 +292,16 @@ function trackBet({sport, homeTeam, awayTeam, commenceTime, matchup, market, sel
     body: JSON.stringify({sport, homeTeam, awayTeam, commenceTime, matchup, market, selection, point})
   }).catch(()=>{});
 }
+// Same idea as trackBet, for a player prop leg — only MLB and NFL are
+// gradable server-side right now (no stat-lookup infra for other sports yet).
+const PROP_TRACKABLE_SPORTS = new Set(['baseball_mlb', 'americanfootball_nfl']);
+function trackProp({sport, player, market, line, side, matchup, homeTeam, awayTeam, commenceTime}){
+  if(!PROP_TRACKABLE_SPORTS.has(sport)) return;
+  fetch('/api/track-prop', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({sport, player, market, line, side, matchup, homeTeam, awayTeam, commenceTime})
+  }).catch(()=>{});
+}
 function removeLegFromSlip(id){
   saveSlip(getSlip().filter(l=>l.id!==id));
   updateSlipBadge();

@@ -514,7 +514,12 @@
           const propId = 'p' + (++state.propIdCounter);
           state.propRegistry[propId] = {
             side: `${playerName} ${sideLabel}${hasPoint ? ' '+pr.point : ''} ${marketLabel(marketKey)}`,
-            matchup: `${game.away_team} @ ${game.home_team}`, rows: pr.rows
+            matchup: `${game.away_team} @ ${game.home_team}`, rows: pr.rows,
+            // Raw fields for server-side grading (trackProp) — display string
+            // above is for the Slip UI, these are what actually get sent.
+            sport: game.sport_key, player: playerName, market: marketKey,
+            line: hasPoint ? pr.point : null, propSide: sideLabel,
+            homeTeam: game.home_team, awayTeam: game.away_team, commenceTime: game.commence_time
           };
           return `<button type="button" class="alt-line-pill prop-slip-btn" data-prop-id="${propId}" title="Best price across your tracked books">
             <span class="alt-line-point">${escapeHtml(pillLabel)}</span>
@@ -858,6 +863,8 @@
       const prop = state.propRegistry[slipBtn.dataset.propId];
       if(!prop) return;
       addLegToSlip({ id: Date.now()+Math.random(), matchup: prop.matchup, side: prop.side, rows: prop.rows });
+      trackProp({ sport: prop.sport, player: prop.player, market: prop.market, line: prop.line, side: prop.propSide,
+        matchup: prop.matchup, homeTeam: prop.homeTeam, awayTeam: prop.awayTeam, commenceTime: prop.commenceTime });
       showToast('Added ✓');
       const row = slipBtn.closest('tr');
       if(row) flashEl(row);

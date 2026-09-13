@@ -62,6 +62,20 @@ const MLB_MARKET_STATS = {
   batter_home_runs:   { group: 'hitting',  stat: 'homeRuns',   window: 15 }
 };
 
+// market key -> which ESPN box-score category+column backs it (verified live
+// against a real completed game's /summary?event= response — ESPN returns
+// each category's rows as a `labels` array + parallel `stats` string array,
+// not a keyed object, so category/label here are literally what to look up).
+// player_anytime_td isn't here — it's graded as a special case (rushing.TD>0
+// OR receiving.TD>0), since it has no numeric line to compare against.
+const NFL_MARKET_STATS = {
+  player_pass_yds:      { category: 'passing',   label: 'YDS' },
+  player_pass_tds:      { category: 'passing',   label: 'TD' },
+  player_rush_yds:      { category: 'rushing',   label: 'YDS' },
+  player_receptions:    { category: 'receiving', label: 'REC' },
+  player_reception_yds: { category: 'receiving', label: 'YDS' }
+};
+
 function createApp({
   apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now = Date.now, dataDir = null, enableSweep = false,
   enableAuth = false, sessionSecret = null
@@ -461,6 +475,29 @@ function createApp({
 
   function normName(s){
     return String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\./g, '').trim();
+  }
+
+  // ESPN's box score returns each stat category as a `labels` array plus a
+  // parallel `stats` string array per athlete (not a keyed object) — this
+  // flattens that into { normalizedName -> { passing:{YDS,TD,...}, rushing:{...},
+  // receiving:{...} } } once per fetch. Shared by prop grading and (future)
+  // a live "progress toward the line" lookup — same read, different timing.
+  async function nflBoxScoreStats(eventId){
+    const data = await fetchExternal(`https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event=${eventId}`, LIVE_TTL_MS);
+    const teams = (data.boxscore && data.boxscore.players) || [];
+    const byPlayer = {};
+    teams.forEach(team => {
+      (team.statistics || []).forEach(cat => {
+        (cat.athletes || []).forEach(a => {
+          const name = normName((a.athlete && a.athlete.displayName) || '');
+          if (!name) return;
+          const stat = {};
+          (cat.labels || []).forEach((label, i) => { stat[label] = Number((a.stats || [])[i]); });
+          (byPlayer[name] = byPlayer[name] || {})[cat.name] = stat;
+        });
+      });
+    });
+    return byPlayer;
   }
 
   async function mlbPlayerId(name, season){
@@ -2243,7 +2280,7 @@ function createApp({
     const RESULT_LABEL = { hit: 'WON', miss: 'LOST', push: 'PUSH', void: 'VOID' };
     const desc = pick.kind === 'bet'
       ? `${pick.selection}${pick.point != null ? ' ' + (pick.point > 0 ? '+' : '') + pick.point : ''} — ${MARKET_NAME[pick.market] || pick.market}`
-      : `${pick.player} — ${pick.side} ${pick.line}`;
+      : `${pick.player} — ${pick.side}${pick.line != null ? ' ' + pick.line : ''}`;
     const body = actual == null
       ? `${desc}: ${RESULT_LABEL[result] || result} (no stat found)`
       : `${desc}: ${RESULT_LABEL[result] || result} (actual ${actual})`;
@@ -2390,6 +2427,51 @@ function createApp({
     }
   }
 
+  // Grades NFL player props added from Board (not the MLB-only Get Props
+  // "Analyze" flow). Unlike MLB's next-day StatsAPI gamelog dependency, an
+  // NFL box score is final the moment ESPN marks the game completed, so this
+  // grades same-day, on the same 60s cadence as bet grading.
+  async function gradePendingNflProps(){
+    const pending = store.pending().filter(p => p.kind === 'prop' && p.sport === 'americanfootball_nfl');
+    if (!pending.length) return;
+    let games;
+    try { games = await getScores('americanfootball_nfl'); } catch (e) { return; }
+    const boxCache = new Map(); // ESPN event id -> Promise<byPlayer>
+    for (const p of pending) {
+      const game = games.find(g => teamNameMatch(g.home_team, p.homeTeam) && teamNameMatch(g.away_team, p.awayTeam));
+      if (!game || !game.completed) continue;
+      let byPlayer;
+      try {
+        if (!boxCache.has(game.id)) boxCache.set(game.id, nflBoxScoreStats(game.id));
+        byPlayer = await boxCache.get(game.id);
+      } catch (e) { continue; }
+      const gradedTs = new Date(now()).toISOString();
+      const stat = byPlayer[normName(p.player)];
+      if (!stat) {
+        // Game's final and this player never shows up in the box score at
+        // all — inactive/DNP. Void rather than grade a false "miss", same
+        // as a real sportsbook would for a player who didn't play.
+        if (store.grade(p.id, null, 'void', gradedTs)) notifyBetGraded(p, null, 'void');
+        continue;
+      }
+      let actual, result;
+      if (p.market === 'player_anytime_td'){
+        const scored = ((stat.rushing && stat.rushing.TD) || 0) > 0 || ((stat.receiving && stat.receiving.TD) || 0) > 0;
+        actual = scored ? 1 : 0;
+        result = scored ? 'hit' : 'miss';
+      } else {
+        const cfg = NFL_MARKET_STATS[p.market];
+        if (!cfg) continue;
+        const catStat = stat[cfg.category];
+        actual = catStat ? (catStat[cfg.label] || 0) : 0;
+        if (actual === p.line) result = 'push';
+        else if (p.side === 'Over') result = actual > p.line ? 'hit' : 'miss';
+        else result = actual < p.line ? 'hit' : 'miss';
+      }
+      if (store.grade(p.id, actual, result, gradedTs)) notifyBetGraded(p, actual, result);
+    }
+  }
+
   if (enableSweep) {
     const boot = setTimeout(() => gradePendingPicks().catch(e => console.error(`sweep failed: ${e.message}`)), 60 * 1000);
     boot.unref();
@@ -2408,6 +2490,11 @@ function createApp({
     betBoot.unref();
     const betInterval = setInterval(() => gradePendingBets().catch(e => console.error(`bet grading failed: ${e.message}`)), 60 * 1000);
     betInterval.unref();
+
+    const nflPropBoot = setTimeout(() => gradePendingNflProps().catch(e => console.error(`NFL prop grading failed: ${e.message}`)), 25 * 1000);
+    nflPropBoot.unref();
+    const nflPropInterval = setInterval(() => gradePendingNflProps().catch(e => console.error(`NFL prop grading failed: ${e.message}`)), 60 * 1000);
+    nflPropInterval.unref();
   }
 
   app.get('/api/record', (req, res) => {
@@ -2437,6 +2524,55 @@ function createApp({
       market, selection, point: market === 'h2h' ? null : point
     });
     res.json({ ok: true, logged });
+  });
+
+  // Logs a player prop the moment it's added to the Slip from Board (not
+  // through Get Props' MLB-only "Analyze" flow), so it can be graded and
+  // notified on too. MLB reuses the exact stat-lookup path Get Props already
+  // has (same MLB_MARKET_STATS, same gradePendingPicks sweep) — NFL is graded
+  // separately via gradePendingNflProps() against ESPN's box score. Other
+  // sports aren't gradable yet (no stat-lookup infra built for them).
+  app.post('/api/track-prop', async (req, res) => {
+    const { sport, player, market, line, side, matchup, homeTeam, awayTeam, commenceTime } = req.body || {};
+    if (typeof player !== 'string' || !player) return res.status(400).json({ error: 'player is required' });
+    if (typeof side !== 'string' || !side) return res.status(400).json({ error: 'side is required' });
+    if (typeof commenceTime !== 'string' || !commenceTime) return res.status(400).json({ error: 'commenceTime is required' });
+
+    if (sport === 'baseball_mlb') {
+      if (!MLB_MARKET_STATS[market]) return res.status(400).json({ error: 'Unsupported market for MLB' });
+      if (typeof line !== 'number') return res.status(400).json({ error: 'line is required' });
+      const gameDate = new Date(commenceTime).toISOString().slice(0, 10);
+      const season = new Date(commenceTime).getFullYear();
+      let mlbId;
+      try { mlbId = await mlbPlayerId(player, season); } catch (e) { return sendUpstreamError(res, e); }
+      if (!mlbId) return res.status(404).json({ error: 'Player not found' });
+      const id = `prop|mlb|${player}|${market}|${line}|${side}|${gameDate}`;
+      const logged = store.logPick({
+        id, kind: 'prop', sport, ts: new Date(now()).toISOString(),
+        gameDate, matchup: matchup || '', player, mlbId,
+        market, line, side, bestBook: null, flags: []
+      });
+      return res.json({ ok: true, logged });
+    }
+
+    if (sport === 'americanfootball_nfl') {
+      const isAnytimeTd = market === 'player_anytime_td';
+      if (!isAnytimeTd && !NFL_MARKET_STATS[market]) return res.status(400).json({ error: 'Unsupported market for NFL' });
+      if (!isAnytimeTd && typeof line !== 'number') return res.status(400).json({ error: 'line is required' });
+      if (typeof homeTeam !== 'string' || !homeTeam || typeof awayTeam !== 'string' || !awayTeam) {
+        return res.status(400).json({ error: 'homeTeam and awayTeam are required' });
+      }
+      const lineKey = isAnytimeTd ? '' : line;
+      const id = `prop|nfl|${homeTeam}|${awayTeam}|${player}|${market}|${lineKey}|${side}`;
+      const logged = store.logPick({
+        id, kind: 'prop', sport, ts: new Date(now()).toISOString(),
+        homeTeam, awayTeam, commenceTime, matchup: matchup || `${awayTeam} @ ${homeTeam}`,
+        player, market, line: isAnytimeTd ? null : line, side
+      });
+      return res.json({ ok: true, logged });
+    }
+
+    return res.status(400).json({ error: 'Prop tracking is only available for MLB and NFL right now' });
   });
 
   // ---------- Push notifications: subscribe/unsubscribe, watchlist, prefs ----------
@@ -2487,6 +2623,7 @@ function createApp({
   app.locals.store = store;
   app.locals.gradePendingPicks = gradePendingPicks;
   app.locals.gradePendingBets = gradePendingBets;
+  app.locals.gradePendingNflProps = gradePendingNflProps;
 
   app.use(express.static(path.join(__dirname, 'public')));
   return app;

@@ -1151,3 +1151,115 @@ test('computeRecord: a mix of a graded bet and a prop does not crash /api/record
   assert.ok(!Number.isNaN(res.body.summary.avgModelP));
   assert.equal(res.body.summary.avgModelP, 0.6); // only the prop counts
 });
+
+// ---------- track-prop: player props added from Board, not Get Props' MLB-only Analyze flow ----------
+function espnNflSummary({ homeTeam, awayTeam, athletes }){
+  // athletes: [{ team: 'home'|'away', name, category, labels, stats }]
+  const byTeam = { home: [], away: [] };
+  athletes.forEach(a => byTeam[a.team].push(a));
+  const teamBlock = (name, list) => ({
+    team: { displayName: name },
+    statistics: Object.values(list.reduce((acc, a) => {
+      const cat = acc[a.category] || (acc[a.category] = { name: a.category, labels: a.labels, athletes: [] });
+      cat.athletes.push({ athlete: { displayName: a.name }, stats: a.stats });
+      return acc;
+    }, {}))
+  });
+  return { boxscore: { players: [teamBlock(homeTeam, byTeam.home), teamBlock(awayTeam, byTeam.away)] } };
+}
+
+test('track-prop: validates required fields per sport', async () => {
+  const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
+  const base = { player: 'P One', side: 'Over', commenceTime: '2026-09-10T00:20:00Z' };
+  assert.equal((await request(app).post('/api/track-prop').send({ ...base, sport: 'baseball_mlb', market: 'batter_hits' })).status, 400); // no line
+  assert.equal((await request(app).post('/api/track-prop').send({ ...base, sport: 'baseball_mlb', market: 'not_a_market', line: 1.5 })).status, 400);
+  assert.equal((await request(app).post('/api/track-prop').send({ ...base, sport: 'americanfootball_nfl', market: 'player_pass_yds', line: 200.5 })).status, 400); // no homeTeam/awayTeam
+  assert.equal((await request(app).post('/api/track-prop').send({ ...base, sport: 'basketball_nba', market: 'player_points', line: 20.5, homeTeam:'A', awayTeam:'B' })).status, 400); // no NBA grading yet
+});
+
+test('track-prop + NFL grading: pass yards, receptions, and anytime TD all grade correctly against a real box-score shape', async () => {
+  const summary = espnNflSummary({
+    homeTeam: 'Seattle Seahawks', awayTeam: 'New England Patriots',
+    athletes: [
+      { team:'away', name:'Drake Maye', category:'passing', labels:['C/ATT','YDS','AVG','TD','INT','SACKS','QBR','RTG'], stats:['23/33','178','5.4','1','3','3-10','57.9','54.9'] },
+      { team:'away', name:'Mack Hollins', category:'receiving', labels:['REC','YDS','AVG','TD','LONG','TGTS'], stats:['4','51','12.8','0','19','5'] },
+      { team:'home', name:'Jaxon Smith-Njigba', category:'receiving', labels:['REC','YDS','AVG','TD','LONG','TGTS'], stats:['8','122','15.3','1','45','11'] }
+    ]
+  });
+  const espnScoreboard = { events: [{
+    id: 'espn1', date: '2026-09-10T00:20Z', status: { type: { state:'post', completed:true } },
+    competitions: [{ competitors: [
+      { homeAway:'home', team:{ displayName:'Seattle Seahawks' }, score:'23' },
+      { homeAway:'away', team:{ displayName:'New England Patriots' }, score:'20' }
+    ] }]
+  }] };
+  const f = routedFetch([
+    ['scoreboard', okResponse(espnScoreboard)],
+    ['summary?event=espn1', okResponse(summary)]
+  ]);
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+
+  const track = (over) => request(app).post('/api/track-prop').send({
+    sport: 'americanfootball_nfl', matchup: 'New England Patriots @ Seattle Seahawks',
+    homeTeam: 'Seattle Seahawks', awayTeam: 'New England Patriots', commenceTime: '2026-09-10T00:20:00Z',
+    ...over
+  });
+  await track({ player: 'Drake Maye', market: 'player_pass_yds', line: 150.5, side: 'Over' }); // 178 -> hit
+  await track({ player: 'Drake Maye', market: 'player_pass_yds', line: 200.5, side: 'Over' }); // 178 -> miss
+  await track({ player: 'Mack Hollins', market: 'player_receptions', line: 3.5, side: 'Over' }); // 4 -> hit
+  await track({ player: 'Jaxon Smith-Njigba', market: 'player_anytime_td', side: 'Yes' }); // scored -> hit
+  await track({ player: 'Drake Maye', market: 'player_anytime_td', side: 'Yes' }); // QB, no rush/rec TD -> miss
+
+  await app.locals.gradePendingNflProps();
+  const res = await request(app).get('/api/record');
+  const byKey = (p, m) => res.body.recent.find(r => r.player === p && r.market === m);
+  assert.equal(byKey('Drake Maye', 'player_pass_yds').result, 'hit');
+  assert.equal(byKey('Mack Hollins', 'player_receptions').result, 'hit');
+  assert.equal(byKey('Jaxon Smith-Njigba', 'player_anytime_td').result, 'hit');
+  assert.equal(byKey('Drake Maye', 'player_anytime_td').result, 'miss');
+  assert.equal(res.body.summary.misses, 2); // the 200.5 pass-yds miss + Maye's anytime-TD miss
+  assert.equal(res.body.summary.hits, 3);
+});
+
+test('NFL prop grading: a player missing entirely from the box score voids instead of grading a false miss', async () => {
+  const summary = espnNflSummary({
+    homeTeam: 'Seattle Seahawks', awayTeam: 'New England Patriots',
+    athletes: [{ team:'away', name:'Drake Maye', category:'passing', labels:['C/ATT','YDS','AVG','TD','INT','SACKS','QBR','RTG'], stats:['23/33','178','5.4','1','3','3-10','57.9','54.9'] }]
+  });
+  const espnScoreboard = { events: [{
+    id: 'espn1', date: '2026-09-10T00:20Z', status: { type: { state:'post', completed:true } },
+    competitions: [{ competitors: [
+      { homeAway:'home', team:{ displayName:'Seattle Seahawks' }, score:'23' },
+      { homeAway:'away', team:{ displayName:'New England Patriots' }, score:'20' }
+    ] }]
+  }] };
+  const f = routedFetch([['scoreboard', okResponse(espnScoreboard)], ['summary?event=espn1', okResponse(summary)]]);
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  await request(app).post('/api/track-prop').send({
+    sport: 'americanfootball_nfl', player: 'Someone Inactive', market: 'player_rush_yds', line: 40.5, side: 'Over',
+    homeTeam: 'Seattle Seahawks', awayTeam: 'New England Patriots', commenceTime: '2026-09-10T00:20:00Z'
+  });
+  await app.locals.gradePendingNflProps();
+  const res = await request(app).get('/api/record');
+  assert.equal(res.body.summary.voids, 1);
+});
+
+test('track-prop MLB: resolves mlbId via the real lookup, then the existing MLB grading sweep picks it up and grades it', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lw-track-prop-'));
+  const f = routedFetch([
+    ['/api/v1/sports/1/players', okResponse(PLAYERS_BODY)],
+    ['/api/v1/people/', okResponse(DATED_GAMELOG_BODY)]
+  ]);
+  const app = createApp({ apiKey: 'k', fetchFn: f, dataDir: dir, now: () => Date.parse('2026-07-12T16:00:00Z') });
+  const track = await request(app).post('/api/track-prop').send({
+    sport: 'baseball_mlb', player: 'Test Pitcher', market: 'pitcher_strikeouts', line: 5.5, side: 'Over',
+    matchup: 'A @ B', commenceTime: '2026-07-10T18:00:00Z'
+  });
+  assert.equal(track.status, 200);
+  assert.equal(track.body.logged, true);
+
+  await app.locals.gradePendingPicks();
+  const res = await request(app).get('/api/record');
+  assert.equal(res.body.summary.graded, 1);
+  assert.equal(res.body.summary.hits, 1); // 8 Ks on 2026-07-10 > 5.5, same fixture the "grading sweep" test above uses
+});
