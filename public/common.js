@@ -1126,9 +1126,30 @@ function buildNflWeatherStrip(game){
   </div>`;
 }
 
+// ---------- shared NFL position-bucket / injury-status helpers ----------
+// Same grouping the NFL Dashboard's Injury Center already uses — shared here
+// so Board's per-game version looks and reads identically, not like a
+// simplified knockoff.
+const NFL_POS_BUCKETS = [
+  ['QB', ['QB']],
+  ['RB', ['RB', 'FB']],
+  ['WR/TE', ['WR', 'TE']],
+  ['OL', ['LT', 'LG', 'C', 'RG', 'RT', 'OT', 'G', 'OL']],
+  ['Defense', ['LDE','RDE','DE','DT','NT','LILB','RILB','MLB','ILB','OLB','LOLB','ROLB','LB','LCB','RCB','CB','SS','FS','S','DB']],
+  ['Special Teams', ['PK','K','P','LS','H','PR','KR']]
+];
+function nflBucketFor(pos){ return (NFL_POS_BUCKETS.find(([, list]) => list.includes(pos)) || ['Other'])[0]; }
+function nflStatusClass(s){
+  const t = (s || '').toLowerCase();
+  if(t.includes('out') || t.includes('injured reserve') || t.includes('ir')) return 'nfl-status out';
+  if(t.includes('doubtful')) return 'nfl-status out';
+  if(t.includes('questionable')) return 'nfl-status quest';
+  return 'nfl-status limited';
+}
+
 // ---------- per-game injury report (replaces the old 5-hour weather grid's
 // screen space) ----------
-let nflInjuriesCache = {}; // "away|home" -> {home:{name,injuries[]}, away:{name,injuries[]}}
+let nflInjuriesCache = {}; // "away|home" -> {home:{name,logo,record,injuries[]}, away:{...}}
 async function fetchNflGameInjuries(games){
   const matchups = [...new Map(games.map(g=>[g.away_team+'|'+g.home_team, g])).values()];
   await Promise.all(matchups.map(async g=>{
@@ -1144,17 +1165,23 @@ async function fetchNflGameInjuries(games){
 function buildNflInjuriesHtml(game){
   const key = game.away_team+'|'+game.home_team;
   const data = nflInjuriesCache[key];
-  if(!data) return `<div class="injuries-strip"><div class="injuries-head">🩺 Injury Report</div><div class="weather-note">Loading…</div></div>`;
+  if(!data) return `<div class="injuries-strip"><div class="injuries-head">🩺 Injury Report</div><div class="hr-note">Loading…</div></div>`;
   const teamBlock = (side)=>{
-    const list = side.injuries.slice().sort((a,b)=> (b.starter?1:0) - (a.starter?1:0));
-    if(!list.length) return `<div class="injuries-team"><div class="injuries-team-name">${escapeHtml(side.name)}</div><div class="weather-note">Nothing listed</div></div>`;
-    const rows = list.slice(0,6).map(i=>`<div class="injury-row${i.starter?' starter':''}">
-        <span class="injury-name">${escapeHtml(i.name)}</span>
-        <span class="injury-pos">${escapeHtml(i.position)}</span>
-        <span class="injury-status">${escapeHtml(i.status)}</span>
-      </div>`).join('');
-    const more = list.length > 6 ? `<div class="weather-note">+${list.length-6} more</div>` : '';
-    return `<div class="injuries-team"><div class="injuries-team-name">${escapeHtml(side.name)}</div>${rows}${more}</div>`;
+    const head = `<div class="nba-team-head">
+      ${side.logo ? `<img src="${escapeHtml(side.logo)}" width="20" height="20" alt="" loading="lazy" onerror="this.style.display='none'">` : ''}
+      <strong>${escapeHtml(side.name)}</strong>
+      ${side.record ? `<span class="nba-record">${escapeHtml(side.record)}</span>` : ''}
+    </div>`;
+    if(!side.injuries.length) return `<div class="injuries-team">${head}<div class="hr-note">No players listed right now.</div></div>`;
+    const byBucket = {};
+    side.injuries.forEach(i => { (byBucket[nflBucketFor(i.position)] = byBucket[nflBucketFor(i.position)] || []).push(i); });
+    const groups = Object.entries(byBucket).map(([bucket, list])=>`
+      <div class="nfl-pos-group">${escapeHtml(bucket)}</div>
+      <ul class="nba-injury-list">${list.map(i=>
+        `<li>${escapeHtml(i.name)} <span class="hand-tag">${escapeHtml(i.position)}</span>
+         <span class="${nflStatusClass(i.status)}">${escapeHtml(i.status)}</span>${i.starter ? ' <span class="nfl-starter-tag">Starter</span>' : ''}</li>`
+      ).join('')}</ul>`).join('');
+    return `<div class="injuries-team">${head}${groups}</div>`;
   };
   return `<div class="injuries-strip">
     <div class="injuries-head">🩺 Injury Report</div>

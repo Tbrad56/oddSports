@@ -1258,7 +1258,7 @@ function createApp({
       if (typeof home !== 'string' || !home || typeof away !== 'string' || !away) {
         return res.status(400).json({ error: 'home and away team names required' });
       }
-      const teams = await nflTeams();
+      const [teams, standings] = await Promise.all([nflTeams(), nflStandingsMap().catch(() => ({}))]);
       const homeTeam = teams.find(t => t.name === home);
       const awayTeam = teams.find(t => t.name === away);
       if (!homeTeam || !awayTeam) return res.status(400).json({ error: 'Unknown team' });
@@ -1266,9 +1266,14 @@ function createApp({
         nflDepthAndInjuries(homeTeam.id).catch(() => ({ injuries: [] })),
         nflDepthAndInjuries(awayTeam.id).catch(() => ({ injuries: [] }))
       ]);
+      const recordFor = id => {
+        const s = standings[id];
+        if (!s || s.wins == null || s.losses == null) return null;
+        return s.ties ? `${s.wins}-${s.losses}-${s.ties}` : `${s.wins}-${s.losses}`;
+      };
       res.json({
-        home: { name: home, injuries: homeInj.injuries },
-        away: { name: away, injuries: awayInj.injuries }
+        home: { name: home, logo: homeTeam.logo, record: recordFor(homeTeam.id), injuries: homeInj.injuries },
+        away: { name: away, logo: awayTeam.logo, record: recordFor(awayTeam.id), injuries: awayInj.injuries }
       });
     })().catch(err => sendUpstreamError(res, err));
   });

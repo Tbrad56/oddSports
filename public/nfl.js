@@ -10,24 +10,11 @@
   renderNav('nfl');
   renderSeasonBanner('americanfootball_nfl');
 
-  // Positions bucketed the way bettors think about them
-  const POS_BUCKETS = [
-    ['QB', ['QB']],
-    ['RB', ['RB', 'FB']],
-    ['WR/TE', ['WR', 'TE']],
-    ['OL', ['LT', 'LG', 'C', 'RG', 'RT', 'OT', 'G', 'OL']],
-    ['Defense', ['LDE','RDE','DE','DT','NT','LILB','RILB','MLB','ILB','OLB','LOLB','ROLB','LB','LCB','RCB','CB','SS','FS','S','DB']],
-    ['Special Teams', ['PK','K','P','LS','H','PR','KR']]
-  ];
-  const bucketFor = pos => (POS_BUCKETS.find(([, list]) => list.includes(pos)) || ['Other'])[0];
-
-  const STATUS_CLASS = s => {
-    const t = (s || '').toLowerCase();
-    if (t.includes('out') || t.includes('injured reserve') || t.includes('ir')) return 'nfl-status out';
-    if (t.includes('doubtful')) return 'nfl-status out';
-    if (t.includes('questionable')) return 'nfl-status quest';
-    return 'nfl-status limited';
-  };
+  // Positions bucketed the way bettors think about them — shared with
+  // Board's per-game injury report (nflBucketFor/nflStatusClass in
+  // common.js) so both read identically instead of drifting apart.
+  const bucketFor = nflBucketFor;
+  const STATUS_CLASS = nflStatusClass;
 
   (async function loadTeams(){
     try{
