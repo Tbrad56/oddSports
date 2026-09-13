@@ -149,6 +149,14 @@ function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+// Avatar bubble for a ready-made URL (the server already resolved a
+// headshot). Shared across pages — Board's props table and the NFL
+// breakdown's Player Form panel both use it.
+function avatarUrlHtml(url, size){
+  if(!url) return '';
+  return `<img class="player-avatar" src="${escapeHtml(url)}" width="${size}" height="${size}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
+}
+
 // ---------- book styling & labels ----------
 function bookStyleFor(key){
   const k = key.toLowerCase();
@@ -395,7 +403,7 @@ const NAV_GROUPS = [
   { key:'slip', href:'/slip.html', icon:'🎟️', label:'Slip', badge:true }
 ];
 // Which group lights up for a page not itself in the group list.
-const PAGE_TO_GROUP = { getprops:'mlb', record:'mlb', nba:'nba', nfl:'nfl', stats:'tools', cheatsheet:'tools', notifications:'tools' };
+const PAGE_TO_GROUP = { getprops:'mlb', record:'mlb', nba:'nba', stats:'tools', cheatsheet:'tools', notifications:'tools' };
 const SPORT_TO_GROUP = { baseball_mlb:'mlb', basketball_nba:'nba', americanfootball_nfl:'nfl' };
 
 function renderNav(activePage){
@@ -1091,6 +1099,185 @@ function buildNflInjuriesHtml(game){
   return `<div class="injuries-strip">
     <div class="injuries-head">🩺 Injury Report</div>
     <div class="injuries-body">${teamBlock(data.away)}${teamBlock(data.home)}</div>
+  </div>`;
+}
+
+// ---------- NFL "Full Breakdown" (ported from the retired standalone NFL
+// Dashboard page, so Board can show it per-game on demand instead of a
+// separate page with its own team pickers). Shares the exact nba-*/nfl-*
+// CSS classes the old Dashboard used — same look, just a different host. ----------
+const nflFmt1 = v => v === null || v === undefined ? '—' : (Math.round(v*10)/10).toFixed(1);
+const nflRankChip = (rank) => {
+  if(!rank) return '';
+  const cls = rank <= 10 ? 'nba-rank good' : rank >= 23 ? 'nba-rank bad' : 'nba-rank';
+  return `<span class="${cls}">#${rank}</span>`;
+};
+function nflBreakdownTeamHead(side){
+  return `<div class="nba-team-head">
+    ${side.team.logo ? `<img src="${escapeHtml(side.team.logo)}" width="26" height="26" alt="" loading="lazy">` : ''}
+    <strong>${escapeHtml(side.team.name)}</strong>
+    <span class="nba-record">${escapeHtml(side.record || '')}</span>
+  </div>`;
+}
+function nflBreakdownCard(title, bodyHtml, accent){
+  return `<div class="game-card nba-card${accent?' nba-card-accent':''}">
+    <div class="nba-card-title">${escapeHtml(title)}</div>
+    <div class="nba-card-body">${bodyHtml}</div>
+  </div>`;
+}
+function nflMatchupCardHtml(m){
+  const cross = (off, def, label) => `
+    <div class="nfl-cross-row">
+      <div class="nfl-cross-side">
+        <span class="nfl-cross-team">${escapeHtml(off.team.abbrev)}</span> ${label.off}
+        <div class="nfl-cross-val">${label.offVal(off)} ${nflRankChip(label.offRank(off))}</div>
+      </div>
+      <span class="nfl-cross-vs">vs</span>
+      <div class="nfl-cross-side">
+        <span class="nfl-cross-team">${escapeHtml(def.team.abbrev)}</span> ${label.def}
+        <div class="nfl-cross-val">${label.defVal(def)} ${nflRankChip(label.defRank(def))}</div>
+      </div>
+    </div>`;
+  const rush = { off:'Rush offense', def:'Points allowed', offVal:s=>nflFmt1(s.metrics.rushYpg)+' ypg', offRank:s=>s.ranks.rushYpg, defVal:s=>nflFmt1(s.pa)+' pa/g', defRank:s=>s.ranks.pa };
+  const pass = { off:'Pass offense', def:'Pass rush', offVal:s=>nflFmt1(s.metrics.passYpg)+' ypg', offRank:s=>s.ranks.passYpg, defVal:s=>nflFmt1(s.metrics.sacksMadePerGame)+' sacks/g', defRank:s=>s.ranks.sacksMadePerGame };
+  const rows = [
+    ['Total YPG', s=>`${nflFmt1(s.metrics.ypg)} ${nflRankChip(s.ranks.ypg)}`],
+    ['Yards/Play', s=>`${s.metrics.ypp !== null ? s.metrics.ypp.toFixed(2) : '—'}`],
+    ['Comp %', s=>`${nflFmt1(s.metrics.completionPct)}%`],
+    ['Time of Poss.', s=>s.metrics.topSecPerGame !== null ? `${Math.floor(s.metrics.topSecPerGame/60)}:${String(Math.round(s.metrics.topSecPerGame%60)).padStart(2,'0')}` : '—'],
+    ['Red Zone TD%', s=>`${nflFmt1(s.metrics.redZoneTdPct)}% ${nflRankChip(s.ranks.redZoneTdPct)}`],
+    ['Third Down %', s=>`${nflFmt1(s.metrics.thirdDownPct)}% ${nflRankChip(s.ranks.thirdDownPct)}`],
+    ['ANY/A', s=>`${s.metrics.anyA !== null ? s.metrics.anyA.toFixed(2) : '—'} ${nflRankChip(s.ranks.anyA)}`],
+    ['Explosive plays/g (20+ yds)', s=>`${nflFmt1(s.metrics.explosive)} ${nflRankChip(s.ranks.explosive)}`],
+    ['Sacks allowed/g', s=>`${nflFmt1(s.metrics.sacksAllowedPerGame)} ${nflRankChip(s.ranks.sacksAllowedPerGame)}`],
+    ['Takeaway INTs/g', s=>`${nflFmt1(s.metrics.intsCaughtPerGame)} ${nflRankChip(s.ranks.intsCaughtPerGame)}`],
+    ['Turnover margin/g', s=>`${s.metrics.turnoverMargin !== null ? (s.metrics.turnoverMargin>0?'+':'')+s.metrics.turnoverMargin.toFixed(2) : '—'} ${nflRankChip(s.ranks.turnoverMargin)}`]
+  ];
+  return nflBreakdownCard('Matchup Breakdown', `
+    ${cross(m.away, m.home, rush)}
+    ${cross(m.home, m.away, rush)}
+    ${cross(m.away, m.home, pass)}
+    ${cross(m.home, m.away, pass)}
+    <div class="table-scroll" style="margin-top:10px;"><table class="props-table"><thead>
+      <tr><th></th><th>${escapeHtml(m.away.team.abbrev)}</th><th>${escapeHtml(m.home.team.abbrev)}</th></tr></thead><tbody>
+      ${rows.map(([label, fn])=>`<tr><td style="font-weight:600;">${label}</td><td>${fn(m.away)}</td><td>${fn(m.home)}</td></tr>`).join('')}
+    </tbody></table></div>
+    <div class="hr-note" style="margin-top:8px;">Yards-allowed defensive splits aren't on any free feed — defense here is points allowed, pass rush, and takeaways.</div>`);
+}
+function nflWeatherCardHtml(m){
+  const w = m.weather;
+  let body;
+  if(!w){ body = '<div class="hr-note">Weather unavailable for this venue.</div>'; }
+  else if(w.dome){ body = `<div class="hr-note">Indoor stadium — weather doesn't affect play.</div>`; }
+  else {
+    const flags = [];
+    if((w.windMph ?? 0) >= 15) flags.push(['Passing downgrade', 'bad'], ['Running upgrade', 'good']);
+    if(w.rain || w.snow) flags.push(['Ball security matters', 'bad'], ['Running upgrade', 'good']);
+    body = `
+      <div class="nba-flags" style="margin-bottom:8px;">
+        <span class="nba-flag on">${w.tempF !== null ? Math.round(w.tempF) + '°F' : '—'}</span>
+        <span class="nba-flag${(w.windMph ?? 0) >= 15 ? ' on' : ''}">Wind ${w.windMph !== null ? Math.round(w.windMph) + ' mph' : '—'}</span>
+        <span class="nba-flag${w.rain ? ' on' : ''}">Rain</span>
+        <span class="nba-flag${w.snow ? ' on' : ''}">Snow</span>
+      </div>
+      ${flags.length
+        ? `<div class="nba-leans">${flags.map(([t])=>`<span class="nba-lean">${escapeHtml(t)}</span>`).join('')}</div>`
+        : '<div class="hr-note">Current conditions look neutral for both phases.</div>'}
+      <div class="hr-note" style="margin-top:6px;">Current conditions at ${escapeHtml(m.home.team.abbrev)}'s stadium — check again close to kickoff.</div>`;
+  }
+  return nflBreakdownCard('Weather', body);
+}
+function nflFormCardHtml(m){
+  const side = s => `
+    ${nflBreakdownTeamHead(s)}
+    <div class="hr-note">
+      ${s.schedule.last10 ? `Last 10 (straight-up): <strong>${escapeHtml(s.schedule.last10)}</strong>` : 'No completed games yet this season.'}
+      ${s.schedule.streak ? ` · ${escapeHtml(s.schedule.streak)}` : ''}
+      ${s.schedule.offBye ? ' · <span class="stat-pos">Off the bye</span>' : ''}
+    </div>`;
+  return nflBreakdownCard('Recent Form', `
+    <div class="nba-two-col">
+      <div>${side(m.away)}</div>
+      <div>${side(m.home)}</div>
+    </div>
+    <div class="hr-note" style="margin-top:8px;">Against-the-spread and over/under trend history requires paid closing-line data — form shown here is straight-up wins and losses from the schedule.</div>`);
+}
+function nflSummaryCardHtml(m){
+  const s = m.summary;
+  return nflBreakdownCard('Auto Game Read', `
+    <ul class="nba-summary-list">${s.insights.map(i=>`<li>${escapeHtml(i)}</li>`).join('')}</ul>
+    ${s.leans.length ? `<div class="nba-leans">${s.leans.map(l=>`<span class="nba-lean">${escapeHtml(l)}</span>`).join('')}</div>` : ''}
+    <div class="nba-confidence">Signal strength: <strong>${s.confidence}/10</strong></div>
+    <div class="hr-note" style="margin-top:6px;">${escapeHtml(s.note)}</div>`, true);
+}
+// Player Form (props context) — the one interactive panel. Caller supplies
+// rosters/analyzerPlayer/playerForm/gameId so this stays a pure render (all
+// the fetch/state-tracking lives in board.js, same as everything else here).
+function nflAnalyzerCardHtml(m, gameId, rosters, analyzerPlayerId, playerForm){
+  const options = [m.away, m.home].map(s=>{
+    const roster = (rosters[s.team.id] || []).filter(p=>['QB','RB','WR','TE'].includes(p.position));
+    return `<optgroup label="${escapeHtml(s.team.name)}">${roster.map(p=>`<option value="${escapeHtml(p.id)}" ${String(p.id)===String(analyzerPlayerId)?'selected':''}>${escapeHtml(p.name)} (${escapeHtml(p.position)})</option>`).join('')}</optgroup>`;
+  }).join('');
+  let body = `<div class="search-row" style="margin-bottom:10px;">
+    <select class="nba-team-select nfl-analyzer-select" data-game-id="${escapeHtml(gameId)}">${options || '<option>Loading rosters…</option>'}</select>
+    <button class="ghost nfl-analyzer-btn" data-game-id="${escapeHtml(gameId)}">Check form</button>
+  </div>`;
+  const pf = analyzerPlayerId && playerForm[analyzerPlayerId];
+  if(analyzerPlayerId && pf && pf !== 'loading'){
+    const p = Object.values(rosters).flat().find(x=>String(x.id)===String(analyzerPlayerId));
+    if(p) body += `<div class="nba-team-head" style="margin-bottom:8px;">${avatarUrlHtml(p.headshot, 32)}<strong>${escapeHtml(p.name)}</strong> <span class="nba-record">${escapeHtml(p.position)}</span></div>`;
+  }
+  if(pf === 'loading'){
+    body += `<div class="hr-note"><span class="spinner"></span> Pulling game logs (3 seasons for the head-to-head)…</div>`;
+  } else if(pf && pf.season.games){
+    const ydsLabels = [];
+    let seen = 0;
+    (pf.labels || []).forEach((l, i)=>{
+      if(l === 'YDS'){
+        seen++;
+        const before = pf.labels.slice(0, i).join(',');
+        ydsLabels.push(before.includes('CMP') && seen === 1 ? 'Pass YDS' : before.includes('REC') ? 'Rec YDS' : 'Rush YDS');
+      }
+    });
+    const vs = pf.vsOpponent;
+    const rows = [['Last 5', pf.last5], ['Season', pf.season]];
+    if(vs && vs.games) rows.push([`vs ${vs.abbrev || 'OPP'} (3 seasons)`, vs]);
+    body += `<div class="table-scroll"><table class="props-table"><thead>
+      <tr><th>Split</th><th>G</th>${ydsLabels[0]?`<th>${ydsLabels[0]}</th>`:''}${ydsLabels[1]?`<th>${ydsLabels[1]}</th>`:''}<th>TD</th>${pf.season.rec !== null ? '<th>REC</th>' : ''}</tr></thead><tbody>
+      ${rows.map(([label, r])=>`<tr><td style="font-weight:600;">${label}</td><td>${r.games}</td>${ydsLabels[0]?`<td>${nflFmt1(r.yds1)}</td>`:''}${ydsLabels[1]?`<td>${nflFmt1(r.yds2)}</td>`:''}<td>${nflFmt1(r.td1)}</td>${pf.season.rec !== null ? `<td>${nflFmt1(r.rec)}</td>` : ''}</tr>`).join('')}
+    </tbody></table></div>`;
+    if(vs && vs.meetings && vs.meetings.length){
+      body += `<div class="nfl-pos-group" style="margin-top:8px;">Last meetings vs ${escapeHtml(vs.abbrev || '')}</div>
+        <div class="table-scroll"><table class="props-table"><thead>
+        <tr><th>Date</th><th>Site</th>${ydsLabels[0]?`<th>${ydsLabels[0]}</th>`:''}<th>TD</th>${pf.season.rec !== null ? '<th>REC</th>' : ''}</tr></thead><tbody>
+        ${vs.meetings.map(mt=>`<tr><td>${escapeHtml(mt.date || '')}</td><td>${mt.home?'Home':'Away'}</td>${ydsLabels[0]?`<td>${mt.yds1 ?? '—'}</td>`:''}<td>${mt.td1 ?? '—'}</td>${pf.season.rec !== null ? `<td>${mt.rec ?? '—'}</td>` : ''}</tr>`).join('')}
+      </tbody></table></div>`;
+    } else if(vs){
+      body += `<div class="hr-note" style="margin-top:6px;">No meetings against this opponent in the last 3 seasons.</div>`;
+    }
+    if(vs && vs.games >= 2 && vs.yds1 !== null && pf.season.yds1 !== null){
+      const d = vs.yds1 - pf.season.yds1;
+      if(Math.abs(d) >= 15){
+        body += `<div class="nba-insight">Averages ${nflFmt1(Math.abs(d))} ${d > 0 ? 'MORE' : 'fewer'} yards against this opponent than his overall norm (${vs.games}-game sample).</div>`;
+      }
+    }
+    if(pf.last5.yds1 !== null && pf.season.yds1 !== null){
+      const d = pf.last5.yds1 - pf.season.yds1;
+      body += `<div class="nba-insight">${Math.abs(d) < 15 ? 'Producing right at season norm over the last 5.' : d > 0 ? `Averaging ${nflFmt1(d)} yards above season norm over the last 5 — favorable form for Over props.` : `Averaging ${nflFmt1(-d)} yards below season norm over the last 5 — caution on Overs.`}</div>`;
+    }
+  } else if(pf === null){
+    body += `<div class="hr-note">No game-log data for this player.</div>`;
+  }
+  body += `<div class="hr-note" style="margin-top:8px;">Prop lines and odds live right above in this game's player-props panel — this card is the form behind them.</div>`;
+  return nflBreakdownCard('Player Form (props context)', body);
+}
+function buildNflFullBreakdownHtml(m, gameId, rosters, analyzerPlayerId, playerForm){
+  return `<div class="nfl-breakdown">
+    ${nflSummaryCardHtml(m)}
+    ${nflMatchupCardHtml(m)}
+    ${nflWeatherCardHtml(m)}
+    ${nflFormCardHtml(m)}
+    ${nflAnalyzerCardHtml(m, gameId, rosters, analyzerPlayerId, playerForm)}
   </div>`;
 }
 

@@ -15,7 +15,10 @@
     pitchers: {},  // gameId -> {matched, home:{id,name}|null, away:{id,name}|null}
     altPropsCache: {},   // "gameId|marketKey" -> raw {market}_alternate response body, once loaded
     altPropsLoading: {}, // "gameId|marketKey" -> bool, while that fetch is in flight
-    altPropsView: {}     // "gameId|marketKey" -> 'standard' | 'alt' (default standard)
+    altPropsView: {},    // "gameId|marketKey" -> 'standard' | 'alt' (default standard)
+    nflTeamsByName: null,  // team display name -> {id, name, abbrev, logo}, fetched once (retired NFL Dashboard page's team picker, now resolved automatically)
+    nflBreakdownOpen: {},  // gameId -> bool
+    nflBreakdown: {}       // gameId -> {matchup, rosters:{}, analyzerPlayer, playerForm:{}}
   };
   let renderScheduled = false;
   // Coalesces multiple renderGames() requests (weather/pitchers post-fetches, audit 6.2)
@@ -146,8 +149,10 @@
   // a quiet in-context row instead of nav clutter.
   const RELATED_PAGES = {
     baseball_mlb: [['/getprops.html','🎯','Get Props'], ['/record.html','📈','Record']],
-    basketball_nba: [['/nba.html','📈','NBA Dashboard']],
-    americanfootball_nfl: [['/nfl.html','📈','NFL Dashboard']]
+    basketball_nba: [['/nba.html','📈','NBA Dashboard']]
+    // NFL Dashboard retired — its cards (Injury Center, Matchup Breakdown,
+    // Weather, Recent Form, Player Form) now live directly on each game's
+    // own card here instead of a separate page with its own team pickers.
   };
   function renderRelatedLinks(){
     const el = document.getElementById('relatedLinks');
@@ -594,14 +599,6 @@
     return `<span class="player-avatar player-avatar-empty" style="width:${size}px; height:${size}px;"></span>`;
   }
 
-  // Same markup as playerAvatarHtml, but for a ready-made URL — used by the
-  // props table, where the server already resolved a headshot per sport
-  // (MLB/NBA/NFL alike) instead of just an MLB id.
-  function avatarUrlHtml(url, size){
-    if(!url) return '';
-    return `<img class="player-avatar" src="${escapeHtml(url)}" width="${size}" height="${size}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
-  }
-
   // Both starting pitchers, one request per game (server-cached per date so
   // every card sharing a slate hits the same cached StatsAPI schedule fetch,
   // not a fresh one). Best-effort — a miss just means the card shows nothing.
@@ -838,6 +835,108 @@
     rerenderPropsHost(gameId);
   }
 
+  // Team-name -> ESPN id, fetched once (cached 24h server-side already) and
+  // reused for every game's breakdown — /api/nfl/matchup needs ids, but
+  // Board only ever has the Odds API's team-name strings.
+  async function nflTeamsByName(){
+    if(state.nflTeamsByName) return state.nflTeamsByName;
+    const res = await fetch('/api/nfl/teams');
+    const data = res.ok ? await res.json() : { teams: [] };
+    state.nflTeamsByName = {};
+    (data.teams || []).forEach(t => { state.nflTeamsByName[t.name] = t; });
+    return state.nflTeamsByName;
+  }
+
+  function renderNflBreakdownInto(hostEl, game){
+    const b = state.nflBreakdown[game.id];
+    if(!b || !b.matchup){ hostEl.innerHTML = '<div class="hr-note"><span class="spinner"></span> Building the breakdown — first run computes league-wide ranks (32 teams), later ones are cached and fast.</div>'; return; }
+    hostEl.innerHTML = buildNflFullBreakdownHtml(b.matchup, game.id, b.rosters, b.analyzerPlayer, b.playerForm);
+  }
+
+  async function loadNflBreakdown(game){
+    if(state.nflBreakdown[game.id]) return;
+    state.nflBreakdown[game.id] = { matchup: null, rosters: {}, analyzerPlayer: null, playerForm: {} };
+    const host = document.querySelector(`.nfl-breakdown-host[data-game-id="${CSS.escape(String(game.id))}"]`);
+    if(host) renderNflBreakdownInto(host, game);
+    try{
+      const teams = await nflTeamsByName();
+      const home = teams[game.home_team], away = teams[game.away_team];
+      if(!home || !away) throw new Error('Unknown team');
+      const res = await fetch(`/api/nfl/matchup?home=${encodeURIComponent(home.id)}&away=${encodeURIComponent(away.id)}`);
+      if(!res.ok) throw new Error('Matchup data unavailable');
+      const matchup = await res.json();
+      const b = state.nflBreakdown[game.id];
+      b.matchup = matchup;
+      const host2 = document.querySelector(`.nfl-breakdown-host[data-game-id="${CSS.escape(String(game.id))}"]`);
+      if(host2) renderNflBreakdownInto(host2, game);
+      // Rosters ride along after — needed for the Player Form dropdown, not
+      // worth blocking the rest of the breakdown on.
+      const [homeRoster, awayRoster] = await Promise.all([
+        fetch(`/api/nfl/roster?team=${encodeURIComponent(home.id)}`).then(r=>r.ok?r.json():{players:[]}).catch(()=>({players:[]})),
+        fetch(`/api/nfl/roster?team=${encodeURIComponent(away.id)}`).then(r=>r.ok?r.json():{players:[]}).catch(()=>({players:[]}))
+      ]);
+      b.rosters[home.id] = homeRoster.players || [];
+      b.rosters[away.id] = awayRoster.players || [];
+      const host3 = document.querySelector(`.nfl-breakdown-host[data-game-id="${CSS.escape(String(game.id))}"]`);
+      if(host3) renderNflBreakdownInto(host3, game);
+    }catch(e){
+      const b = state.nflBreakdown[game.id];
+      if(b) b.error = e.message || 'Could not load breakdown';
+      const host4 = document.querySelector(`.nfl-breakdown-host[data-game-id="${CSS.escape(String(game.id))}"]`);
+      if(host4) host4.innerHTML = `<div class="hr-note">Could not load the full breakdown right now — try again shortly.</div>`;
+    }
+  }
+
+  async function checkNflPlayerForm(gameId, playerId){
+    const b = state.nflBreakdown[gameId];
+    if(!b || !b.matchup) return;
+    b.analyzerPlayer = playerId;
+    if(!b.playerForm[playerId]){
+      b.playerForm[playerId] = 'loading';
+      const host = document.querySelector(`.nfl-breakdown-host[data-game-id="${CSS.escape(String(gameId))}"]`);
+      const game = state.games.find(g=>String(g.id)===String(gameId));
+      if(host && game) renderNflBreakdownInto(host, game);
+      const m = b.matchup;
+      const onAway = (b.rosters[m.away.team.id] || []).some(p => String(p.id) === String(playerId));
+      const oppId = onAway ? m.home.team.id : m.away.team.id;
+      try{
+        const res = await fetch(`/api/nfl/player-form?id=${encodeURIComponent(playerId)}&vsTeam=${encodeURIComponent(oppId)}`);
+        b.playerForm[playerId] = res.ok ? await res.json() : null;
+      }catch(e){ b.playerForm[playerId] = null; }
+    }
+    const host = document.querySelector(`.nfl-breakdown-host[data-game-id="${CSS.escape(String(gameId))}"]`);
+    const game = state.games.find(g=>String(g.id)===String(gameId));
+    if(host && game) renderNflBreakdownInto(host, game);
+  }
+
+  document.getElementById('gamesArea').addEventListener('click', (e)=>{
+    const breakdownToggle = e.target.closest('.nfl-breakdown-toggle');
+    if(breakdownToggle){
+      const gameId = breakdownToggle.dataset.gameId;
+      const isOpen = !!state.nflBreakdownOpen[gameId];
+      state.nflBreakdownOpen[gameId] = !isOpen;
+      if(!isOpen){
+        const game = state.games.find(g=>String(g.id)===String(gameId));
+        if(game && !state.nflBreakdown[gameId]) loadNflBreakdown(game);
+        const host = document.querySelector(`.nfl-breakdown-host[data-game-id="${CSS.escape(String(gameId))}"]`);
+        if(host){ host.style.display = 'block'; if(state.nflBreakdown[gameId]){ const g = state.games.find(x=>String(x.id)===String(gameId)); if(g) renderNflBreakdownInto(host, g); } }
+        breakdownToggle.textContent = 'Hide full breakdown';
+      } else {
+        const host = document.querySelector(`.nfl-breakdown-host[data-game-id="${CSS.escape(String(gameId))}"]`);
+        if(host) host.style.display = 'none';
+        breakdownToggle.textContent = 'Show full breakdown';
+      }
+      return;
+    }
+    const analyzerBtn = e.target.closest('.nfl-analyzer-btn');
+    if(analyzerBtn){
+      const gameId = analyzerBtn.dataset.gameId;
+      const select = document.querySelector(`.nfl-analyzer-select[data-game-id="${CSS.escape(String(gameId))}"]`);
+      if(select && select.value) checkNflPlayerForm(gameId, select.value);
+      return;
+    }
+  });
+
   document.getElementById('gamesArea').addEventListener('click', (e)=>{
     const lineTab = e.target.closest('.line-view-tab');
     if(lineTab){
@@ -977,6 +1076,32 @@
         const f = document.createElement('div');
         f.innerHTML = footballFieldTrackerSvg(sportKey, game, scoreEntry);
         card.appendChild(f.firstElementChild);
+      }
+
+      // NFL only: Matchup Breakdown / Weather / Recent Form / Player Form —
+      // everything the old standalone NFL Dashboard page showed, now folded
+      // into the game it's actually about instead of a separate page with
+      // its own team pickers. Opt-in per game (same reasoning as props: it's
+      // a heavier fetch — league-wide ranks across all 32 teams — not worth
+      // spending on every card by default).
+      if(sportKey === 'americanfootball_nfl'){
+        const toggleWrap = document.createElement('div');
+        toggleWrap.className = 'props-toggle';
+        const isOpen = !!state.nflBreakdownOpen[game.id];
+        const alreadyLoaded = !!state.nflBreakdown[game.id];
+        const toggleBtn = document.createElement('button');
+        toggleBtn.className = 'ghost nfl-breakdown-toggle';
+        toggleBtn.dataset.gameId = game.id;
+        toggleBtn.textContent = isOpen ? 'Hide full breakdown' : (alreadyLoaded ? 'Show full breakdown' : 'Load full breakdown');
+        toggleWrap.appendChild(toggleBtn);
+        card.appendChild(toggleWrap);
+
+        const breakdownHost = document.createElement('div');
+        breakdownHost.className = 'nfl-breakdown-host reveal' + (isOpen ? ' is-open' : '');
+        breakdownHost.dataset.gameId = game.id;
+        breakdownHost.style.display = isOpen ? 'block' : 'none';
+        card.appendChild(breakdownHost);
+        if(alreadyLoaded) renderNflBreakdownInto(breakdownHost, game);
       }
 
       // MLB only: Spread/Total/Moneyline grid like a sportsbook's own game-lines
