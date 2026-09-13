@@ -58,34 +58,35 @@
     const pool = poolFor(game.bookmakers);
     const candidates = [];
 
-    function consider(sideRows, oppRows, label, marketLabel){
+    function consider(sideRows, oppRows, label, marketLabel, meta){
       if(!sideRows.length || !oppRows.length) return;
       const fair = computeFairDecimal(sideRows, oppRows);
       if(!fair) return;
       const best = sideRows[0];
       const edge = americanToDecimal(best.odds) / fair - 1;
       if(edge < EDGE_THRESHOLD) return;
-      candidates.push({ matchup: `${game.away_team} @ ${game.home_team}`, side: label, marketLabel, edge, rows: sideRows, best });
+      candidates.push({ matchup: `${game.away_team} @ ${game.home_team}`, side: label, marketLabel, edge, rows: sideRows, best,
+        sport: sportKey, homeTeam: game.home_team, awayTeam: game.away_team, commenceTime: game.commence_time, meta });
     }
 
     const ml = { away: rowsFor(pool, 'h2h', game.away_team), home: rowsFor(pool, 'h2h', game.home_team) };
-    consider(ml.away, ml.home, `${game.away_team} to win`, 'Moneyline');
-    consider(ml.home, ml.away, `${game.home_team} to win`, 'Moneyline');
+    consider(ml.away, ml.home, `${game.away_team} to win`, 'Moneyline', { market:'h2h', selection: game.away_team, point: null });
+    consider(ml.home, ml.away, `${game.home_team} to win`, 'Moneyline', { market:'h2h', selection: game.home_team, point: null });
 
-    // Spreads/totals are only fetched for MLB and NFL (see server.js's
-    // gridSports) — same two sports the Game Lines grid shows them for.
-    if(sportKey === 'baseball_mlb' || sportKey === 'americanfootball_nfl'){
+    // Spreads/totals are fetched for MLB, NFL, NCAAF and NCAAB (see server.js's
+    // gridSports) — same sports the Game Lines grid shows them for.
+    if(['baseball_mlb', 'americanfootball_nfl', 'americanfootball_ncaaf', 'basketball_ncaab'].includes(sportKey)){
       const spread = { away: modalPointRows(pool, 'spreads', game.away_team), home: modalPointRows(pool, 'spreads', game.home_team) };
       if(spread.away.length && spread.home.length && spread.away[0].point != null){
         const p = spread.away[0].point;
-        consider(spread.away, spread.home, `${game.away_team} ${p>0?'+':''}${p}`, 'Spread');
+        consider(spread.away, spread.home, `${game.away_team} ${p>0?'+':''}${p}`, 'Spread', { market:'spreads', selection: game.away_team, point: p });
         const hp = spread.home[0].point;
-        consider(spread.home, spread.away, `${game.home_team} ${hp>0?'+':''}${hp}`, 'Spread');
+        consider(spread.home, spread.away, `${game.home_team} ${hp>0?'+':''}${hp}`, 'Spread', { market:'spreads', selection: game.home_team, point: hp });
       }
       const total = { over: modalPointRows(pool, 'totals', 'Over'), under: modalPointRows(pool, 'totals', 'Under') };
       if(total.over.length && total.under.length){
-        consider(total.over, total.under, `Over ${total.over[0].point}`, 'Total');
-        consider(total.under, total.over, `Under ${total.under[0].point}`, 'Total');
+        consider(total.over, total.under, `Over ${total.over[0].point}`, 'Total', { market:'totals', selection:'Over', point: total.over[0].point });
+        consider(total.under, total.over, `Under ${total.under[0].point}`, 'Total', { market:'totals', selection:'Under', point: total.under[0].point });
       }
     }
     return candidates;
@@ -131,6 +132,8 @@
       row.querySelector('.value-add-btn').addEventListener('click', ()=>{
         const c = candidates[i];
         addLegToSlip({ id: Date.now()+Math.random(), matchup: c.matchup, side: c.side, rows: c.rows });
+        trackBet({ sport: c.sport, homeTeam: c.homeTeam, awayTeam: c.awayTeam, commenceTime: c.commenceTime,
+          matchup: c.matchup, market: c.meta.market, selection: c.meta.selection, point: c.meta.point });
         showToast('Added ✓');
         flashEl(row);
       });
@@ -990,14 +993,22 @@
 
         if(![ml.away, ml.home, spread.away, spread.home, total.over, total.under].some(r=>r.length)) return false;
 
-        const addLeg = (side, rows, cellEl)=>{
+        const addLeg = (side, rows, cellEl, meta)=>{
           if(!rows.length) return;
           addLegToSlip({ id: Date.now()+Math.random(), matchup: `${awayTeam} @ ${homeTeam}`, side, rows });
+          // F5 (first-5-innings) legs aren't tracked — grading needs the
+          // through-5 score, which ESPN's scoreboard doesn't expose, only the
+          // final. Only full-game legs are actually gradable server-side.
+          if(meta && !suffix){
+            trackBet({ sport: sportKey, homeTeam: game.home_team, awayTeam: game.away_team,
+              commenceTime: game.commence_time, matchup: `${awayTeam} @ ${homeTeam}`,
+              market: meta.market, selection: meta.selection, point: meta.point });
+          }
           showToast('Added ✓');
           flashEl(cellEl);
         };
 
-        function cell(rows, lineLabel, side){
+        function cell(rows, lineLabel, side, meta){
           const div = document.createElement('div');
           if(!rows.length){
             div.className = 'gl-cell gl-empty';
@@ -1008,7 +1019,7 @@
           div.title = 'Tap to add to Slip';
           const best = rows[0];
           div.innerHTML = `${lineLabel ? `<div class="gl-line">${escapeHtml(lineLabel)}</div>` : ''}<div class="gl-price ${Number(best.odds)>0?'pos':''}">${fmtAmerican(best.odds)}</div>`;
-          div.addEventListener('click', ()=>addLeg(side, rows, div));
+          div.addEventListener('click', ()=>addLeg(side, rows, div, meta));
           return div;
         }
 
@@ -1028,10 +1039,13 @@
           name.textContent = team;
           grid.appendChild(name);
           const spreadLabel = spreadRows.length ? fmtAmerican(spreadRows[0].point) : '';
-          grid.appendChild(cell(spreadRows, spreadLabel, `${team}${tag} ${spreadLabel}`.trim()));
+          grid.appendChild(cell(spreadRows, spreadLabel, `${team}${tag} ${spreadLabel}`.trim(),
+            spreadRows.length ? { market:'spreads', selection: team, point: spreadRows[0].point } : null));
           const totalLabel = totalRows.length ? (totalSide === 'Over' ? 'O ' : 'U ') + totalRows[0].point : '';
-          grid.appendChild(cell(totalRows, totalLabel, `${totalSide} ${totalRows.length ? totalRows[0].point : ''}${tag}`.trim()));
-          grid.appendChild(cell(mlRows, '', `${team}${tag}`));
+          grid.appendChild(cell(totalRows, totalLabel, `${totalSide} ${totalRows.length ? totalRows[0].point : ''}${tag}`.trim(),
+            totalRows.length ? { market:'totals', selection: totalSide, point: totalRows[0].point } : null));
+          grid.appendChild(cell(mlRows, '', `${team}${tag}`,
+            mlRows.length ? { market:'h2h', selection: team, point: null } : null));
         }
         teamRow(awayTeam, spread.away, total.over, 'Over', ml.away);
         teamRow(homeTeam, spread.home, total.under, 'Under', ml.home);
@@ -1085,6 +1099,11 @@
               side: sideLabel,
               rows: rows
             });
+            if(marketKey === 'h2h'){
+              trackBet({ sport: sportKey, homeTeam: game.home_team, awayTeam: game.away_team,
+                commenceTime: game.commence_time, matchup: `${game.away_team} @ ${game.home_team}`,
+                market: 'h2h', selection: team, point: null });
+            }
             showToast('Added ✓');
             if(rowEl) flashEl(rowEl);
           };

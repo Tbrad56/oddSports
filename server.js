@@ -2218,6 +2218,7 @@ function createApp({
       for (const p of body.picks) {
         store.logPick({
           id: `${eventId}|${p.player}|${p.market}|${p.line}|${p.side}`,
+          kind: 'prop',
           ts: new Date(now()).toISOString(),
           eventId,
           gameDate: etDate,
@@ -2236,12 +2237,16 @@ function createApp({
     res.json(body);
   }
 
+  const MARKET_NAME = { h2h: 'Moneyline', spreads: 'Spread', totals: 'Total' };
   function notifyBetGraded(pick, actual, result){
     if (!notifyStore.prefs().betGraded) return;
     const RESULT_LABEL = { hit: 'WON', miss: 'LOST', push: 'PUSH', void: 'VOID' };
+    const desc = pick.kind === 'bet'
+      ? `${pick.selection}${pick.point != null ? ' ' + (pick.point > 0 ? '+' : '') + pick.point : ''} — ${MARKET_NAME[pick.market] || pick.market}`
+      : `${pick.player} — ${pick.side} ${pick.line}`;
     const body = actual == null
-      ? `${pick.player} — ${pick.side} ${pick.line}: ${RESULT_LABEL[result] || result} (no stat found)`
-      : `${pick.player} — ${pick.side} ${pick.line}: ${RESULT_LABEL[result] || result} (actual ${actual})`;
+      ? `${desc}: ${RESULT_LABEL[result] || result} (no stat found)`
+      : `${desc}: ${RESULT_LABEL[result] || result} (actual ${actual})`;
     sendPushToAll({ title: 'Bet graded', body, tag: 'bet-graded-' + pick.id, url: '/record.html' })
       .catch(e => console.error(`push: bet-graded notify failed (${e && e.message})`));
   }
@@ -2337,6 +2342,54 @@ function createApp({
     }
   }
 
+  // Grades moneyline/spread/total slip picks — the bet types Record couldn't
+  // see at all before, since the Slip is client-only localStorage. Simpler
+  // than MLB prop grading: getScores() already tells us `completed` and the
+  // final score directly, no date/StatsAPI juggling needed. Matches by team
+  // name (not gameId — The Odds API and ESPN use different id spaces
+  // entirely, same reason common.js's findScoreFor matches on names).
+  function teamNameMatch(a, b){
+    return (a || '').trim().toLowerCase() === (b || '').trim().toLowerCase();
+  }
+  async function gradePendingBets(){
+    const pendingBets = store.pending().filter(p => p.kind === 'bet');
+    if (!pendingBets.length) return;
+    const bySport = {};
+    pendingBets.forEach(p => (bySport[p.sport] = bySport[p.sport] || []).push(p));
+    for (const sport of Object.keys(bySport)) {
+      let games;
+      try { games = await getScores(sport); } catch (e) { continue; }
+      for (const p of bySport[sport]) {
+        const game = games.find(g => teamNameMatch(g.home_team, p.homeTeam) && teamNameMatch(g.away_team, p.awayTeam));
+        if (!game || !game.completed || !game.scores) continue;
+        const homeEntry = game.scores.find(s => teamNameMatch(s.name, game.home_team));
+        const awayEntry = game.scores.find(s => teamNameMatch(s.name, game.away_team));
+        const homeScore = Number(homeEntry && homeEntry.score);
+        const awayScore = Number(awayEntry && awayEntry.score);
+        if (!Number.isFinite(homeScore) || !Number.isFinite(awayScore)) continue;
+
+        const isHome = teamNameMatch(p.selection, p.homeTeam);
+        const mine = isHome ? homeScore : awayScore;
+        const theirs = isHome ? awayScore : homeScore;
+        let result, actual;
+        if (p.market === 'h2h') {
+          actual = mine - theirs;
+          result = actual === 0 ? 'push' : actual > 0 ? 'hit' : 'miss';
+        } else if (p.market === 'spreads') {
+          actual = (mine - theirs) + p.point;
+          result = actual === 0 ? 'push' : actual > 0 ? 'hit' : 'miss';
+        } else if (p.market === 'totals') {
+          actual = homeScore + awayScore;
+          if (p.selection === 'Over') result = actual === p.point ? 'push' : actual > p.point ? 'hit' : 'miss';
+          else result = actual === p.point ? 'push' : actual < p.point ? 'hit' : 'miss';
+        } else continue;
+
+        const gradedTs = new Date(now()).toISOString();
+        if (store.grade(p.id, actual, result, gradedTs)) notifyBetGraded(p, actual, result);
+      }
+    }
+  }
+
   if (enableSweep) {
     const boot = setTimeout(() => gradePendingPicks().catch(e => console.error(`sweep failed: ${e.message}`)), 60 * 1000);
     boot.unref();
@@ -2347,10 +2400,43 @@ function createApp({
     watchBoot.unref();
     const watchInterval = setInterval(() => pollWatchlist().catch(e => console.error(`watchlist poll failed: ${e.message}`)), 60 * 1000);
     watchInterval.unref();
+
+    // Bet grading can happen same-day (just needs `completed` + final score,
+    // unlike MLB props' next-day StatsAPI dependency), so it runs on the same
+    // 60s cadence as the watchlist poll instead of the 6h prop sweep.
+    const betBoot = setTimeout(() => gradePendingBets().catch(e => console.error(`bet grading failed: ${e.message}`)), 20 * 1000);
+    betBoot.unref();
+    const betInterval = setInterval(() => gradePendingBets().catch(e => console.error(`bet grading failed: ${e.message}`)), 60 * 1000);
+    betInterval.unref();
   }
 
   app.get('/api/record', (req, res) => {
     res.json(computeRecord(store.all()));
+  });
+
+  // Logs a moneyline/spread/total leg the moment it's added to the Slip, so
+  // Record (and the "Bet graded" push) can see it — previously the Slip was
+  // pure client localStorage and the server never knew these existed at all.
+  app.post('/api/track-bet', (req, res) => {
+    const { sport, homeTeam, awayTeam, commenceTime, matchup, market, selection, point } = req.body || {};
+    if (!SPORTS.has(sport)) return res.status(400).json({ error: 'Unknown sport' });
+    if (typeof homeTeam !== 'string' || !homeTeam || typeof awayTeam !== 'string' || !awayTeam) {
+      return res.status(400).json({ error: 'homeTeam and awayTeam are required' });
+    }
+    if (!['h2h', 'spreads', 'totals'].includes(market)) return res.status(400).json({ error: 'Unsupported market' });
+    if (typeof selection !== 'string' || !selection) return res.status(400).json({ error: 'selection is required' });
+    if (market !== 'h2h' && typeof point !== 'number') return res.status(400).json({ error: 'point is required for spreads/totals' });
+    const pointKey = market === 'h2h' ? '' : point;
+    const id = `bet|${sport}|${homeTeam}|${awayTeam}|${market}|${selection}|${pointKey}`;
+    const gameDate = commenceTime ? new Date(commenceTime).toISOString().slice(0, 10) : null;
+    const logged = store.logPick({
+      id, kind: 'bet',
+      ts: new Date(now()).toISOString(),
+      sport, homeTeam, awayTeam, commenceTime: commenceTime || null, gameDate,
+      matchup: matchup || `${awayTeam} @ ${homeTeam}`,
+      market, selection, point: market === 'h2h' ? null : point
+    });
+    res.json({ ok: true, logged });
   });
 
   // ---------- Push notifications: subscribe/unsubscribe, watchlist, prefs ----------
@@ -2400,6 +2486,7 @@ function createApp({
 
   app.locals.store = store;
   app.locals.gradePendingPicks = gradePendingPicks;
+  app.locals.gradePendingBets = gradePendingBets;
 
   app.use(express.static(path.join(__dirname, 'public')));
   return app;
