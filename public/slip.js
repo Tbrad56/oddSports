@@ -22,22 +22,33 @@
     return filterToMyBooks(leg.rows, r=>r.bookKey);
   }
   // Resolves (and persists, if unset) which book a leg is placed with.
-  function selectedRowFor(leg){
+  // First pick ever: default to whichever book best covers the WHOLE slip
+  // (the same ranking the "Parlay at" chips use), not this leg's own best
+  // price in isolation — that in-isolation default was exactly what
+  // fragmented multi-leg slips across different books before you ever got
+  // a say. Falls back to this leg's best price only when no book in common
+  // with the rest of the slip exists (or it's the only leg).
+  function selectedRowFor(leg, slip){
     const pickList = pickListFor(leg);
     let row = pickList.find(r=>r.bookKey===leg.selectedBookKey);
     if(!row){
-      row = pickList[0];
+      const coverage = slip ? computeBookCoverage(slip) : [];
+      const shared = coverage.find(c => pickList.some(r=>r.bookKey===c.bookKey));
+      row = (shared && pickList.find(r=>r.bookKey===shared.bookKey)) || pickList[0];
       updateLegBook(leg.id, row.bookKey);
     }
     return row;
   }
 
   // Every book that quotes at least one leg, ranked so books covering EVERY
-  // leg (a real single-book parlay) come first, best combined price first
-  // among those — but a book missing only a leg or two still shows, ranked
-  // by how much it covers, so there's a useful default even when nothing
-  // covers 100%. Checks every book that actually appears on the slip, not a
-  // hardcoded shortlist of two or three.
+  // leg (a real single-book parlay) come first — but a book missing only a
+  // leg or two still shows, ranked by how much it covers, so there's a
+  // useful default even when nothing covers 100%. Checks every book that
+  // actually appears on the slip, not a hardcoded shortlist of two or three.
+  // Among books with equal coverage, FanDuel wins, then DraftKings, then
+  // best combined price — those two are the default/majority preference,
+  // not just whichever happens to price a hair better.
+  const BOOK_PRIORITY = { fanduel: 0, draftkings: 1 };
   function computeBookCoverage(slip){
     const bookKeys = new Set();
     slip.forEach(leg => pickListFor(leg).forEach(r => bookKeys.add(r.bookKey)));
@@ -49,7 +60,12 @@
       });
       return { bookKey, count, decimal };
     });
-    coverage.sort((a,b)=> b.count - a.count || b.decimal - a.decimal);
+    coverage.sort((a,b)=>{
+      if(b.count !== a.count) return b.count - a.count;
+      const pa = BOOK_PRIORITY[a.bookKey] ?? 99, pb = BOOK_PRIORITY[b.bookKey] ?? 99;
+      if(pa !== pb) return pa - pb;
+      return b.decimal - a.decimal;
+    });
     return coverage;
   }
 
@@ -101,7 +117,7 @@
 
     slip.forEach(leg=>{
       const pickList = pickListFor(leg);
-      const selected = selectedRowFor(leg);
+      const selected = selectedRowFor(leg, slip);
       const div = document.createElement('div');
       div.className = 'leg-item';
       div.innerHTML = `
@@ -271,7 +287,7 @@
     const slip = getSlip();
     const lines = [`${bookName} parlay slip:`];
     slip.forEach(leg=>{
-      const row = leg.rows.find(r=>r.bookKey===bookKey) || selectedRowFor(leg);
+      const row = leg.rows.find(r=>r.bookKey===bookKey) || selectedRowFor(leg, slip);
       lines.push(`• ${leg.side} (${leg.matchup}) — ${fmtAmerican(row.odds)}`);
     });
     return lines;
