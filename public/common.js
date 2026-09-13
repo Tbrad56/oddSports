@@ -366,12 +366,13 @@ const NAV_GROUPS = [
   ]},
   { key:'tools', icon:'🧰', label:'Tools', children:[
     ['stats','/stats.html','🔎','Stats'],
-    ['cheatsheet','/cheatsheet.html','📋','Cheatsheet']
+    ['cheatsheet','/cheatsheet.html','📋','Cheatsheet'],
+    ['notifications','/notifications.html','🔔','Notifications']
   ]},
   { key:'slip', href:'/slip.html', icon:'🎟️', label:'Slip', badge:true }
 ];
 // Which group lights up for a page not itself in the group list.
-const PAGE_TO_GROUP = { getprops:'mlb', record:'mlb', nba:'nba', nfl:'nfl', stats:'tools', cheatsheet:'tools' };
+const PAGE_TO_GROUP = { getprops:'mlb', record:'mlb', nba:'nba', nfl:'nfl', stats:'tools', cheatsheet:'tools', notifications:'tools' };
 const SPORT_TO_GROUP = { baseball_mlb:'mlb', basketball_nba:'nba', americanfootball_nfl:'nfl' };
 
 function renderNav(activePage){
@@ -1217,4 +1218,39 @@ async function renderSeasonBanner(sportKey){
     text = `Off season — last window ran ${fmtSeasonDate(st.startDate)} to ${fmtSeasonDate(st.endDate)}`;
   }
   host.innerHTML = `<div class="season-banner${st.inSeason?' in-season':''}">${text}</div>`;
+}
+
+// ---------- push notifications ----------
+function urlBase64ToUint8Array(base64String){
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+function pushSupported(){
+  return 'serviceWorker' in navigator && 'PushManager' in window && typeof Notification !== 'undefined';
+}
+async function getPushSubscription(){
+  if(!pushSupported()) return null;
+  const reg = await navigator.serviceWorker.getRegistration('/sw.js');
+  if(!reg) return null;
+  return reg.pushManager.getSubscription();
+}
+async function subscribeToPush(){
+  if(!pushSupported()) return { ok:false, reason:'unsupported' };
+  const perm = await Notification.requestPermission();
+  if(perm !== 'granted') return { ok:false, reason:'denied' };
+  const keyRes = await fetch('/api/push/vapid-public-key');
+  if(!keyRes.ok) return { ok:false, reason:'not_configured' };
+  const { key } = await keyRes.json();
+  const reg = await navigator.serviceWorker.register('/sw.js');
+  const sub = await reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey: urlBase64ToUint8Array(key) });
+  await fetch('/api/push/subscribe', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(sub) });
+  return { ok:true };
+}
+async function unsubscribeFromPush(){
+  const sub = await getPushSubscription();
+  if(!sub) return;
+  await fetch('/api/push/unsubscribe', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ endpoint: sub.endpoint }) });
+  await sub.unsubscribe();
 }

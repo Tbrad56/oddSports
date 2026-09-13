@@ -936,3 +936,102 @@ test('pitchers: schedule StatsAPI failure -> 502 Stats service unavailable', asy
   assert.equal(res.status, 502);
   assert.equal(res.body.error, 'Stats service unavailable');
 });
+
+// ---------- watchlist + push notifications ----------
+test('watchlist: starts empty with default prefs', async () => {
+  const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
+  const res = await request(app).get('/api/watchlist');
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, { watchlist: [], prefs: { gameStart: true, betGraded: true } });
+});
+
+test('watchlist: rejects an unknown sport, nothing added', async () => {
+  const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
+  const res = await request(app).post('/api/watchlist').send({ sport: 'basketball_wnba', team: 'Aces' });
+  assert.equal(res.status, 400);
+  const list = await request(app).get('/api/watchlist');
+  assert.deepEqual(list.body.watchlist, []);
+});
+
+test('watchlist: rejects a missing team, nothing added', async () => {
+  const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
+  const res = await request(app).post('/api/watchlist').send({ sport: 'americanfootball_ncaaf' });
+  assert.equal(res.status, 400);
+});
+
+test('watchlist: add then remove a team round-trips cleanly', async () => {
+  const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
+  const add = await request(app).post('/api/watchlist').send({ sport: 'americanfootball_ncaaf', team: 'Ohio State' });
+  assert.equal(add.status, 200);
+  assert.deepEqual(add.body.watchlist, [{ sport: 'americanfootball_ncaaf', team: 'Ohio State' }]);
+
+  const dupe = await request(app).post('/api/watchlist').send({ sport: 'americanfootball_ncaaf', team: 'Ohio State' });
+  assert.deepEqual(dupe.body.watchlist, [{ sport: 'americanfootball_ncaaf', team: 'Ohio State' }]); // no duplicate
+
+  const del = await request(app).delete('/api/watchlist').send({ sport: 'americanfootball_ncaaf', team: 'Ohio State' });
+  assert.equal(del.status, 200);
+  assert.deepEqual(del.body.watchlist, []);
+});
+
+test('notify prefs: toggling persists and is reflected on GET /api/watchlist', async () => {
+  const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
+  const res = await request(app).post('/api/notify/prefs').send({ gameStart: false });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.prefs, { gameStart: false, betGraded: true });
+  const list = await request(app).get('/api/watchlist');
+  assert.deepEqual(list.body.prefs, { gameStart: false, betGraded: true });
+});
+
+test('push: vapid-public-key is 503 when VAPID env vars are absent', async () => {
+  const saved = { pub: process.env.VAPID_PUBLIC_KEY, priv: process.env.VAPID_PRIVATE_KEY };
+  delete process.env.VAPID_PUBLIC_KEY; delete process.env.VAPID_PRIVATE_KEY;
+  try {
+    const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
+    const res = await request(app).get('/api/push/vapid-public-key');
+    assert.equal(res.status, 503);
+  } finally {
+    if (saved.pub !== undefined) process.env.VAPID_PUBLIC_KEY = saved.pub;
+    if (saved.priv !== undefined) process.env.VAPID_PRIVATE_KEY = saved.priv;
+  }
+});
+
+test('push: malformed VAPID keys disable push instead of crashing app boot', async () => {
+  const saved = { pub: process.env.VAPID_PUBLIC_KEY, priv: process.env.VAPID_PRIVATE_KEY };
+  process.env.VAPID_PUBLIC_KEY = 'not-a-real-key';
+  process.env.VAPID_PRIVATE_KEY = 'also-not-real';
+  try {
+    const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
+    const res = await request(app).get('/api/push/vapid-public-key');
+    assert.equal(res.status, 503);
+  } finally {
+    if (saved.pub !== undefined) process.env.VAPID_PUBLIC_KEY = saved.pub; else delete process.env.VAPID_PUBLIC_KEY;
+    if (saved.priv !== undefined) process.env.VAPID_PRIVATE_KEY = saved.priv; else delete process.env.VAPID_PRIVATE_KEY;
+  }
+});
+
+test('push: valid VAPID keys serve the public key', async () => {
+  const webpush = require('web-push');
+  const keys = webpush.generateVAPIDKeys();
+  const saved = { pub: process.env.VAPID_PUBLIC_KEY, priv: process.env.VAPID_PRIVATE_KEY };
+  process.env.VAPID_PUBLIC_KEY = keys.publicKey;
+  process.env.VAPID_PRIVATE_KEY = keys.privateKey;
+  try {
+    const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
+    const res = await request(app).get('/api/push/vapid-public-key');
+    assert.equal(res.status, 200);
+    assert.equal(res.body.key, keys.publicKey);
+  } finally {
+    if (saved.pub !== undefined) process.env.VAPID_PUBLIC_KEY = saved.pub; else delete process.env.VAPID_PUBLIC_KEY;
+    if (saved.priv !== undefined) process.env.VAPID_PRIVATE_KEY = saved.priv; else delete process.env.VAPID_PRIVATE_KEY;
+  }
+});
+
+test('push: subscribe requires an endpoint, then unsubscribe accepts it back', async () => {
+  const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
+  const bad = await request(app).post('/api/push/subscribe').send({ keys: {} });
+  assert.equal(bad.status, 400);
+  const ok = await request(app).post('/api/push/subscribe').send({ endpoint: 'https://push.example.com/abc', keys: { p256dh: 'x', auth: 'y' } });
+  assert.equal(ok.status, 200);
+  const unsub = await request(app).post('/api/push/unsubscribe').send({ endpoint: 'https://push.example.com/abc' });
+  assert.equal(unsub.status, 200);
+});
