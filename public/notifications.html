@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LineWatch — Notifications</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Teko:wght@500;600;700&family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="app-header">
+  <div class="header-top">
+    <div class="brand">
+      <h1>Line<span>Watch</span></h1>
+      <div class="tag">All odds everywhere</div>
+    </div>
+    <div class="header-controls"></div>
+  </div>
+  <div class="ticker-wrap">
+    <div class="ticker-track" id="tickerTrack" aria-hidden="true">
+      <span>Loading the ticker →</span>
+    </div>
+  </div>
+</header>
+
+<div class="layout no-side">
+  <nav class="nav-rail" id="navRail"></nav>
+
+  <main>
+    <h2 class="hero-line">Notifications</h2>
+    <div class="hero-sub">Real push alerts — arrive even when LineWatch isn't open. Bet grading and a team watchlist, your call on what actually pings you.</div>
+    <div id="errorArea"></div>
+
+    <div class="panel" id="pushStatusPanel">
+      <h2>Push notifications</h2>
+      <div id="pushStatusBody" class="settings-hint">Checking status…</div>
+      <button class="primary" id="pushToggleBtn" style="margin-top:10px;">Enable notifications</button>
+    </div>
+
+    <div class="panel" id="prefsPanel" style="margin-top:16px;">
+      <h2>What to notify me about</h2>
+      <label class="notify-pref-row">
+        <input type="checkbox" id="prefBetGraded">
+        <div>
+          <div class="notify-pref-title">Bet graded</div>
+          <div class="notify-pref-sub">A pick you logged from Get Props finishes grading (won/lost/push).</div>
+        </div>
+      </label>
+      <label class="notify-pref-row">
+        <input type="checkbox" id="prefGameStart">
+        <div>
+          <div class="notify-pref-title">Kickoff / first pitch reminder</div>
+          <div class="notify-pref-sub">~15 minutes before a game starts, for any team on your watchlist below.</div>
+        </div>
+      </label>
+    </div>
+
+    <div class="panel" id="watchlistPanel" style="margin-top:16px;">
+      <h2>Team watchlist</h2>
+      <div class="settings-hint" style="margin-bottom:10px;">
+        Not tied to a bet — add any team in any sport we track, and get a push the moment <strong style="color:var(--text-dim);">that team</strong> scores. Handy for college sports where you can't prop-bet individual players but still want to know when your team lights up.
+      </div>
+      <div class="watchlist-add-row">
+        <select id="watchSportSelect"></select>
+        <input type="text" id="watchTeamInput" placeholder="Team name (e.g. Ohio State, Lakers, Chiefs)…" autocomplete="off">
+        <button class="primary" id="watchAddBtn">Add</button>
+      </div>
+      <div id="watchlistBody" style="margin-top:12px;"></div>
+    </div>
+  </main>
+</div>
+
+<footer class="disclaimer">
+  <strong>Informational tool only.</strong> Notifications are a convenience layer on top of public score/odds data and can be late or wrong if a source is delayed — never rely on them for time-sensitive betting decisions. Must be 21+ and located in a state where sports betting is legal.
+</footer>
+
+<script src="common.js"></script>
+<script src="notifications.js"></script>
+</body>
+</html>

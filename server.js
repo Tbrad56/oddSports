@@ -2,9 +2,11 @@ require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const crypto = require('crypto');
-const { analyzeProp, rankPicks } = require('./analysis');
+const { analyzeProp, rankPicks, classifyBattingGame } = require('./analysis');
 const { createStore, computeRecord } = require('./store');
+const { createNotifyStore } = require('./notify');
 const { createAuthStore } = require('./auth');
+const webpush = require('web-push');
 const {
   generateRegistrationOptions, verifyRegistrationResponse,
   generateAuthenticationOptions, verifyAuthenticationResponse
@@ -71,6 +73,36 @@ function createApp({
   const statsCache = new Map(); // statsapi path -> {body, expires}
   const analysisCache = new Map(); // eventId -> {body, expires}
   const store = createStore({ dataDir });
+  const notifyStore = createNotifyStore({ dataDir });
+  // Push is a bonus feature, not core to the app — missing OR malformed VAPID
+  // keys just mean subscribe/send quietly no-op instead of the whole server
+  // refusing to boot (mirrors how MLB weather/statcast overlays degrade
+  // gracefully). web-push validates key format synchronously and throws.
+  let pushEnabled = !!(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
+  if (pushEnabled) {
+    try {
+      webpush.setVapidDetails(
+        process.env.VAPID_SUBJECT || 'mailto:admin@example.com',
+        process.env.VAPID_PUBLIC_KEY,
+        process.env.VAPID_PRIVATE_KEY
+      );
+    } catch (e) {
+      console.error(`push: invalid VAPID keys, notifications disabled (${e.message})`);
+      pushEnabled = false;
+    }
+  }
+  async function sendPushToAll(payload){
+    if (!pushEnabled) return;
+    const body = JSON.stringify(payload);
+    for (const sub of notifyStore.subscriptions()) {
+      try {
+        await webpush.sendNotification(sub, body);
+      } catch (e) {
+        if (e && (e.statusCode === 404 || e.statusCode === 410)) notifyStore.removeSubscription(sub.endpoint);
+        else console.error(`push: send failed (${e && e.message})`);
+      }
+    }
+  }
 
   // ---------- Auth gate: single-user password + optional WebAuthn (Face ID /
   // Touch ID / Windows Hello) lock screen. Opt-in via enableAuth so every
@@ -446,7 +478,11 @@ function createApp({
     return splits.slice().reverse().map(s => ({
       value: Number((s.stat || {})[statName] || 0),
       started: Number((s.stat || {}).gamesStarted || 0) > 0,
-      date: s.date
+      date: s.date,
+      // Full per-game hitting line (same gameLog call, no extra fetch) — lets
+      // the recent-form dot timeline classify HR/XBH/1B/BB/OUT regardless of
+      // which specific stat this prop's window is built around.
+      stat: s.stat || {}
     }));
   }
 
@@ -2151,7 +2187,10 @@ function createApp({
         if (cfg.startsOnly) games = games.filter(g => g.started);
         const values = games.map(g => g.value);
         if (!values.length) { skipped.add(prop.player); continue; }
-        const pick = analyzeProp(prop, { recentValues: values.slice(0, cfg.window), seasonValues: values });
+        const recentOutcomes = cfg.group === 'hitting'
+          ? games.slice(0, cfg.window).map(g => classifyBattingGame(g.stat))
+          : null;
+        const pick = analyzeProp(prop, { recentValues: values.slice(0, cfg.window), seasonValues: values, recentOutcomes });
         if (pick) {
           if (cfg.group === 'hitting' && lineupStatus === 'pending') {
             pick.analysis.flags.push('lineup_unconfirmed');
@@ -2194,6 +2233,78 @@ function createApp({
     res.json(body);
   }
 
+  function notifyBetGraded(pick, actual, result){
+    if (!notifyStore.prefs().betGraded) return;
+    const RESULT_LABEL = { hit: 'WON', miss: 'LOST', push: 'PUSH', void: 'VOID' };
+    const body = actual == null
+      ? `${pick.player} — ${pick.side} ${pick.line}: ${RESULT_LABEL[result] || result} (no stat found)`
+      : `${pick.player} — ${pick.side} ${pick.line}: ${RESULT_LABEL[result] || result} (actual ${actual})`;
+    sendPushToAll({ title: 'Bet graded', body, tag: 'bet-graded-' + pick.id, url: '/record.html' })
+      .catch(e => console.error(`push: bet-graded notify failed (${e && e.message})`));
+  }
+
+  // Team watchlist poller — independent of any bet: alerts when a watched
+  // team's own score increases (not just "the game state changed"), and once
+  // per game for a kickoff-soon reminder. Reuses the same free ESPN getScores()
+  // the Board page's live-score poll already relies on — no extra API cost.
+  async function pollWatchlist(){
+    const watchlist = notifyStore.watchlist();
+    if (!watchlist.length) return;
+    const bySport = {};
+    watchlist.forEach(w => (bySport[w.sport] = bySport[w.sport] || []).push(w.team));
+    for (const sport of Object.keys(bySport)) {
+      let games;
+      try { games = await getScores(sport); } catch (e) { continue; }
+      const teams = bySport[sport];
+      for (const game of games) {
+        const watchedHome = teams.find(t => game.home_team.toLowerCase().includes(t.toLowerCase()));
+        const watchedAway = teams.find(t => game.away_team.toLowerCase().includes(t.toLowerCase()));
+        if (!watchedHome && !watchedAway) continue;
+
+        if (notifyStore.prefs().gameStart && !notifyStore.startAlreadyNotified(game.id)) {
+          const kickoff = Date.parse(game.commence_time);
+          const minsAway = (kickoff - now()) / 60000;
+          if (minsAway > 0 && minsAway <= 15) {
+            notifyStore.markStartNotified(game.id);
+            sendPushToAll({
+              title: 'Kickoff soon',
+              body: `${game.away_team} @ ${game.home_team} starts in ${Math.round(minsAway)} min`,
+              tag: 'kickoff-' + game.id, url: '/board.html?sport=' + sport
+            }).catch(e => console.error(`push: kickoff notify failed (${e && e.message})`));
+          }
+        }
+
+        if (!game.scores) continue;
+        const homeScore = Number((game.scores.find(s => s.name === game.home_team) || {}).score);
+        const awayScore = Number((game.scores.find(s => s.name === game.away_team) || {}).score);
+        if (watchedHome && Number.isFinite(homeScore)) {
+          const key = game.id + '|home';
+          const prev = notifyStore.seenScore(key);
+          if (prev !== undefined && homeScore > prev) {
+            sendPushToAll({
+              title: `${game.home_team} scored!`,
+              body: `Now ${homeScore}-${Number.isFinite(awayScore) ? awayScore : '?'} vs ${game.away_team}`,
+              tag: key, url: '/board.html?sport=' + sport
+            }).catch(e => console.error(`push: score notify failed (${e && e.message})`));
+          }
+          notifyStore.setSeenScore(key, homeScore);
+        }
+        if (watchedAway && Number.isFinite(awayScore)) {
+          const key = game.id + '|away';
+          const prev = notifyStore.seenScore(key);
+          if (prev !== undefined && awayScore > prev) {
+            sendPushToAll({
+              title: `${game.away_team} scored!`,
+              body: `Now ${awayScore}-${Number.isFinite(homeScore) ? homeScore : '?'} vs ${game.home_team}`,
+              tag: key, url: '/board.html?sport=' + sport
+            }).catch(e => console.error(`push: score notify failed (${e && e.message})`));
+          }
+          notifyStore.setSeenScore(key, awayScore);
+        }
+      }
+    }
+  }
+
   async function gradePendingPicks(){
     const todayET = new Date(now()).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
     for (const p of store.pending()) {
@@ -2211,7 +2322,7 @@ function createApp({
       const split = games.find(g => g.date === p.gameDate);
       const gradedTs = new Date(now()).toISOString();
       if (!split) {
-        if (daysPast >= 2) store.grade(p.id, null, 'void', gradedTs);
+        if (daysPast >= 2 && store.grade(p.id, null, 'void', gradedTs)) notifyBetGraded(p, null, 'void');
         continue;
       }
       const actual = split.value;
@@ -2219,7 +2330,7 @@ function createApp({
       if (actual === p.line) result = 'push';
       else if (p.side === 'Over') result = actual > p.line ? 'hit' : 'miss';
       else result = actual < p.line ? 'hit' : 'miss';
-      store.grade(p.id, actual, result, gradedTs);
+      if (store.grade(p.id, actual, result, gradedTs)) notifyBetGraded(p, actual, result);
     }
   }
 
@@ -2228,10 +2339,60 @@ function createApp({
     boot.unref();
     const interval = setInterval(() => gradePendingPicks().catch(e => console.error(`sweep failed: ${e.message}`)), 6 * 60 * 60 * 1000);
     interval.unref();
+
+    const watchBoot = setTimeout(() => pollWatchlist().catch(e => console.error(`watchlist poll failed: ${e.message}`)), 15 * 1000);
+    watchBoot.unref();
+    const watchInterval = setInterval(() => pollWatchlist().catch(e => console.error(`watchlist poll failed: ${e.message}`)), 60 * 1000);
+    watchInterval.unref();
   }
 
   app.get('/api/record', (req, res) => {
     res.json(computeRecord(store.all()));
+  });
+
+  // ---------- Push notifications: subscribe/unsubscribe, watchlist, prefs ----------
+  app.get('/api/push/vapid-public-key', (req, res) => {
+    if (!pushEnabled) return res.status(503).json({ error: 'Push not configured' });
+    res.json({ key: process.env.VAPID_PUBLIC_KEY });
+  });
+  app.post('/api/push/subscribe', (req, res) => {
+    const sub = req.body;
+    if (!sub || typeof sub.endpoint !== 'string') return res.status(400).json({ error: 'Bad subscription' });
+    notifyStore.addSubscription(sub);
+    res.json({ ok: true });
+  });
+  app.post('/api/push/unsubscribe', (req, res) => {
+    const { endpoint } = req.body || {};
+    if (typeof endpoint !== 'string') return res.status(400).json({ error: 'Bad endpoint' });
+    notifyStore.removeSubscription(endpoint);
+    res.json({ ok: true });
+  });
+
+  app.get('/api/watchlist', (req, res) => {
+    res.json({ watchlist: notifyStore.watchlist(), prefs: notifyStore.prefs() });
+  });
+  app.post('/api/watchlist', (req, res) => {
+    const { sport, team } = req.body || {};
+    if (typeof sport !== 'string' || typeof team !== 'string' || !team.trim()) {
+      return res.status(400).json({ error: 'sport and team are required' });
+    }
+    if (!SPORTS.has(sport)) return res.status(400).json({ error: 'Unknown sport' });
+    notifyStore.addWatch(sport, team.trim());
+    res.json({ ok: true, watchlist: notifyStore.watchlist() });
+  });
+  app.delete('/api/watchlist', (req, res) => {
+    const { sport, team } = req.body || {};
+    if (typeof sport !== 'string' || typeof team !== 'string') return res.status(400).json({ error: 'sport and team are required' });
+    notifyStore.removeWatch(sport, team);
+    res.json({ ok: true, watchlist: notifyStore.watchlist() });
+  });
+  app.post('/api/notify/prefs', (req, res) => {
+    const { gameStart, betGraded } = req.body || {};
+    const next = {};
+    if (typeof gameStart === 'boolean') next.gameStart = gameStart;
+    if (typeof betGraded === 'boolean') next.betGraded = betGraded;
+    notifyStore.setPrefs(next);
+    res.json({ ok: true, prefs: notifyStore.prefs() });
   });
 
   app.locals.store = store;
