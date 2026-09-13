@@ -32,6 +32,62 @@
     return row;
   }
 
+  // Every book that quotes at least one leg, ranked so books covering EVERY
+  // leg (a real single-book parlay) come first, best combined price first
+  // among those — but a book missing only a leg or two still shows, ranked
+  // by how much it covers, so there's a useful default even when nothing
+  // covers 100%. Checks every book that actually appears on the slip, not a
+  // hardcoded shortlist of two or three.
+  function computeBookCoverage(slip){
+    const bookKeys = new Set();
+    slip.forEach(leg => pickListFor(leg).forEach(r => bookKeys.add(r.bookKey)));
+    const coverage = [...bookKeys].map(bookKey=>{
+      let count = 0, decimal = 1;
+      slip.forEach(leg=>{
+        const row = pickListFor(leg).find(r=>r.bookKey===bookKey);
+        if(row){ count++; decimal *= americanToDecimal(row.odds); }
+      });
+      return { bookKey, count, decimal };
+    });
+    coverage.sort((a,b)=> b.count - a.count || b.decimal - a.decimal);
+    return coverage;
+  }
+
+  // One-tap "combine everything at this book" instead of reopening each
+  // leg's dropdown by hand. Only shown for 2+ legs, since one leg is never
+  // a parlay in the first place.
+  function renderParlayPicker(slip){
+    const host = document.getElementById('parlayPicker');
+    if(!host) return;
+    if(slip.length < 2){ host.innerHTML = ''; return; }
+    const coverage = computeBookCoverage(slip);
+    if(!coverage.length){ host.innerHTML = ''; return; }
+    const currentBooks = new Set(slip.map(l=>l.selectedBookKey));
+    const allSameBook = currentBooks.size === 1 ? [...currentBooks][0] : null;
+    host.innerHTML = `<div class="parlay-picker-label">Parlay at</div>
+      <div class="parlay-picker">${coverage.map(c=>{
+        const style = bookStyleFor(c.bookKey);
+        const name = style ? style.name : c.bookKey;
+        const full = c.count === slip.length;
+        const active = allSameBook === c.bookKey;
+        const priceLabel = fmtAmerican(decimalToAmerican(c.decimal));
+        const title = full ? `Covers all ${slip.length} legs at ${priceLabel}` : `Covers ${c.count} of ${slip.length} legs (combined ${priceLabel} for those) — the rest stay on their own book`;
+        return `<button type="button" class="parlay-chip${active?' active':''}${full?'':' partial'}" data-book-key="${escapeHtml(c.bookKey)}" title="${escapeHtml(title)}">
+          <span class="parlay-chip-name">${escapeHtml(name)}${full?'':` <span class="parlay-chip-count">${c.count}/${slip.length}</span>`}</span>
+          <span class="parlay-chip-odds">${escapeHtml(priceLabel)}</span>
+        </button>`;
+      }).join('')}</div>`;
+    host.querySelectorAll('.parlay-chip').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const bookKey = btn.dataset.bookKey;
+        slip.forEach(leg=>{
+          if(pickListFor(leg).some(r=>r.bookKey===bookKey)) updateLegBook(leg.id, bookKey);
+        });
+        renderSlip();
+      });
+    });
+  }
+
   function renderSlip(){
     const slip = getSlip();
     const legsEl = document.getElementById('slipLegs');
@@ -41,6 +97,7 @@
     legsEl.innerHTML = '';
     emptyEl.style.display = slip.length ? 'none' : 'block';
     document.getElementById('saveBetBtn').disabled = !slip.length;
+    renderParlayPicker(slip);
 
     slip.forEach(leg=>{
       const pickList = pickListFor(leg);
