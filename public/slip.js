@@ -22,14 +22,86 @@
     return filterToMyBooks(leg.rows, r=>r.bookKey);
   }
   // Resolves (and persists, if unset) which book a leg is placed with.
-  function selectedRowFor(leg){
+  // First pick ever: default to whichever book best covers the WHOLE slip
+  // (the same ranking the "Parlay at" chips use), not this leg's own best
+  // price in isolation — that in-isolation default was exactly what
+  // fragmented multi-leg slips across different books before you ever got
+  // a say. Falls back to this leg's best price only when no book in common
+  // with the rest of the slip exists (or it's the only leg).
+  function selectedRowFor(leg, slip){
     const pickList = pickListFor(leg);
     let row = pickList.find(r=>r.bookKey===leg.selectedBookKey);
     if(!row){
-      row = pickList[0];
+      const coverage = slip ? computeBookCoverage(slip) : [];
+      const shared = coverage.find(c => pickList.some(r=>r.bookKey===c.bookKey));
+      row = (shared && pickList.find(r=>r.bookKey===shared.bookKey)) || pickList[0];
       updateLegBook(leg.id, row.bookKey);
     }
     return row;
+  }
+
+  // Every book that quotes at least one leg, ranked so books covering EVERY
+  // leg (a real single-book parlay) come first — but a book missing only a
+  // leg or two still shows, ranked by how much it covers, so there's a
+  // useful default even when nothing covers 100%. Checks every book that
+  // actually appears on the slip, not a hardcoded shortlist of two or three.
+  // Among books with equal coverage, FanDuel wins, then DraftKings, then
+  // best combined price — those two are the default/majority preference,
+  // not just whichever happens to price a hair better.
+  const BOOK_PRIORITY = { fanduel: 0, draftkings: 1 };
+  function computeBookCoverage(slip){
+    const bookKeys = new Set();
+    slip.forEach(leg => pickListFor(leg).forEach(r => bookKeys.add(r.bookKey)));
+    const coverage = [...bookKeys].map(bookKey=>{
+      let count = 0, decimal = 1;
+      slip.forEach(leg=>{
+        const row = pickListFor(leg).find(r=>r.bookKey===bookKey);
+        if(row){ count++; decimal *= americanToDecimal(row.odds); }
+      });
+      return { bookKey, count, decimal };
+    });
+    coverage.sort((a,b)=>{
+      if(b.count !== a.count) return b.count - a.count;
+      const pa = BOOK_PRIORITY[a.bookKey] ?? 99, pb = BOOK_PRIORITY[b.bookKey] ?? 99;
+      if(pa !== pb) return pa - pb;
+      return b.decimal - a.decimal;
+    });
+    return coverage;
+  }
+
+  // One-tap "combine everything at this book" instead of reopening each
+  // leg's dropdown by hand. Only shown for 2+ legs, since one leg is never
+  // a parlay in the first place.
+  function renderParlayPicker(slip){
+    const host = document.getElementById('parlayPicker');
+    if(!host) return;
+    if(slip.length < 2){ host.innerHTML = ''; return; }
+    const coverage = computeBookCoverage(slip);
+    if(!coverage.length){ host.innerHTML = ''; return; }
+    const currentBooks = new Set(slip.map(l=>l.selectedBookKey));
+    const allSameBook = currentBooks.size === 1 ? [...currentBooks][0] : null;
+    host.innerHTML = `<div class="parlay-picker-label">Parlay at</div>
+      <div class="parlay-picker">${coverage.map(c=>{
+        const style = bookStyleFor(c.bookKey);
+        const name = style ? style.name : c.bookKey;
+        const full = c.count === slip.length;
+        const active = allSameBook === c.bookKey;
+        const priceLabel = fmtAmerican(decimalToAmerican(c.decimal));
+        const title = full ? `Covers all ${slip.length} legs at ${priceLabel}` : `Covers ${c.count} of ${slip.length} legs (combined ${priceLabel} for those) — the rest stay on their own book`;
+        return `<button type="button" class="parlay-chip${active?' active':''}${full?'':' partial'}" data-book-key="${escapeHtml(c.bookKey)}" title="${escapeHtml(title)}">
+          <span class="parlay-chip-name">${escapeHtml(name)}${full?'':` <span class="parlay-chip-count">${c.count}/${slip.length}</span>`}</span>
+          <span class="parlay-chip-odds">${escapeHtml(priceLabel)}</span>
+        </button>`;
+      }).join('')}</div>`;
+    host.querySelectorAll('.parlay-chip').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const bookKey = btn.dataset.bookKey;
+        slip.forEach(leg=>{
+          if(pickListFor(leg).some(r=>r.bookKey===bookKey)) updateLegBook(leg.id, bookKey);
+        });
+        renderSlip();
+      });
+    });
   }
 
   function renderSlip(){
@@ -41,10 +113,11 @@
     legsEl.innerHTML = '';
     emptyEl.style.display = slip.length ? 'none' : 'block';
     document.getElementById('saveBetBtn').disabled = !slip.length;
+    renderParlayPicker(slip);
 
     slip.forEach(leg=>{
       const pickList = pickListFor(leg);
-      const selected = selectedRowFor(leg);
+      const selected = selectedRowFor(leg, slip);
       const div = document.createElement('div');
       div.className = 'leg-item';
       div.innerHTML = `
@@ -214,7 +287,7 @@
     const slip = getSlip();
     const lines = [`${bookName} parlay slip:`];
     slip.forEach(leg=>{
-      const row = leg.rows.find(r=>r.bookKey===bookKey) || selectedRowFor(leg);
+      const row = leg.rows.find(r=>r.bookKey===bookKey) || selectedRowFor(leg, slip);
       lines.push(`• ${leg.side} (${leg.matchup}) — ${fmtAmerican(row.odds)}`);
     });
     return lines;
