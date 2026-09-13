@@ -1099,45 +1099,66 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
 // the baseball-specific carry-condition rating for a wind-impact-on-the-
 // passing/kicking game rating (mirrors the thresholds nfl.js's Dashboard tab
 // already uses).
+// Condensed to one line (kickoff-hour reading only) — the old 5-hour slot
+// grid ate a lot of card space for a pregame signal that's really just
+// "is wind/rain going to be a factor," which one badge already answers.
+// That reclaimed space is now the injury report below (buildNflInjuriesHtml).
 function buildNflWeatherStrip(game){
   const stadium = NFL_STADIUMS[game.home_team];
   if(!stadium) return '';
   if(stadium.dome){
-    return `<div class="weather-strip">
-      <div class="weather-head">☁ ${escapeHtml(stadium.park)} <span class="roof-tag">Dome — weather n/a</span></div>
-      <div class="weather-body-row"><div class="weather-note">Indoor stadium — conditions don't affect play.</div></div>
-    </div>`;
+    return `<div class="weather-strip"><div class="weather-head">☁ ${escapeHtml(stadium.park)} <span class="roof-tag">Dome</span></div></div>`;
   }
   const w = nflWeatherCache[game.home_team];
-  let slotsHtml = '';
-  let firstPitchRating = null;
-  if(w){
-    const gameHourUtc = game.commence_time.slice(0,13) + ':00';
-    const startIdx = w.time.indexOf(gameHourUtc);
-    if(startIdx !== -1){
-      for(let i = startIdx; i < Math.min(startIdx + 5, w.time.length); i++){
-        const local = new Date(w.time[i] + ':00Z');
-        const precip = w.precip[i];
-        const rating = nflWindImpact(w.wind[i]);
-        if(i === startIdx) firstPitchRating = rating;
-        slotsHtml += `<div class="weather-slot ${rating.cls}" title="${rating.label} · wind ${windCompass(w.windDir[i])} ${Math.round(w.wind[i])} mph (field orientation approx.)">
-          <div class="w-time">${local.toLocaleTimeString([], {hour:'numeric'})}${i===startIdx ? ' · kickoff' : ''}</div>
-          <div class="w-temp">${Math.round(w.temp[i])}°F</div>
-          <div class="w-wind">${Math.round(w.wind[i])} mph</div>
-          <div class="w-rain${precip >= 30 ? ' wet' : ''}">${precip}% rain</div>
-        </div>`;
-      }
-    }
+  if(!w) return `<div class="weather-strip"><div class="weather-head">☁ ${escapeHtml(stadium.park)}</div></div>`;
+  const gameHourUtc = game.commence_time.slice(0,13) + ':00';
+  const startIdx = w.time.indexOf(gameHourUtc);
+  if(startIdx === -1){
+    return `<div class="weather-strip"><div class="weather-head">☁ ${escapeHtml(stadium.park)} <span class="weather-note">forecast beyond 7-day window</span></div></div>`;
   }
-  const ratingTag = firstPitchRating
-    ? `<span class="rating-tag ${firstPitchRating.cls}" title="Wind-speed heuristic at kickoff — 15+ mph starts affecting passing/kicking, 20+ is a real factor. Not a betting signal.">${firstPitchRating.dot} ${firstPitchRating.label}</span>`
-    : '';
-  const body = slotsHtml
-    ? `<div class="weather-slots">${slotsHtml}</div>`
-    : (w ? '<div class="weather-note">Game is beyond the 7-day forecast window — check back closer to kickoff.</div>' : '<div class="weather-note">Forecast unavailable right now.</div>');
+  const rating = nflWindImpact(w.wind[startIdx]);
+  const precip = w.precip[startIdx];
   return `<div class="weather-strip">
-    <div class="weather-head">☁ ${escapeHtml(stadium.park)} ${ratingTag}</div>
-    <div class="weather-body-row">${body}</div>
+    <div class="weather-head">☁ ${escapeHtml(stadium.park)}
+      <span class="rating-tag ${rating.cls}" title="Wind-speed heuristic at kickoff — 15+ mph starts affecting passing/kicking, 20+ is a real factor. Not a betting signal.">${rating.dot} ${rating.label}</span>
+      <span class="weather-inline">${Math.round(w.temp[startIdx])}°F · ${Math.round(w.wind[startIdx])}mph${precip >= 30 ? ` · ${precip}% rain` : ''}</span>
+    </div>
+  </div>`;
+}
+
+// ---------- per-game injury report (replaces the old 5-hour weather grid's
+// screen space) ----------
+let nflInjuriesCache = {}; // "away|home" -> {home:{name,injuries[]}, away:{name,injuries[]}}
+async function fetchNflGameInjuries(games){
+  const matchups = [...new Map(games.map(g=>[g.away_team+'|'+g.home_team, g])).values()];
+  await Promise.all(matchups.map(async g=>{
+    const key = g.away_team+'|'+g.home_team;
+    if(nflInjuriesCache[key]) return;
+    try{
+      const res = await fetch(`/api/nfl/game-injuries?home=${encodeURIComponent(g.home_team)}&away=${encodeURIComponent(g.away_team)}`);
+      if(!res.ok) return;
+      nflInjuriesCache[key] = await res.json();
+    }catch(e){ /* injuries are a bonus panel — quietly skip on failure */ }
+  }));
+}
+function buildNflInjuriesHtml(game){
+  const key = game.away_team+'|'+game.home_team;
+  const data = nflInjuriesCache[key];
+  if(!data) return `<div class="injuries-strip"><div class="injuries-head">🩺 Injury Report</div><div class="weather-note">Loading…</div></div>`;
+  const teamBlock = (side)=>{
+    const list = side.injuries.slice().sort((a,b)=> (b.starter?1:0) - (a.starter?1:0));
+    if(!list.length) return `<div class="injuries-team"><div class="injuries-team-name">${escapeHtml(side.name)}</div><div class="weather-note">Nothing listed</div></div>`;
+    const rows = list.slice(0,6).map(i=>`<div class="injury-row${i.starter?' starter':''}">
+        <span class="injury-name">${escapeHtml(i.name)}</span>
+        <span class="injury-pos">${escapeHtml(i.position)}</span>
+        <span class="injury-status">${escapeHtml(i.status)}</span>
+      </div>`).join('');
+    const more = list.length > 6 ? `<div class="weather-note">+${list.length-6} more</div>` : '';
+    return `<div class="injuries-team"><div class="injuries-team-name">${escapeHtml(side.name)}</div>${rows}${more}</div>`;
+  };
+  return `<div class="injuries-strip">
+    <div class="injuries-head">🩺 Injury Report</div>
+    <div class="injuries-body">${teamBlock(data.away)}${teamBlock(data.home)}</div>
   </div>`;
 }
 

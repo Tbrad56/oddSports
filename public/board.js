@@ -186,6 +186,7 @@
       // landing, so there's nothing real to show there yet anyway.
       if(sport === 'americanfootball_nfl' && games.length){
         fetchNflStadiumWeather(games).then(scheduleRender).catch(()=>{});
+        fetchNflGameInjuries(games).then(scheduleRender).catch(()=>{});
       }
       // Live scores: fetch now, then keep polling every 30s while this sport is loaded
       state.scores = []; state.mlbLive = [];
@@ -977,6 +978,9 @@
             w.innerHTML = weatherHtml;
             card.appendChild(w.firstElementChild);
           }
+          const inj = document.createElement('div');
+          inj.innerHTML = buildNflInjuriesHtml(game);
+          card.appendChild(inj.firstElementChild);
         }
         const f = document.createElement('div');
         f.innerHTML = footballFieldTrackerSvg(sportKey, game, scoreEntry);

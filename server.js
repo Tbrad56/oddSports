@@ -1246,6 +1246,33 @@ function createApp({
     })().catch(err => sendUpstreamError(res, err));
   });
 
+  // Both teams' injury reports for one matchup, keyed off the exact team-name
+  // strings The Odds API returns (same match-by-name convention headshot
+  // resolution already uses) — lets Board show a per-game injury summary
+  // without the user ever visiting the NFL Dashboard's team pickers.
+  // Reuses nflDepthAndInjuries(), the same call the Dashboard's Injury
+  // Center already makes, just for both sides of one game at once.
+  app.get('/api/nfl/game-injuries', (req, res) => {
+    (async () => {
+      const { home, away } = req.query;
+      if (typeof home !== 'string' || !home || typeof away !== 'string' || !away) {
+        return res.status(400).json({ error: 'home and away team names required' });
+      }
+      const teams = await nflTeams();
+      const homeTeam = teams.find(t => t.name === home);
+      const awayTeam = teams.find(t => t.name === away);
+      if (!homeTeam || !awayTeam) return res.status(400).json({ error: 'Unknown team' });
+      const [homeInj, awayInj] = await Promise.all([
+        nflDepthAndInjuries(homeTeam.id).catch(() => ({ injuries: [] })),
+        nflDepthAndInjuries(awayTeam.id).catch(() => ({ injuries: [] }))
+      ]);
+      res.json({
+        home: { name: home, injuries: homeInj.injuries },
+        away: { name: away, injuries: awayInj.injuries }
+      });
+    })().catch(err => sendUpstreamError(res, err));
+  });
+
   // Position-aware game-log form. NFL gamelogs repeat labels across stat
   // groups (passing YDS then rushing YDS), so values are picked by scanning
   // label positions in order.

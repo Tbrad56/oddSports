@@ -705,7 +705,33 @@
   color:var(--text-dim); text-align:center; text-transform:none; letter-spacing:0;
 }
 .weather-note{font-size:11px; color:var(--text-faint);}
+.weather-inline{font-family:var(--font-mono); font-size:11px; color:var(--text-dim); margin-left:2px;}
 .analyze-cost{font-size:10.5px; color:var(--text-faint); margin-left:8px;}
+
+/* ---------- Per-game injury report (NFL) ---------- */
+.injuries-strip{
+  padding:10px 16px; border-bottom:1px solid var(--border-soft);
+  background:var(--bg-card);
+}
+.injuries-head{
+  font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.5px; font-weight:700;
+  margin-bottom:8px;
+}
+.injuries-body{display:flex; gap:16px; flex-wrap:wrap;}
+.injuries-team{flex:1; min-width:180px;}
+.injuries-team-name{font-size:11.5px; font-weight:700; color:var(--text); margin-bottom:4px;}
+.injury-row{
+  display:flex; align-items:center; gap:6px; font-size:11.5px; padding:3px 0;
+  color:var(--text-dim); border-bottom:1px solid var(--border-soft);
+}
+.injury-row:last-child{border-bottom:none;}
+.injury-row.starter .injury-name{color:var(--text); font-weight:600;}
+.injury-name{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.injury-pos{font-family:var(--font-mono); font-size:10px; color:var(--text-faint); flex-shrink:0;}
+.injury-status{
+  font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.3px;
+  color:var(--bad); flex-shrink:0;
+}
 
 /* ---------- NFL live field tracker (line of scrimmage / down / possession) ---------- */
 .nfl-field-wrap{

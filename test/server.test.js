@@ -1263,3 +1263,57 @@ test('track-prop MLB: resolves mlbId via the real lookup, then the existing MLB 
   assert.equal(res.body.summary.graded, 1);
   assert.equal(res.body.summary.hits, 1); // 8 Ks on 2026-07-10 > 5.5, same fixture the "grading sweep" test above uses
 });
+
+// ---------- /api/nfl/game-injuries: per-matchup injury report replacing Board's old 5-hour weather grid ----------
+function espnNflTeamsBody(){
+  return { sports: [{ leagues: [{ teams: [
+    { team: { id: '1', displayName: 'Cincinnati Bengals', abbreviation: 'CIN' } },
+    { team: { id: '2', displayName: 'Tampa Bay Buccaneers', abbreviation: 'TB' } }
+  ] }] }] };
+}
+function espnDepthchartBody(playerName, position, status){
+  return { depthchart: [{ name: 'Offense', positions: { qb: { position: { abbreviation: position },
+    athletes: [{ id: 'p1', displayName: playerName, injuries: [{ status }] }] } } }] };
+}
+
+test('game-injuries: rejects missing team names', async () => {
+  const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
+  assert.equal((await request(app).get('/api/nfl/game-injuries')).status, 400);
+  assert.equal((await request(app).get('/api/nfl/game-injuries').query({ home: 'Cincinnati Bengals' })).status, 400);
+});
+
+test('game-injuries: unknown team name -> 400', async () => {
+  const f = routedFetch([['teams?limit=34', okResponse(espnNflTeamsBody())]]);
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/nfl/game-injuries').query({ home: 'Made Up Team', away: 'Tampa Bay Buccaneers' });
+  assert.equal(res.status, 400);
+});
+
+test('game-injuries: returns both teams\' injury lists, keyed by the exact names passed in', async () => {
+  const f = routedFetch([
+    ['teams?limit=34', okResponse(espnNflTeamsBody())],
+    ['/teams/1/depthcharts', okResponse(espnDepthchartBody('Home Guy', 'QB', 'Out'))],
+    ['/teams/2/depthcharts', okResponse(espnDepthchartBody('Away Guy', 'WR', 'Questionable'))]
+  ]);
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/nfl/game-injuries').query({ home: 'Cincinnati Bengals', away: 'Tampa Bay Buccaneers' });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.home.name, 'Cincinnati Bengals');
+  assert.equal(res.body.home.injuries[0].name, 'Home Guy');
+  assert.equal(res.body.home.injuries[0].status, 'Out');
+  assert.equal(res.body.away.name, 'Tampa Bay Buccaneers');
+  assert.equal(res.body.away.injuries[0].name, 'Away Guy');
+});
+
+test('game-injuries: one team\'s depthchart failing still returns the other team\'s list', async () => {
+  const f = routedFetch([
+    ['teams?limit=34', okResponse(espnNflTeamsBody())],
+    ['/teams/1/depthcharts', errResponse(500)],
+    ['/teams/2/depthcharts', okResponse(espnDepthchartBody('Away Guy', 'WR', 'Questionable'))]
+  ]);
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/nfl/game-injuries').query({ home: 'Cincinnati Bengals', away: 'Tampa Bay Buccaneers' });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.home.injuries, []);
+  assert.equal(res.body.away.injuries[0].name, 'Away Guy');
+});
