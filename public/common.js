@@ -172,7 +172,8 @@ function marketLabel(key){
     player_threes:"Threes Made", player_points_rebounds_assists:"Pts + Reb + Ast",
     batter_hits:"Batter Hits", batter_home_runs:"Home Runs", batter_total_bases:"Total Bases",
     batter_rbis:"RBIs", pitcher_strikeouts:"Pitcher Strikeouts",
-    player_shots_on_goal:"Shots on Goal", player_goal_scorer_anytime:"Anytime Goalscorer"
+    player_shots_on_goal:"Shots on Goal", player_goal_scorer_anytime:"Anytime Goalscorer",
+    h2h:"Moneyline", spreads:"Spread", totals:"Total"
   };
   return labels[key] || key;
 }
@@ -278,6 +279,18 @@ function addLegToSlip(leg){
   s.push(leg);
   saveSlip(s);
   updateSlipBadge();
+}
+// Slip lives only in this browser's localStorage — the server has no idea
+// what you've bet unless something tells it. This is that something: a
+// fire-and-forget sync so a moneyline/spread/total leg can actually get
+// graded later and show up in Record, instead of just vanishing once it's
+// off the Slip. Never blocks the UI or surfaces an error — losing a grading
+// opportunity is fine, breaking "add to slip" over it is not.
+function trackBet({sport, homeTeam, awayTeam, commenceTime, matchup, market, selection, point}){
+  fetch('/api/track-bet', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({sport, homeTeam, awayTeam, commenceTime, matchup, market, selection, point})
+  }).catch(()=>{});
 }
 function removeLegFromSlip(id){
   saveSlip(getSlip().filter(l=>l.id!==id));

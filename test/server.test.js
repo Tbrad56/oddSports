@@ -1035,3 +1035,119 @@ test('push: subscribe requires an endpoint, then unsubscribe accepts it back', a
   const unsub = await request(app).post('/api/push/unsubscribe').send({ endpoint: 'https://push.example.com/abc' });
   assert.equal(unsub.status, 200);
 });
+
+// ---------- track-bet: grading slip picks the Slip's localStorage can't reach the server for ----------
+function espnFootballGame({ id = 'g1', home, away, homeScore, awayScore, state = 'post', completed = true }){
+  return { events: [{
+    id, date: '2026-09-12T23:30Z',
+    status: { type: { state, completed } },
+    competitions: [{ competitors: [
+      { homeAway: 'home', team: { displayName: home }, score: String(homeScore) },
+      { homeAway: 'away', team: { displayName: away }, score: String(awayScore) }
+    ] }]
+  }] };
+}
+
+test('track-bet: rejects unknown sport, bad market, missing selection, missing point for spreads/totals', async () => {
+  const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
+  const base = { homeTeam: 'A', awayTeam: 'B', market: 'h2h', selection: 'A' };
+  assert.equal((await request(app).post('/api/track-bet').send({ ...base, sport: 'basketball_wnba' })).status, 400);
+  assert.equal((await request(app).post('/api/track-bet').send({ ...base, sport: 'americanfootball_ncaaf', market: 'weird' })).status, 400);
+  assert.equal((await request(app).post('/api/track-bet').send({ ...base, sport: 'americanfootball_ncaaf', selection: undefined })).status, 400);
+  assert.equal((await request(app).post('/api/track-bet').send({ ...base, sport: 'americanfootball_ncaaf', market: 'spreads' })).status, 400); // no point
+});
+
+test('track-bet: logs a bet, dedupes on repeat, and shows up pending in /api/record', async () => {
+  const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
+  const payload = { sport: 'americanfootball_ncaaf', homeTeam: 'Ohio State', awayTeam: 'Texas',
+    commenceTime: '2026-09-12T23:30:00Z', matchup: 'Texas @ Ohio State', market: 'h2h', selection: 'Ohio State' };
+  const first = await request(app).post('/api/track-bet').send(payload);
+  assert.equal(first.status, 200);
+  assert.equal(first.body.logged, true);
+  const dupe = await request(app).post('/api/track-bet').send(payload);
+  assert.equal(dupe.body.logged, false); // same id, no duplicate
+  const rec = await request(app).get('/api/record');
+  assert.equal(rec.body.summary.pending, 1);
+});
+
+test('bet grading: moneyline hit/miss by final score, matched by team name not gameId', async () => {
+  const espn = espnFootballGame({ home: 'Ohio State', away: 'Texas', homeScore: 38, awayScore: 14 });
+  const f = fakeFetch(() => okResponse(espn));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  await request(app).post('/api/track-bet').send({
+    sport: 'americanfootball_ncaaf', homeTeam: 'Ohio State', awayTeam: 'Texas',
+    commenceTime: '2026-09-12T23:30:00Z', market: 'h2h', selection: 'Ohio State'
+  });
+  await app.locals.gradePendingBets();
+  const res = await request(app).get('/api/record');
+  assert.equal(res.body.summary.hits, 1);
+  assert.equal(res.body.recent[0].actual, 24); // 38 - 14
+});
+
+test('bet grading: spread accounts for the point (favorite covering vs not)', async () => {
+  const espn = espnFootballGame({ home: 'Ohio State', away: 'Texas', homeScore: 24, awayScore: 21 });
+  const f = fakeFetch(() => okResponse(espn));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  // Ohio State -7.5: won by only 3, does NOT cover
+  await request(app).post('/api/track-bet').send({
+    sport: 'americanfootball_ncaaf', homeTeam: 'Ohio State', awayTeam: 'Texas',
+    commenceTime: '2026-09-12T23:30:00Z', market: 'spreads', selection: 'Ohio State', point: -7.5
+  });
+  await app.locals.gradePendingBets();
+  const res = await request(app).get('/api/record');
+  assert.equal(res.body.summary.misses, 1);
+  assert.ok(Math.abs(res.body.recent[0].actual - (-4.5)) < 1e-9); // (24-21) + (-7.5)
+});
+
+test('bet grading: total over/under compares combined score to the point, push is exact', async () => {
+  const espn = espnFootballGame({ home: 'Chiefs', away: 'Bills', homeScore: 24, awayScore: 24 });
+  const f = fakeFetch(() => okResponse(espn));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  await request(app).post('/api/track-bet').send({
+    sport: 'americanfootball_nfl', homeTeam: 'Chiefs', awayTeam: 'Bills',
+    commenceTime: '2026-09-14T20:00:00Z', market: 'totals', selection: 'Over', point: 48
+  });
+  await app.locals.gradePendingBets();
+  const res = await request(app).get('/api/record');
+  assert.equal(res.body.summary.pushes, 1);
+  assert.equal(res.body.recent[0].actual, 48);
+});
+
+test('bet grading: an unfinished game stays pending, not graded', async () => {
+  const espn = espnFootballGame({ home: 'Ohio State', away: 'Texas', homeScore: 10, awayScore: 7, state: 'in', completed: false });
+  const f = fakeFetch(() => okResponse(espn));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  await request(app).post('/api/track-bet').send({
+    sport: 'americanfootball_ncaaf', homeTeam: 'Ohio State', awayTeam: 'Texas',
+    commenceTime: '2026-09-12T23:30:00Z', market: 'h2h', selection: 'Ohio State'
+  });
+  await app.locals.gradePendingBets();
+  const res = await request(app).get('/api/record');
+  assert.equal(res.body.summary.pending, 1);
+  assert.equal(res.body.summary.graded, 0);
+});
+
+test('computeRecord: a mix of a graded bet and a prop does not crash /api/record on avgModelP', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lw-mixed-'));
+  const f = routedFetch([
+    ['espn.com', okResponse(espnFootballGame({ home: 'Ohio State', away: 'Texas', homeScore: 38, awayScore: 14 }))],
+    ['/api/v1/people/', okResponse(DATED_GAMELOG_BODY)]
+  ]);
+  const app = createApp({ apiKey: 'k', fetchFn: f, dataDir: dir, now: () => Date.parse('2026-07-12T16:00:00Z') });
+  app.locals.store.logPick({
+    id: 'evX|Test Pitcher|pitcher_strikeouts|5.5|Over', kind: 'prop', ts: '2026-07-10T18:00:00.000Z',
+    eventId: 'evX', gameDate: '2026-07-10', matchup: 'A @ B',
+    player: 'Test Pitcher', mlbId: 660271, market: 'pitcher_strikeouts', line: 5.5, side: 'Over',
+    modelP: 0.6, impliedP: 0.5, edge: 0.1, bestBook: { bookKey: 'fanduel', odds: -110 }, flags: []
+  });
+  await request(app).post('/api/track-bet').send({
+    sport: 'americanfootball_ncaaf', homeTeam: 'Ohio State', awayTeam: 'Texas',
+    commenceTime: '2026-09-12T23:30:00Z', market: 'h2h', selection: 'Ohio State'
+  });
+  await app.locals.gradePendingPicks();
+  await app.locals.gradePendingBets();
+  const res = await request(app).get('/api/record');
+  assert.equal(res.body.summary.graded, 2);
+  assert.ok(!Number.isNaN(res.body.summary.avgModelP));
+  assert.equal(res.body.summary.avgModelP, 0.6); // only the prop counts
+});

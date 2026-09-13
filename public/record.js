@@ -24,7 +24,7 @@
     const s = r.summary;
     if(!s.graded && !s.pending){
       area.innerHTML = `<div class="empty-state"><h3>No picks logged yet</h3>
-        <p>Analyses log automatically — run "Analyze props" on the <a href="/getprops.html">Get Props page</a> and results appear here the day after the games.</p></div>`;
+        <p>Everything logs automatically — run "Analyze props" on the <a href="/getprops.html">Get Props page</a>, or add any moneyline/spread/total to your Slip from <a href="/board.html">Board</a>. Results appear here once the game finishes.</p></div>`;
       return;
     }
     let html = `<div class="panel" style="margin-bottom:14px;">
@@ -62,11 +62,19 @@
       r.recent.forEach(p => {
         const [cls, label] = RESULT_CHIP[p.result] || ['dim', p.result];
         const color = cls === 'good' ? 'var(--good)' : cls === 'bad' ? 'var(--bad)' : 'var(--text-faint)';
+        const isBet = p.kind === 'bet';
+        // Slip bets (moneyline/spread/total) have no "player" or model
+        // probability — those are Get Props' Poisson-model concepts. Same
+        // table, just a plain-language description in the Pick column and a
+        // dash where a bet has nothing to show.
+        const pickDesc = isBet
+          ? `${escapeHtml(p.selection)}${p.point != null ? ' ' + escapeHtml((p.point > 0 ? '+' : '') + p.point) : ''} — ${escapeHtml(marketLabel(p.market))}`
+          : `${escapeHtml(p.side)} ${escapeHtml(String(p.line))} ${escapeHtml(marketLabel(p.market))}`;
         html += `<tr>
           <td style="color:${color}; font-weight:700; white-space:nowrap;">${escapeHtml(label)}</td>
-          <td style="font-weight:600; white-space:nowrap;">${escapeHtml(p.player)}</td>
-          <td style="white-space:nowrap;">${escapeHtml(p.side)} ${escapeHtml(String(p.line))} ${escapeHtml(marketLabel(p.market))}</td>
-          <td style="font-family:var(--font-mono);">${pct(p.modelP)}</td>
+          <td style="font-weight:600; white-space:nowrap;">${isBet ? '—' : escapeHtml(p.player)}</td>
+          <td style="white-space:nowrap;">${pickDesc}</td>
+          <td style="font-family:var(--font-mono);">${isBet ? '—' : pct(p.modelP)}</td>
           <td style="font-family:var(--font-mono);">${p.actual === null || p.actual === undefined ? '—' : escapeHtml(String(p.actual))}</td>
           <td style="color:var(--text-faint); font-size:11px; white-space:nowrap;">${escapeHtml(p.matchup)} · ${escapeHtml(p.gameDate)}</td>
         </tr>`;
