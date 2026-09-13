@@ -1741,9 +1741,12 @@ function createApp({
         const sit = comp.situation || {};
         const home = (comp.competitors || []).find(c => c.homeAway === 'home') || {};
         const away = (comp.competitors || []).find(c => c.homeAway === 'away') || {};
+        const statusType = (ev.status && ev.status.type) || {};
+        const isHalftime = statusType.name === 'STATUS_HALFTIME' || /half/i.test(statusType.shortDetail || statusType.description || '');
         out.situation = {
           period: ev.status && ev.status.period != null ? ev.status.period : null,
           displayClock: (ev.status && ev.status.displayClock) || null,
+          isHalftime,
           down: sit.down != null ? sit.down : null,
           distance: sit.distance != null ? sit.distance : null,
           yardLine: sit.yardLine != null ? sit.yardLine : null,
