@@ -878,77 +878,6 @@ function buildWeatherStrip(game, extraHtml){
   </div>`;
 }
 
-// ---------- NFL stadium weather/wind (same free Open-Meteo source as MLB,
-// separate cache since it's a different set of lat/lons and only needs the
-// current game-day slots, not a 7-day hourly window). bearing is each
-// stadium's approximate long-axis/end-zone orientation (±15° estimates, same
-// caveat as MLB_STADIUMS) so wind can be described as blowing end-zone to
-// end-zone rather than just a raw compass direction. ----------
-const NFL_STADIUMS = {
-  "Arizona Cardinals":{bearing:135,lat:33.5276,lon:-112.2626,park:"State Farm Stadium, Glendale",dome:true},
-  "Atlanta Falcons":{bearing:45,lat:33.7554,lon:-84.4008,park:"Mercedes-Benz Stadium, Atlanta",dome:true},
-  "Baltimore Ravens":{bearing:20,lat:39.2780,lon:-76.6227,park:"M&T Bank Stadium, Baltimore",dome:false},
-  "Buffalo Bills":{bearing:0,lat:42.7738,lon:-78.7870,park:"Highmark Stadium, Orchard Park",dome:false},
-  "Carolina Panthers":{bearing:20,lat:35.2258,lon:-80.8528,park:"Bank of America Stadium, Charlotte",dome:false},
-  "Chicago Bears":{bearing:0,lat:41.8623,lon:-87.6167,park:"Soldier Field, Chicago",dome:false},
-  "Cincinnati Bengals":{bearing:5,lat:39.0955,lon:-84.5161,park:"Paycor Stadium, Cincinnati",dome:false},
-  "Cleveland Browns":{bearing:355,lat:41.5061,lon:-81.6995,park:"Huntington Bank Field, Cleveland",dome:false},
-  "Dallas Cowboys":{bearing:45,lat:32.7473,lon:-97.0945,park:"AT&T Stadium, Arlington",dome:true},
-  "Denver Broncos":{bearing:20,lat:39.7439,lon:-105.0201,park:"Empower Field at Mile High, Denver",dome:false},
-  "Detroit Lions":{bearing:0,lat:42.3400,lon:-83.0456,park:"Ford Field, Detroit",dome:true},
-  "Green Bay Packers":{bearing:10,lat:44.5013,lon:-88.0622,park:"Lambeau Field, Green Bay",dome:false},
-  "Houston Texans":{bearing:150,lat:29.6847,lon:-95.4107,park:"NRG Stadium, Houston",dome:true},
-  "Indianapolis Colts":{bearing:150,lat:39.7601,lon:-86.1639,park:"Lucas Oil Stadium, Indianapolis",dome:true},
-  "Jacksonville Jaguars":{bearing:20,lat:30.3240,lon:-81.6373,park:"EverBank Stadium, Jacksonville",dome:false},
-  "Kansas City Chiefs":{bearing:135,lat:39.0489,lon:-94.4839,park:"GEHA Field at Arrowhead Stadium, Kansas City",dome:false},
-  "Las Vegas Raiders":{bearing:0,lat:36.0909,lon:-115.1833,park:"Allegiant Stadium, Las Vegas",dome:true},
-  "Los Angeles Chargers":{bearing:135,lat:33.9535,lon:-118.3392,park:"SoFi Stadium, Inglewood",dome:true},
-  "Los Angeles Rams":{bearing:135,lat:33.9535,lon:-118.3392,park:"SoFi Stadium, Inglewood",dome:true},
-  "Miami Dolphins":{bearing:135,lat:25.9580,lon:-80.2389,park:"Hard Rock Stadium, Miami Gardens",dome:false},
-  "Minnesota Vikings":{bearing:0,lat:44.9736,lon:-93.2575,park:"U.S. Bank Stadium, Minneapolis",dome:true},
-  "New England Patriots":{bearing:135,lat:42.0909,lon:-71.2643,park:"Gillette Stadium, Foxborough",dome:false},
-  "New Orleans Saints":{bearing:0,lat:29.9511,lon:-90.0812,park:"Caesars Superdome, New Orleans",dome:true},
-  "New York Giants":{bearing:135,lat:40.8128,lon:-74.0742,park:"MetLife Stadium, East Rutherford",dome:false},
-  "New York Jets":{bearing:135,lat:40.8128,lon:-74.0742,park:"MetLife Stadium, East Rutherford",dome:false},
-  "Philadelphia Eagles":{bearing:20,lat:39.9008,lon:-75.1675,park:"Lincoln Financial Field, Philadelphia",dome:false},
-  "Pittsburgh Steelers":{bearing:20,lat:40.4468,lon:-80.0158,park:"Acrisure Stadium, Pittsburgh",dome:false},
-  "Seattle Seahawks":{bearing:20,lat:47.5952,lon:-122.3316,park:"Lumen Field, Seattle",dome:false},
-  "San Francisco 49ers":{bearing:135,lat:37.4030,lon:-121.9696,park:"Levi's Stadium, Santa Clara",dome:false},
-  "Tampa Bay Buccaneers":{bearing:20,lat:27.9759,lon:-82.5033,park:"Raymond James Stadium, Tampa",dome:false},
-  "Tennessee Titans":{bearing:20,lat:36.1665,lon:-86.7713,park:"Nissan Stadium, Nashville",dome:false},
-  "Washington Commanders":{bearing:135,lat:38.9076,lon:-76.8645,park:"Northwest Stadium, Landover",dome:false}
-};
-
-let nflWeatherCache = {}; // home team name -> {time[], temp[], precip[], wind[], windDir[]}
-
-async function fetchNflStadiumWeather(games){
-  nflWeatherCache = {};
-  const teams = [...new Set(games.map(g=>g.home_team).filter(t=>NFL_STADIUMS[t] && !NFL_STADIUMS[t].dome))];
-  if(!teams.length) return;
-  const lats = teams.map(t=>NFL_STADIUMS[t].lat).join(',');
-  const lons = teams.map(t=>NFL_STADIUMS[t].lon).join(',');
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lons}`
-    + `&hourly=temperature_2m,precipitation_probability,wind_speed_10m,wind_direction_10m`
-    + `&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=UTC&forecast_days=7`;
-  const res = await fetch(url);
-  if(!res.ok) return;
-  let data = await res.json();
-  if(!Array.isArray(data)) data = [data];
-  teams.forEach((team, i)=>{
-    const h = data[i] && data[i].hourly;
-    if(!h || !h.time) return;
-    nflWeatherCache[team] = { time: h.time, temp: h.temperature_2m, precip: h.precipitation_probability, wind: h.wind_speed_10m, windDir: h.wind_direction_10m };
-  });
-}
-
-// Football cares about raw wind speed (passing/kicking) more than direction,
-// but the field diagram still shows direction relative to the "downfield" axis.
-function nflWindImpact(windMph){
-  if(windMph >= 20) return {cls:'w-bad', label:'High-wind game', dot:'▼'};
-  if(windMph >= 15) return {cls:'w-mod', label:'Windy', dot:'●'};
-  return {cls:'w-good', label:'Calm', dot:'▲'};
-}
-
 // ESPN's team-logo CDN, keyed by league path — driven by the numeric ESPN
 // team id ESPN's own scoreboard already hands us in `situation.homeTeamId`,
 // so this covers every NCAAF school with no name/abbreviation table to
@@ -1094,37 +1023,6 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
   </div>`;
 }
 
-// Builds the hourly weather strip for an NFL game card — same layout/classes
-// as buildWeatherStrip so it shares all of that section's CSS, just swapping
-// the baseball-specific carry-condition rating for a wind-impact-on-the-
-// passing/kicking game rating (mirrors the thresholds nfl.js's Dashboard tab
-// already uses).
-// Condensed to one line (kickoff-hour reading only) — the old 5-hour slot
-// grid ate a lot of card space for a pregame signal that's really just
-// "is wind/rain going to be a factor," which one badge already answers.
-// That reclaimed space is now the injury report below (buildNflInjuriesHtml).
-function buildNflWeatherStrip(game){
-  const stadium = NFL_STADIUMS[game.home_team];
-  if(!stadium) return '';
-  if(stadium.dome){
-    return `<div class="weather-strip"><div class="weather-head">☁ ${escapeHtml(stadium.park)} <span class="roof-tag">Dome</span></div></div>`;
-  }
-  const w = nflWeatherCache[game.home_team];
-  if(!w) return `<div class="weather-strip"><div class="weather-head">☁ ${escapeHtml(stadium.park)}</div></div>`;
-  const gameHourUtc = game.commence_time.slice(0,13) + ':00';
-  const startIdx = w.time.indexOf(gameHourUtc);
-  if(startIdx === -1){
-    return `<div class="weather-strip"><div class="weather-head">☁ ${escapeHtml(stadium.park)} <span class="weather-note">forecast beyond 7-day window</span></div></div>`;
-  }
-  const rating = nflWindImpact(w.wind[startIdx]);
-  const precip = w.precip[startIdx];
-  return `<div class="weather-strip">
-    <div class="weather-head">☁ ${escapeHtml(stadium.park)}
-      <span class="rating-tag ${rating.cls}" title="Wind-speed heuristic at kickoff — 15+ mph starts affecting passing/kicking, 20+ is a real factor. Not a betting signal.">${rating.dot} ${rating.label}</span>
-      <span class="weather-inline">${Math.round(w.temp[startIdx])}°F · ${Math.round(w.wind[startIdx])}mph${precip >= 30 ? ` · ${precip}% rain` : ''}</span>
-    </div>
-  </div>`;
-}
 
 // ---------- shared NFL position-bucket / injury-status helpers ----------
 // Same grouping the NFL Dashboard's Injury Center already uses — shared here
@@ -1173,14 +1071,21 @@ function buildNflInjuriesHtml(game){
       ${side.record ? `<span class="nba-record">${escapeHtml(side.record)}</span>` : ''}
     </div>`;
     if(!side.injuries.length) return `<div class="injuries-team">${head}<div class="hr-note">No players listed right now.</div></div>`;
+    // Who steps in for an injured starter — keyed by the injured player's id
+    // so it can render right on that player's own row instead of a separate
+    // table (this used to be nfl.js's standalone "Fantasy Impact" card).
+    const nextManByOutId = {};
+    (side.nextMen || []).forEach(n => { nextManByOutId[n.outId] = n; });
     const byBucket = {};
     side.injuries.forEach(i => { (byBucket[nflBucketFor(i.position)] = byBucket[nflBucketFor(i.position)] || []).push(i); });
     const groups = Object.entries(byBucket).map(([bucket, list])=>`
       <div class="nfl-pos-group">${escapeHtml(bucket)}</div>
-      <ul class="nba-injury-list">${list.map(i=>
-        `<li>${escapeHtml(i.name)} <span class="hand-tag">${escapeHtml(i.position)}</span>
-         <span class="${nflStatusClass(i.status)}">${escapeHtml(i.status)}</span>${i.starter ? ' <span class="nfl-starter-tag">Starter</span>' : ''}</li>`
-      ).join('')}</ul>`).join('');
+      <ul class="nba-injury-list">${list.map(i=>{
+        const nextMan = nextManByOutId[i.id];
+        return `<li>${escapeHtml(i.name)} <span class="hand-tag">${escapeHtml(i.position)}</span>
+         <span class="${nflStatusClass(i.status)}">${escapeHtml(i.status)}</span>${i.starter ? ' <span class="nfl-starter-tag">Starter</span>' : ''}
+         ${nextMan ? `<div class="next-man">→ ${escapeHtml(nextMan.in)}</div>` : ''}</li>`;
+      }).join('')}</ul>`).join('');
     return `<div class="injuries-team">${head}${groups}</div>`;
   };
   return `<div class="injuries-strip">

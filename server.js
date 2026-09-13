@@ -1263,8 +1263,8 @@ function createApp({
       const awayTeam = teams.find(t => t.name === away);
       if (!homeTeam || !awayTeam) return res.status(400).json({ error: 'Unknown team' });
       const [homeInj, awayInj] = await Promise.all([
-        nflDepthAndInjuries(homeTeam.id).catch(() => ({ injuries: [] })),
-        nflDepthAndInjuries(awayTeam.id).catch(() => ({ injuries: [] }))
+        nflDepthAndInjuries(homeTeam.id).catch(() => ({ injuries: [], nextMen: [] })),
+        nflDepthAndInjuries(awayTeam.id).catch(() => ({ injuries: [], nextMen: [] }))
       ]);
       const recordFor = id => {
         const s = standings[id];
@@ -1272,8 +1272,8 @@ function createApp({
         return s.ties ? `${s.wins}-${s.losses}-${s.ties}` : `${s.wins}-${s.losses}`;
       };
       res.json({
-        home: { name: home, logo: homeTeam.logo, record: recordFor(homeTeam.id), injuries: homeInj.injuries },
-        away: { name: away, logo: awayTeam.logo, record: recordFor(awayTeam.id), injuries: awayInj.injuries }
+        home: { name: home, logo: homeTeam.logo, record: recordFor(homeTeam.id), injuries: homeInj.injuries, nextMen: homeInj.nextMen },
+        away: { name: away, logo: awayTeam.logo, record: recordFor(awayTeam.id), injuries: awayInj.injuries, nextMen: awayInj.nextMen }
       });
     })().catch(err => sendUpstreamError(res, err));
   });

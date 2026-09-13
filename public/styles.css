@@ -705,7 +705,6 @@
   color:var(--text-dim); text-align:center; text-transform:none; letter-spacing:0;
 }
 .weather-note{font-size:11px; color:var(--text-faint);}
-.weather-inline{font-family:var(--font-mono); font-size:11px; color:var(--text-dim); margin-left:2px;}
 .analyze-cost{font-size:10.5px; color:var(--text-faint); margin-left:8px;}
 
 /* ---------- Per-game injury report (NFL) ---------- */
@@ -723,6 +722,7 @@
 }
 .injuries-body{display:flex; gap:16px; flex-wrap:wrap;}
 .injuries-team{flex:1; min-width:200px;}
+.next-man{font-size:10.5px; color:var(--text-faint); margin-top:2px;}
 
 /* ---------- NFL live field tracker (line of scrimmage / down / possession) ---------- */
 .nfl-field-wrap{

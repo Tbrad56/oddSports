@@ -180,12 +180,9 @@
         fetchStartingPitchers(games).then(scheduleRender).catch(()=>{});
         fetchTopHitters(games).then(scheduleRender).catch(()=>{});
       }
-      // NFL: same free Open-Meteo forecast pull, no top-performers box yet —
-      // season stat leaders aren't available cheaply pregame (see note where
-      // this was scoped) and the season hasn't started as of this feature
-      // landing, so there's nothing real to show there yet anyway.
+      // NFL: injury report (weather's no longer shown on Board at all —
+      // that space is injuries/replacements now).
       if(sport === 'americanfootball_nfl' && games.length){
-        fetchNflStadiumWeather(games).then(scheduleRender).catch(()=>{});
         fetchNflGameInjuries(games).then(scheduleRender).catch(()=>{});
       }
       // Live scores: fetch now, then keep polling every 30s while this sport is loaded
@@ -965,19 +962,14 @@
           card.appendChild(p.firstElementChild);
         }
       }
-      // NFL: stadium weather strip (no top-performers box yet — see note
-      // in buildNflWeatherStrip's caller in refresh() about why), plus the
-      // live line-of-scrimmage/down/possession field tracker. NCAAF gets the
-      // same field tracker (ESPN's live situation data works the same way)
-      // but no weather strip — hundreds of schools, no stadium map to key off.
+      // NFL: injury report + who's stepping in for each injured starter,
+      // plus the live line-of-scrimmage/down/possession field tracker.
+      // Weather's gone entirely now — this space is injuries/replacements
+      // instead. NCAAF gets the same field tracker (ESPN's live situation
+      // data works the same way) but no injury report — hundreds of
+      // schools, no depth-chart endpoint to key off.
       if(sportKey === 'americanfootball_nfl' || sportKey === 'americanfootball_ncaaf'){
         if(sportKey === 'americanfootball_nfl'){
-          const weatherHtml = buildNflWeatherStrip(game);
-          if(weatherHtml){
-            const w = document.createElement('div');
-            w.innerHTML = weatherHtml;
-            card.appendChild(w.firstElementChild);
-          }
           const inj = document.createElement('div');
           inj.innerHTML = buildNflInjuriesHtml(game);
           card.appendChild(inj.firstElementChild);
