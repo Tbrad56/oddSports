@@ -2175,9 +2175,17 @@ function createApp({
         const ba = st.avg !== undefined ? Number(st.avg) : null;
         const obp = st.obp !== undefined ? Number(st.obp) : null;
         const slg = st.slg !== undefined ? Number(st.slg) : null;
+        // hr here is the hand-SPLIT total (e.g. HR vs LHP only) — deliberately
+        // matched to ba/obp/slg/iso above for "how does he hit lefties"
+        // matchup context. seasonHr is the real, full-season, unsplit total —
+        // used for "how many has he hit this year" displays (HR Leaders, the
+        // plain HR badge), which is a different question and was previously
+        // being answered with the split number by mistake.
         const hr = st.homeRuns !== undefined ? Number(st.homeRuns) : null;
+        const seasonSt = b.splits.season || {};
+        const seasonHr = seasonSt.homeRuns !== undefined ? Number(seasonSt.homeRuns) : null;
         const iso = (slg !== null && ba !== null) ? Math.round((slg - ba) * 1000) / 1000 : null;
-        return { id, name: b.name, hand: b.hand, hr, ba, obp, slg, iso, bvp: (bvpMap && bvpMap[id]) || null };
+        return { id, name: b.name, hand: b.hand, hr, seasonHr, ba, obp, slg, iso, bvp: (bvpMap && bvpMap[id]) || null };
       }).filter(Boolean);
     }
 

@@ -843,6 +843,7 @@ test('hr-matchups: matched game returns Season/vl/vr pitcher rows and batter spl
   assert.equal(res.body.home.lineupPosted, true);
   const homeSlugger = res.body.home.batters.find(b => b.name === 'Home Slugger');
   assert.equal(homeSlugger.hr, 4);              // vl split, since facing an L pitcher
+  assert.equal(homeSlugger.seasonHr, 13);       // full-season total, not the split
   assert.equal(homeSlugger.slg, 0.41);
   assert.ok(Math.abs(homeSlugger.iso - (0.41 - 0.255)) < 1e-9);
 
@@ -857,6 +858,7 @@ test('hr-matchups: matched game returns Season/vl/vr pitcher rows and batter spl
   // away.batters face the HOME pitcher's hand (Home Ace, R) -> read the vr split
   const awaySlugger = res.body.away.batters.find(b => b.name === 'Away Slugger');
   assert.equal(awaySlugger.hr, 8);               // vr split, since facing an R pitcher
+  assert.equal(awaySlugger.seasonHr, 11);        // full-season total, not the split
 });
 
 test('hr-matchups: lineup not posted -> lineupPosted false, empty batters, pitcher still returned', async () => {

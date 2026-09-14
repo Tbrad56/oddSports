@@ -646,14 +646,14 @@
     const pool = all.map(b => ({ b, rating: hrWatchRating(b, b.pitcher, game) })).filter(x => x.rating);
     if(!pool.length) return '';
     const watchTop = pool.slice().sort((a,b)=>b.rating.score-a.rating.score).slice(0,3);
-    const leaders = all.filter(b => b.hr !== null && b.hr !== undefined).sort((a,b)=>b.hr-a.hr).slice(0,3);
+    const leaders = all.filter(b => b.seasonHr !== null && b.seasonHr !== undefined).sort((a,b)=>b.seasonHr-a.seasonHr).slice(0,3);
 
     const watchHtml = `<div class="hr-watch-panel">
       <div class="top-hitters-title">HR Watch</div>
       ${watchTop.map(({b,rating})=>`<div class="hr-watch-row">
         <div class="hr-watch-top">
           <div><div class="hitter-name">${escapeHtml(b.name)}</div><div class="hitter-team">${escapeHtml(b.team)}</div></div>
-          <div style="text-align:right; flex-shrink:0;">${starsHtml(rating.stars)}<span class="hitter-stat-sub">${b.hr} HR</span></div>
+          <div style="text-align:right; flex-shrink:0;">${starsHtml(rating.stars)}<span class="hitter-stat-sub">${b.seasonHr ?? '—'} HR</span></div>
         </div>
         <div class="hr-watch-why">${escapeHtml(rating.summary)}</div>
       </div>`).join('')}
@@ -662,7 +662,7 @@
       <div class="top-hitters-title">HR Leaders</div>
       ${leaders.map(b=>`<div class="hitter-row">
         <div><div class="hitter-name">${escapeHtml(b.name)}</div><div class="hitter-team">${escapeHtml(b.team)}</div></div>
-        <div><span class="hitter-stat">${b.hr}</span><span class="hitter-stat-sub">HR</span></div>
+        <div><span class="hitter-stat">${b.seasonHr}</span><span class="hitter-stat-sub">HR</span></div>
       </div>`).join('')}
     </div>` : '';
 
@@ -742,7 +742,7 @@
         + `<td style="font-weight:600; white-space:nowrap;">${playerAvatarHtml(b.id, 22)}${escapeHtml(b.name)} <span class="hand-tag">${escapeHtml(b.hand)}</span></td>`
         + oddsCell
         + bvpCell
-        + `<td>${b.hr !== null ? b.hr : '—'}</td>`
+        + `<td>${b.seasonHr !== null ? b.seasonHr : '—'}</td>`
         + statCell(b.ba, 0.280, 0.230, n=>n.toFixed(3))
         + statCell(b.obp, 0.350, 0.300, n=>n.toFixed(3))
         + statCell(b.slg, 0.480, 0.370, n=>n.toFixed(3))
