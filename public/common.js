@@ -149,6 +149,14 @@ function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+// Avatar bubble for a ready-made URL (the server already resolved a
+// headshot). Shared across pages — Board's props table and the NFL
+// breakdown's Player Form panel both use it.
+function avatarUrlHtml(url, size){
+  if(!url) return '';
+  return `<img class="player-avatar" src="${escapeHtml(url)}" width="${size}" height="${size}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
+}
+
 // ---------- book styling & labels ----------
 function bookStyleFor(key){
   const k = key.toLowerCase();
@@ -292,6 +300,16 @@ function trackBet({sport, homeTeam, awayTeam, commenceTime, matchup, market, sel
     body: JSON.stringify({sport, homeTeam, awayTeam, commenceTime, matchup, market, selection, point})
   }).catch(()=>{});
 }
+// Same idea as trackBet, for a player prop leg — only MLB and NFL are
+// gradable server-side right now (no stat-lookup infra for other sports yet).
+const PROP_TRACKABLE_SPORTS = new Set(['baseball_mlb', 'americanfootball_nfl']);
+function trackProp({sport, player, market, line, side, matchup, homeTeam, awayTeam, commenceTime}){
+  if(!PROP_TRACKABLE_SPORTS.has(sport)) return;
+  fetch('/api/track-prop', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({sport, player, market, line, side, matchup, homeTeam, awayTeam, commenceTime})
+  }).catch(()=>{});
+}
 function removeLegFromSlip(id){
   saveSlip(getSlip().filter(l=>l.id!==id));
   updateSlipBadge();
@@ -385,7 +403,7 @@ const NAV_GROUPS = [
   { key:'slip', href:'/slip.html', icon:'🎟️', label:'Slip', badge:true }
 ];
 // Which group lights up for a page not itself in the group list.
-const PAGE_TO_GROUP = { getprops:'mlb', record:'mlb', nba:'nba', nfl:'nfl', stats:'tools', cheatsheet:'tools', notifications:'tools' };
+const PAGE_TO_GROUP = { getprops:'mlb', record:'mlb', nba:'nba', stats:'tools', cheatsheet:'tools', notifications:'tools' };
 const SPORT_TO_GROUP = { baseball_mlb:'mlb', basketball_nba:'nba', americanfootball_nfl:'nfl' };
 
 function renderNav(activePage){
@@ -777,34 +795,46 @@ function scoreClass(score){
   return {cls:'w-mod', label:'Neutral', dot:'●'};
 }
 
-// Mini baseball field with a wind arrow, drawn relative to the park:
-// center field always points up, so an up arrow = wind blowing straight out.
-function windFieldSvg(windFromDeg, windMph, bearing){
+// Compact baseball-field-with-wind-arrow icon, one per hourly weather slot —
+// center field always points up, so an up arrow = wind blowing straight out
+// for THAT hour specifically, which is why it's built fresh per slot rather
+// than once for the whole card: as the hourly forecast changes, so does the
+// arrow. No fence-distance labels here (removed — see park dims history).
+function miniWindFieldSvg(windFromDeg, windMph, bearing){
   const rel = windRelativeToPark(windFromDeg, windMph, bearing);
   const rotation = ((windFromDeg + 180) - bearing + 360) % 360; // 0 = out to CF
   const arrowColor = rel.label === 'out' ? 'var(--good)' : rel.label === 'in' ? 'var(--bad)' : 'var(--warn)';
-  return `<span class="wind-field-wrap" title="Wind ${Math.round(windMph)} mph, blowing ${rel.label === 'cross' ? 'across the field' : rel.label + (rel.label==='out' ? ' toward CF' : ' from CF')} (field shown with CF up; park orientation approx.)">
-    <svg class="wind-field" viewBox="0 0 100 100" width="88" height="88" aria-hidden="true">
+  return `<svg class="ws-field" viewBox="0 0 100 100" width="46" height="46" aria-hidden="true">
       <path d="M50,88 L4,44 A65,65 0 0 1 96,44 Z" fill="#2F6B3C" stroke="#1C3F24" stroke-width="2"/>
       <path d="M50,88 L74,64 L50,40 L26,64 Z" fill="#A5713F" stroke="#7A4F28" stroke-width="1.5"/>
       <path d="M50,76 L63,64 L50,52 L37,64 Z" fill="#3D8A4F" stroke="#276334" stroke-width="1"/>
       <circle cx="50" cy="64" r="4" fill="#8A5A34" stroke="#6B4527" stroke-width="1"/>
-      <rect x="71.7" y="61.7" width="4.6" height="4.6" fill="#F5F5F5" stroke="#999" stroke-width="0.6" transform="rotate(45 74 64)"/>
-      <rect x="47.7" y="37.7" width="4.6" height="4.6" fill="#F5F5F5" stroke="#999" stroke-width="0.6" transform="rotate(45 50 40)"/>
-      <rect x="23.7" y="61.7" width="4.6" height="4.6" fill="#F5F5F5" stroke="#999" stroke-width="0.6" transform="rotate(45 26 64)"/>
       <path d="M46,88 L54,88 L54,84 L50,80 L46,84 Z" fill="#F5F5F5" stroke="#999" stroke-width="0.6"/>
-      <g transform="rotate(${rotation.toFixed(0)} 50 33)">
-        <circle cx="50" cy="33" r="12" fill="${arrowColor}" opacity="0.94" stroke="#1B1B1B" stroke-width="1"/>
-        <path d="M50,41 L50,25 M50,25 l-6,6 M50,25 l6,6" stroke="#1B1B1B" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+      <g transform="rotate(${rotation.toFixed(0)} 50 38)">
+        <circle cx="50" cy="38" r="14" fill="${arrowColor}" opacity="0.94" stroke="#1B1B1B" stroke-width="1"/>
+        <path d="M50,48 L50,28 M50,28 l-7,7 M50,28 l7,7" stroke="#1B1B1B" stroke-width="4" fill="none" stroke-linecap="round"/>
       </g>
-    </svg>
-    <span class="wind-mph">${Math.round(windMph)}<br>mph</span>
-  </span>`;
+    </svg>`;
 }
 
 // Builds the hourly weather strip for an MLB game card (first pitch through +4 hours).
 // extraHtml (e.g. a top-HR-hitters box) renders alongside the slots, filling
 // the leftover horizontal space to the right of them on wider cards.
+// First-pitch carry-conditions rating for a game, shared by the weather strip
+// and the HR Watch star rating below — a single source of truth so both
+// agree on what "good hitting weather" means for this game.
+function firstPitchWeatherRating(game){
+  const stadium = MLB_STADIUMS[game.home_team];
+  if(!stadium || stadium.roof === 'dome') return null;
+  const w = weatherCache[game.home_team];
+  if(!w) return null;
+  const gameHourUtc = game.commence_time.slice(0,13) + ':00';
+  const startIdx = w.time.indexOf(gameHourUtc);
+  if(startIdx === -1) return null;
+  const {score} = hittingScore(w.temp[startIdx], w.windDir[startIdx], w.wind[startIdx], w.precip[startIdx], stadium.bearing);
+  return scoreClass(score);
+}
+
 function buildWeatherStrip(game, extraHtml){
   const stadium = MLB_STADIUMS[game.home_team];
   if(!stadium) return '';
@@ -812,7 +842,6 @@ function buildWeatherStrip(game, extraHtml){
 
   let slotsHtml = '';
   let firstPitchRating = null;
-  let firstPitchWind = null;
   if(w){
     const gameHourUtc = game.commence_time.slice(0,13) + ':00'; // floor to the hour, matches Open-Meteo's UTC time format
     const startIdx = w.time.indexOf(gameHourUtc);
@@ -824,16 +853,18 @@ function buildWeatherStrip(game, extraHtml){
         const rating = scoreClass(score);
         if(i === startIdx){
           firstPitchRating = rating;
-          firstPitchWind = {dir: w.windDir[i], mph: w.wind[i]};
         }
         const windTxt = rel.label === 'cross'
           ? `${Math.round(w.wind[i])} mph cross`
           : `${Math.round(w.wind[i])} mph ${rel.label}`;
         slotsHtml += `<div class="weather-slot ${rating.cls}" title="${rating.label} conditions · wind ${windCompass(w.windDir[i])} ${Math.round(w.wind[i])} mph, ${rel.label === 'out' ? 'blowing out toward CF' : rel.label === 'in' ? 'blowing in from CF' : 'crosswind'} (park orientation approx.)">
-          <div class="w-time">${local.toLocaleTimeString([], {hour:'numeric'})}${i===startIdx ? ' · 1st pitch' : ''}</div>
-          <div class="w-temp">${Math.round(w.temp[i])}°F</div>
-          <div class="w-wind">${windTxt}</div>
-          <div class="w-rain${precip >= 30 ? ' wet' : ''}">${precip}% rain</div>
+          ${miniWindFieldSvg(w.windDir[i], w.wind[i], stadium.bearing)}
+          <div class="ws-info">
+            <div class="w-time">${local.toLocaleTimeString([], {hour:'numeric'})}${i===startIdx ? ' · 1st pitch' : ''}</div>
+            <div class="w-temp">${Math.round(w.temp[i])}°F</div>
+            <div class="w-wind">${windTxt}</div>
+            <div class="w-rain${precip >= 30 ? ' wet' : ''}">${precip}% rain</div>
+          </div>
         </div>`;
       }
     }
@@ -847,10 +878,6 @@ function buildWeatherStrip(game, extraHtml){
   const ratingTag = (firstPitchRating && stadium.roof !== 'dome')
     ? `<span class="rating-tag ${firstPitchRating.cls}" title="Carry-conditions heuristic (temp + park-relative wind + rain risk) at first pitch. Rates weather only — not a betting signal.">${firstPitchRating.dot} ${firstPitchRating.label}</span>`
     : '';
-  const fieldSvg = (firstPitchWind && stadium.roof !== 'dome')
-    ? windFieldSvg(firstPitchWind.dir, firstPitchWind.mph, stadium.bearing)
-    : '';
-
   let body;
   if(stadium.roof === 'dome'){
     body = '<div class="weather-note">Indoor stadium — conditions don\'t affect play.</div>';
@@ -863,80 +890,129 @@ function buildWeatherStrip(game, extraHtml){
   }
 
   return `<div class="weather-strip">
-    <div class="weather-head">☁ ${escapeHtml(stadium.park)} ${roofTag} ${ratingTag} ${fieldSvg}</div>
-    <div class="weather-body-row">${body}${extraHtml || ''}</div>
+    <div class="weather-head">☁ ${escapeHtml(stadium.park)} ${roofTag} ${ratingTag}</div>
+    <div class="weather-body-row">${body}</div>
+    ${extraHtml || ''}
   </div>`;
 }
 
-// ---------- NFL stadium weather/wind (same free Open-Meteo source as MLB,
-// separate cache since it's a different set of lat/lons and only needs the
-// current game-day slots, not a 7-day hourly window). bearing is each
-// stadium's approximate long-axis/end-zone orientation (±15° estimates, same
-// caveat as MLB_STADIUMS) so wind can be described as blowing end-zone to
-// end-zone rather than just a raw compass direction. ----------
-const NFL_STADIUMS = {
-  "Arizona Cardinals":{bearing:135,lat:33.5276,lon:-112.2626,park:"State Farm Stadium, Glendale",dome:true},
-  "Atlanta Falcons":{bearing:45,lat:33.7554,lon:-84.4008,park:"Mercedes-Benz Stadium, Atlanta",dome:true},
-  "Baltimore Ravens":{bearing:20,lat:39.2780,lon:-76.6227,park:"M&T Bank Stadium, Baltimore",dome:false},
-  "Buffalo Bills":{bearing:0,lat:42.7738,lon:-78.7870,park:"Highmark Stadium, Orchard Park",dome:false},
-  "Carolina Panthers":{bearing:20,lat:35.2258,lon:-80.8528,park:"Bank of America Stadium, Charlotte",dome:false},
-  "Chicago Bears":{bearing:0,lat:41.8623,lon:-87.6167,park:"Soldier Field, Chicago",dome:false},
-  "Cincinnati Bengals":{bearing:5,lat:39.0955,lon:-84.5161,park:"Paycor Stadium, Cincinnati",dome:false},
-  "Cleveland Browns":{bearing:355,lat:41.5061,lon:-81.6995,park:"Huntington Bank Field, Cleveland",dome:false},
-  "Dallas Cowboys":{bearing:45,lat:32.7473,lon:-97.0945,park:"AT&T Stadium, Arlington",dome:true},
-  "Denver Broncos":{bearing:20,lat:39.7439,lon:-105.0201,park:"Empower Field at Mile High, Denver",dome:false},
-  "Detroit Lions":{bearing:0,lat:42.3400,lon:-83.0456,park:"Ford Field, Detroit",dome:true},
-  "Green Bay Packers":{bearing:10,lat:44.5013,lon:-88.0622,park:"Lambeau Field, Green Bay",dome:false},
-  "Houston Texans":{bearing:150,lat:29.6847,lon:-95.4107,park:"NRG Stadium, Houston",dome:true},
-  "Indianapolis Colts":{bearing:150,lat:39.7601,lon:-86.1639,park:"Lucas Oil Stadium, Indianapolis",dome:true},
-  "Jacksonville Jaguars":{bearing:20,lat:30.3240,lon:-81.6373,park:"EverBank Stadium, Jacksonville",dome:false},
-  "Kansas City Chiefs":{bearing:135,lat:39.0489,lon:-94.4839,park:"GEHA Field at Arrowhead Stadium, Kansas City",dome:false},
-  "Las Vegas Raiders":{bearing:0,lat:36.0909,lon:-115.1833,park:"Allegiant Stadium, Las Vegas",dome:true},
-  "Los Angeles Chargers":{bearing:135,lat:33.9535,lon:-118.3392,park:"SoFi Stadium, Inglewood",dome:true},
-  "Los Angeles Rams":{bearing:135,lat:33.9535,lon:-118.3392,park:"SoFi Stadium, Inglewood",dome:true},
-  "Miami Dolphins":{bearing:135,lat:25.9580,lon:-80.2389,park:"Hard Rock Stadium, Miami Gardens",dome:false},
-  "Minnesota Vikings":{bearing:0,lat:44.9736,lon:-93.2575,park:"U.S. Bank Stadium, Minneapolis",dome:true},
-  "New England Patriots":{bearing:135,lat:42.0909,lon:-71.2643,park:"Gillette Stadium, Foxborough",dome:false},
-  "New Orleans Saints":{bearing:0,lat:29.9511,lon:-90.0812,park:"Caesars Superdome, New Orleans",dome:true},
-  "New York Giants":{bearing:135,lat:40.8128,lon:-74.0742,park:"MetLife Stadium, East Rutherford",dome:false},
-  "New York Jets":{bearing:135,lat:40.8128,lon:-74.0742,park:"MetLife Stadium, East Rutherford",dome:false},
-  "Philadelphia Eagles":{bearing:20,lat:39.9008,lon:-75.1675,park:"Lincoln Financial Field, Philadelphia",dome:false},
-  "Pittsburgh Steelers":{bearing:20,lat:40.4468,lon:-80.0158,park:"Acrisure Stadium, Pittsburgh",dome:false},
-  "Seattle Seahawks":{bearing:20,lat:47.5952,lon:-122.3316,park:"Lumen Field, Seattle",dome:false},
-  "San Francisco 49ers":{bearing:135,lat:37.4030,lon:-121.9696,park:"Levi's Stadium, Santa Clara",dome:false},
-  "Tampa Bay Buccaneers":{bearing:20,lat:27.9759,lon:-82.5033,park:"Raymond James Stadium, Tampa",dome:false},
-  "Tennessee Titans":{bearing:20,lat:36.1665,lon:-86.7713,park:"Nissan Stadium, Nashville",dome:false},
-  "Washington Commanders":{bearing:135,lat:38.9076,lon:-76.8645,park:"Northwest Stadium, Landover",dome:false}
-};
+// ---------- park dimensions (which fields are more HR-friendly) ----------
+// Real fence distances from MLB's own venues API (see server.js's
+// mlbParkDimensions for sourcing/methodology) — fetched once per session,
+// since dimensions essentially never change mid-season.
+let mlbParkDimsCache = null;
+async function fetchMlbParkDimensions(){
+  if(mlbParkDimsCache) return mlbParkDimsCache;
+  try{
+    const res = await fetch('/api/mlb/park-dimensions');
+    if(!res.ok) return null;
+    mlbParkDimsCache = await res.json();
+  }catch(e){ return null; }
+  return mlbParkDimsCache;
+}
+// Park dimensions no longer render on the card (the field diagram/fence
+// numbers were removed) — mlbParkDimsCache is still fetched and used purely
+// as a scoring input to hrWatchRating below (park tier + Coors altitude note).
 
-let nflWeatherCache = {}; // home team name -> {time[], temp[], precip[], wind[], windDir[]}
-
-async function fetchNflStadiumWeather(games){
-  nflWeatherCache = {};
-  const teams = [...new Set(games.map(g=>g.home_team).filter(t=>NFL_STADIUMS[t] && !NFL_STADIUMS[t].dome))];
-  if(!teams.length) return;
-  const lats = teams.map(t=>NFL_STADIUMS[t].lat).join(',');
-  const lons = teams.map(t=>NFL_STADIUMS[t].lon).join(',');
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lons}`
-    + `&hourly=temperature_2m,precipitation_probability,wind_speed_10m,wind_direction_10m`
-    + `&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=UTC&forecast_days=7`;
-  const res = await fetch(url);
-  if(!res.ok) return;
-  let data = await res.json();
-  if(!Array.isArray(data)) data = [data];
-  teams.forEach((team, i)=>{
-    const h = data[i] && data[i].hourly;
-    if(!h || !h.time) return;
-    nflWeatherCache[team] = { time: h.time, temp: h.temperature_2m, precip: h.precipitation_probability, wind: h.wind_speed_10m, windDir: h.wind_direction_10m };
-  });
+// ---------- HR Watch: composite star rating per batter ----------
+// Combines three things we already fetch for other cards — no extra API
+// calls: (a) hand-split power vs today's specific opposing pitcher (from
+// hr-matchups), (b) that park's fence-distance tier (park dimensions), and
+// (c) first-pitch carry conditions (weather). Stars are a transparent sum of
+// bounded pieces, not a black box — every piece shows up in the tooltip.
+//
+// MLB StatsAPI sitCodes are symmetric: 'vl' always means "vs lefties," so the
+// same code that picks a batter's split vs a given pitcher hand also picks a
+// pitcher's split vs a given batter hand.
+function hrSitCodeForBatterHand(batterHand, pitcherHand){
+  if(batterHand === 'S') return pitcherHand === 'L' ? 'vr' : 'vl'; // switch-hitters take the platoon side
+  return batterHand === 'L' ? 'vl' : 'vr';
 }
 
-// Football cares about raw wind speed (passing/kicking) more than direction,
-// but the field diagram still shows direction relative to the "downfield" axis.
-function nflWindImpact(windMph){
-  if(windMph >= 20) return {cls:'w-bad', label:'High-wind game', dot:'▼'};
-  if(windMph >= 15) return {cls:'w-mod', label:'Windy', dot:'●'};
-  return {cls:'w-good', label:'Calm', dot:'▲'};
+// Builds a one-sentence, plain-English readout from the same numbers the
+// score is built from — not a model call, just deterministic phrasing over
+// real stats, so it's free and instant but still reads like an explanation
+// rather than a stat dump.
+function hrWatchSummary(batter, pitcher, park, weather, powerBand, pitcherHr9){
+  const parts = [];
+  const first = batter.name.split(' ')[0];
+
+  if(powerBand === 'elite') parts.push(`${first} has real thump vs ${pitcher && pitcher.hand ? pitcher.hand + 'HP' : 'this hand'} (${batter.iso.toFixed(3)} ISO)`);
+  else if(powerBand === 'good') parts.push(`${first} brings solid pop vs ${pitcher && pitcher.hand ? pitcher.hand + 'HP' : 'this hand'} (${batter.iso.toFixed(3)} ISO)`);
+  else parts.push(`${first}'s power is modest here (${batter.iso.toFixed(3)} ISO)`);
+
+  if(pitcher && pitcherHr9 != null){
+    if(pitcherHr9 >= 1.3) parts.push(`facing a homer-prone ${pitcher.name} (${pitcherHr9.toFixed(2)} HR/9)`);
+    else if(pitcherHr9 <= 0.8) parts.push(`against a stingy ${pitcher.name} (${pitcherHr9.toFixed(2)} HR/9)`);
+  }
+
+  if(park){
+    if(park.altitudeNote) parts.push(`at altitude, which carries further than the fences suggest`);
+    else if(park.tier === 'Compact') parts.push(`in a hitter-friendly park`);
+    else if(park.tier === 'Spacious') parts.push(`in a pitcher-friendly park`);
+  }
+
+  if(weather){
+    if(weather.label === 'HR-friendly') parts.push(`with the wind helping carry`);
+    else if(weather.label === 'Carry-killing') parts.push(`fighting the wind tonight`);
+  }
+
+  if(batter.bvp && batter.bvp.ab >= 8 && batter.bvp.hr > 0){
+    parts.push(`and has gone deep off him before (${batter.bvp.hr} HR in ${batter.bvp.ab} AB career)`);
+  }
+
+  // First clause reads as the subject/verb, the rest join as ", " clauses.
+  return parts[0] + (parts.length > 1 ? ', ' + parts.slice(1).join(', ') : '') + '.';
+}
+
+function hrWatchRating(batter, pitcher, game){
+  if(batter.iso == null) return null;
+  const clamp = (v,lo,hi) => Math.max(lo, Math.min(hi, v));
+  let score = 0;
+
+  // Power at the plate, already hand-split vs today's opposing pitcher throwing hand.
+  const isoPart = clamp(batter.iso / 0.200, 0, 1.5) * 2;
+  score += isoPart;
+  const powerBand = batter.iso >= 0.200 ? 'elite' : batter.iso >= 0.150 ? 'good' : 'modest';
+
+  // How many HRs this pitcher gives up to same-handed batters.
+  let pitcherHr9 = null;
+  if(pitcher && pitcher.rows){
+    const code = hrSitCodeForBatterHand(batter.hand, pitcher.hand);
+    const st = pitcher.rows[code] || pitcher.rows.season;
+    if(st && st.hr9 != null){
+      pitcherHr9 = st.hr9;
+      score += clamp(st.hr9 / 1.3, 0, 1.6) * 1;
+    }
+  }
+
+  // Ballpark: real fence-distance tier, with the Coors altitude caveat overriding
+  // a "Spacious"-by-distance park that's actually MLB's most HR-friendly.
+  const park = mlbParkDimsCache && mlbParkDimsCache[game.home_team];
+  if(park){
+    let parkPart = park.tier === 'Compact' ? 0.7 : park.tier === 'Spacious' ? -0.7 : 0;
+    if(park.altitudeNote) parkPart = 0.7;
+    score += parkPart;
+  }
+
+  // First-pitch carry conditions (temp + park-relative wind + rain risk).
+  const weather = firstPitchWeatherRating(game);
+  if(weather){
+    score += weather.label === 'HR-friendly' ? 0.5 : weather.label === 'Carry-killing' ? -0.5 : 0;
+  }
+
+  // Real career history vs this exact pitcher — tiny samples, small nudge only.
+  if(batter.bvp && batter.bvp.ab >= 8 && batter.bvp.hr > 0){
+    score += 0.3;
+  }
+
+  const stars = score >= 4 ? 5 : score >= 3 ? 4 : score >= 2 ? 3 : score >= 1 ? 2 : 1;
+  const summary = hrWatchSummary(batter, pitcher, park, weather, powerBand, pitcherHr9);
+  return { score, stars, summary };
+}
+
+function starsHtml(n){
+  return `<span class="hr-stars" aria-hidden="true"><span class="hr-stars-fill">${'★'.repeat(n)}</span><span class="hr-stars-empty">${'☆'.repeat(5-n)}</span></span>`;
 }
 
 // ESPN's team-logo CDN, keyed by league path — driven by the numeric ESPN
@@ -1084,50 +1160,253 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
   </div>`;
 }
 
-// Builds the hourly weather strip for an NFL game card — same layout/classes
-// as buildWeatherStrip so it shares all of that section's CSS, just swapping
-// the baseball-specific carry-condition rating for a wind-impact-on-the-
-// passing/kicking game rating (mirrors the thresholds nfl.js's Dashboard tab
-// already uses).
-function buildNflWeatherStrip(game){
-  const stadium = NFL_STADIUMS[game.home_team];
-  if(!stadium) return '';
-  if(stadium.dome){
-    return `<div class="weather-strip">
-      <div class="weather-head">☁ ${escapeHtml(stadium.park)} <span class="roof-tag">Dome — weather n/a</span></div>
-      <div class="weather-body-row"><div class="weather-note">Indoor stadium — conditions don't affect play.</div></div>
+
+// ---------- shared NFL position-bucket / injury-status helpers ----------
+// Same grouping the NFL Dashboard's Injury Center already uses — shared here
+// so Board's per-game version looks and reads identically, not like a
+// simplified knockoff.
+const NFL_POS_BUCKETS = [
+  ['QB', ['QB']],
+  ['RB', ['RB', 'FB']],
+  ['WR/TE', ['WR', 'TE']],
+  ['OL', ['LT', 'LG', 'C', 'RG', 'RT', 'OT', 'G', 'OL']],
+  ['Defense', ['LDE','RDE','DE','DT','NT','LILB','RILB','MLB','ILB','OLB','LOLB','ROLB','LB','LCB','RCB','CB','SS','FS','S','DB']],
+  ['Special Teams', ['PK','K','P','LS','H','PR','KR']]
+];
+function nflBucketFor(pos){ return (NFL_POS_BUCKETS.find(([, list]) => list.includes(pos)) || ['Other'])[0]; }
+function nflStatusClass(s){
+  const t = (s || '').toLowerCase();
+  if(t.includes('out') || t.includes('injured reserve') || t.includes('ir')) return 'nfl-status out';
+  if(t.includes('doubtful')) return 'nfl-status out';
+  if(t.includes('questionable')) return 'nfl-status quest';
+  return 'nfl-status limited';
+}
+
+// ---------- per-game injury report (replaces the old 5-hour weather grid's
+// screen space) ----------
+let nflInjuriesCache = {}; // "away|home" -> {home:{name,logo,record,injuries[]}, away:{...}}
+async function fetchNflGameInjuries(games){
+  const matchups = [...new Map(games.map(g=>[g.away_team+'|'+g.home_team, g])).values()];
+  await Promise.all(matchups.map(async g=>{
+    const key = g.away_team+'|'+g.home_team;
+    if(nflInjuriesCache[key]) return;
+    try{
+      const res = await fetch(`/api/nfl/game-injuries?home=${encodeURIComponent(g.home_team)}&away=${encodeURIComponent(g.away_team)}`);
+      if(!res.ok) return;
+      nflInjuriesCache[key] = await res.json();
+    }catch(e){ /* injuries are a bonus panel — quietly skip on failure */ }
+  }));
+}
+function buildNflInjuriesHtml(game){
+  const key = game.away_team+'|'+game.home_team;
+  const data = nflInjuriesCache[key];
+  if(!data) return `<div class="injuries-strip"><div class="injuries-head">🩺 Injury Report</div><div class="hr-note">Loading…</div></div>`;
+  const teamBlock = (side)=>{
+    const head = `<div class="nba-team-head">
+      ${side.logo ? `<img src="${escapeHtml(side.logo)}" width="20" height="20" alt="" loading="lazy" onerror="this.style.display='none'">` : ''}
+      <strong>${escapeHtml(side.name)}</strong>
+      ${side.record ? `<span class="nba-record">${escapeHtml(side.record)}</span>` : ''}
     </div>`;
+    if(!side.injuries.length) return `<div class="injuries-team">${head}<div class="hr-note">No players listed right now.</div></div>`;
+    // Who steps in for an injured starter — keyed by the injured player's id
+    // so it can render right on that player's own row instead of a separate
+    // table (this used to be nfl.js's standalone "Fantasy Impact" card).
+    const nextManByOutId = {};
+    (side.nextMen || []).forEach(n => { nextManByOutId[n.outId] = n; });
+    const byBucket = {};
+    side.injuries.forEach(i => { (byBucket[nflBucketFor(i.position)] = byBucket[nflBucketFor(i.position)] || []).push(i); });
+    const groups = Object.entries(byBucket).map(([bucket, list])=>`
+      <div class="nfl-pos-group">${escapeHtml(bucket)}</div>
+      <ul class="nba-injury-list">${list.map(i=>{
+        const nextMan = nextManByOutId[i.id];
+        return `<li>${escapeHtml(i.name)} <span class="hand-tag">${escapeHtml(i.position)}</span>
+         <span class="${nflStatusClass(i.status)}">${escapeHtml(i.status)}</span>${i.starter ? ' <span class="nfl-starter-tag">Starter</span>' : ''}
+         ${nextMan ? `<div class="next-man">→ ${escapeHtml(nextMan.in)}</div>` : ''}</li>`;
+      }).join('')}</ul>`).join('');
+    return `<div class="injuries-team">${head}${groups}</div>`;
+  };
+  return `<div class="injuries-strip">
+    <div class="injuries-head">🩺 Injury Report</div>
+    <div class="injuries-body">${teamBlock(data.away)}${teamBlock(data.home)}</div>
+  </div>`;
+}
+
+// ---------- NFL "Full Breakdown" (ported from the retired standalone NFL
+// Dashboard page, so Board can show it per-game on demand instead of a
+// separate page with its own team pickers). Shares the exact nba-*/nfl-*
+// CSS classes the old Dashboard used — same look, just a different host. ----------
+const nflFmt1 = v => v === null || v === undefined ? '—' : (Math.round(v*10)/10).toFixed(1);
+const nflRankChip = (rank) => {
+  if(!rank) return '';
+  const cls = rank <= 10 ? 'nba-rank good' : rank >= 23 ? 'nba-rank bad' : 'nba-rank';
+  return `<span class="${cls}">#${rank}</span>`;
+};
+function nflBreakdownTeamHead(side){
+  return `<div class="nba-team-head">
+    ${side.team.logo ? `<img src="${escapeHtml(side.team.logo)}" width="26" height="26" alt="" loading="lazy">` : ''}
+    <strong>${escapeHtml(side.team.name)}</strong>
+    <span class="nba-record">${escapeHtml(side.record || '')}</span>
+  </div>`;
+}
+function nflBreakdownCard(title, bodyHtml, accent){
+  return `<div class="game-card nba-card${accent?' nba-card-accent':''}">
+    <div class="nba-card-title">${escapeHtml(title)}</div>
+    <div class="nba-card-body">${bodyHtml}</div>
+  </div>`;
+}
+function nflMatchupCardHtml(m){
+  const cross = (off, def, label) => `
+    <div class="nfl-cross-row">
+      <div class="nfl-cross-side">
+        <span class="nfl-cross-team">${escapeHtml(off.team.abbrev)}</span> ${label.off}
+        <div class="nfl-cross-val">${label.offVal(off)} ${nflRankChip(label.offRank(off))}</div>
+      </div>
+      <span class="nfl-cross-vs">vs</span>
+      <div class="nfl-cross-side">
+        <span class="nfl-cross-team">${escapeHtml(def.team.abbrev)}</span> ${label.def}
+        <div class="nfl-cross-val">${label.defVal(def)} ${nflRankChip(label.defRank(def))}</div>
+      </div>
+    </div>`;
+  const rush = { off:'Rush offense', def:'Points allowed', offVal:s=>nflFmt1(s.metrics.rushYpg)+' ypg', offRank:s=>s.ranks.rushYpg, defVal:s=>nflFmt1(s.pa)+' pa/g', defRank:s=>s.ranks.pa };
+  const pass = { off:'Pass offense', def:'Pass rush', offVal:s=>nflFmt1(s.metrics.passYpg)+' ypg', offRank:s=>s.ranks.passYpg, defVal:s=>nflFmt1(s.metrics.sacksMadePerGame)+' sacks/g', defRank:s=>s.ranks.sacksMadePerGame };
+  const rows = [
+    ['Total YPG', s=>`${nflFmt1(s.metrics.ypg)} ${nflRankChip(s.ranks.ypg)}`],
+    ['Yards/Play', s=>`${s.metrics.ypp !== null ? s.metrics.ypp.toFixed(2) : '—'}`],
+    ['Comp %', s=>`${nflFmt1(s.metrics.completionPct)}%`],
+    ['Time of Poss.', s=>s.metrics.topSecPerGame !== null ? `${Math.floor(s.metrics.topSecPerGame/60)}:${String(Math.round(s.metrics.topSecPerGame%60)).padStart(2,'0')}` : '—'],
+    ['Red Zone TD%', s=>`${nflFmt1(s.metrics.redZoneTdPct)}% ${nflRankChip(s.ranks.redZoneTdPct)}`],
+    ['Third Down %', s=>`${nflFmt1(s.metrics.thirdDownPct)}% ${nflRankChip(s.ranks.thirdDownPct)}`],
+    ['ANY/A', s=>`${s.metrics.anyA !== null ? s.metrics.anyA.toFixed(2) : '—'} ${nflRankChip(s.ranks.anyA)}`],
+    ['Explosive plays/g (20+ yds)', s=>`${nflFmt1(s.metrics.explosive)} ${nflRankChip(s.ranks.explosive)}`],
+    ['Sacks allowed/g', s=>`${nflFmt1(s.metrics.sacksAllowedPerGame)} ${nflRankChip(s.ranks.sacksAllowedPerGame)}`],
+    ['Takeaway INTs/g', s=>`${nflFmt1(s.metrics.intsCaughtPerGame)} ${nflRankChip(s.ranks.intsCaughtPerGame)}`],
+    ['Turnover margin/g', s=>`${s.metrics.turnoverMargin !== null ? (s.metrics.turnoverMargin>0?'+':'')+s.metrics.turnoverMargin.toFixed(2) : '—'} ${nflRankChip(s.ranks.turnoverMargin)}`]
+  ];
+  return nflBreakdownCard('Matchup Breakdown', `
+    ${cross(m.away, m.home, rush)}
+    ${cross(m.home, m.away, rush)}
+    ${cross(m.away, m.home, pass)}
+    ${cross(m.home, m.away, pass)}
+    <div class="table-scroll" style="margin-top:10px;"><table class="props-table"><thead>
+      <tr><th></th><th>${escapeHtml(m.away.team.abbrev)}</th><th>${escapeHtml(m.home.team.abbrev)}</th></tr></thead><tbody>
+      ${rows.map(([label, fn])=>`<tr><td style="font-weight:600;">${label}</td><td>${fn(m.away)}</td><td>${fn(m.home)}</td></tr>`).join('')}
+    </tbody></table></div>
+    <div class="hr-note" style="margin-top:8px;">Yards-allowed defensive splits aren't on any free feed — defense here is points allowed, pass rush, and takeaways.</div>`);
+}
+function nflWeatherCardHtml(m){
+  const w = m.weather;
+  let body;
+  if(!w){ body = '<div class="hr-note">Weather unavailable for this venue.</div>'; }
+  else if(w.dome){ body = `<div class="hr-note">Indoor stadium — weather doesn't affect play.</div>`; }
+  else {
+    const flags = [];
+    if((w.windMph ?? 0) >= 15) flags.push(['Passing downgrade', 'bad'], ['Running upgrade', 'good']);
+    if(w.rain || w.snow) flags.push(['Ball security matters', 'bad'], ['Running upgrade', 'good']);
+    body = `
+      <div class="nba-flags" style="margin-bottom:8px;">
+        <span class="nba-flag on">${w.tempF !== null ? Math.round(w.tempF) + '°F' : '—'}</span>
+        <span class="nba-flag${(w.windMph ?? 0) >= 15 ? ' on' : ''}">Wind ${w.windMph !== null ? Math.round(w.windMph) + ' mph' : '—'}</span>
+        <span class="nba-flag${w.rain ? ' on' : ''}">Rain</span>
+        <span class="nba-flag${w.snow ? ' on' : ''}">Snow</span>
+      </div>
+      ${flags.length
+        ? `<div class="nba-leans">${flags.map(([t])=>`<span class="nba-lean">${escapeHtml(t)}</span>`).join('')}</div>`
+        : '<div class="hr-note">Current conditions look neutral for both phases.</div>'}
+      <div class="hr-note" style="margin-top:6px;">Current conditions at ${escapeHtml(m.home.team.abbrev)}'s stadium — check again close to kickoff.</div>`;
   }
-  const w = nflWeatherCache[game.home_team];
-  let slotsHtml = '';
-  let firstPitchRating = null;
-  if(w){
-    const gameHourUtc = game.commence_time.slice(0,13) + ':00';
-    const startIdx = w.time.indexOf(gameHourUtc);
-    if(startIdx !== -1){
-      for(let i = startIdx; i < Math.min(startIdx + 5, w.time.length); i++){
-        const local = new Date(w.time[i] + ':00Z');
-        const precip = w.precip[i];
-        const rating = nflWindImpact(w.wind[i]);
-        if(i === startIdx) firstPitchRating = rating;
-        slotsHtml += `<div class="weather-slot ${rating.cls}" title="${rating.label} · wind ${windCompass(w.windDir[i])} ${Math.round(w.wind[i])} mph (field orientation approx.)">
-          <div class="w-time">${local.toLocaleTimeString([], {hour:'numeric'})}${i===startIdx ? ' · kickoff' : ''}</div>
-          <div class="w-temp">${Math.round(w.temp[i])}°F</div>
-          <div class="w-wind">${Math.round(w.wind[i])} mph</div>
-          <div class="w-rain${precip >= 30 ? ' wet' : ''}">${precip}% rain</div>
-        </div>`;
+  return nflBreakdownCard('Weather', body);
+}
+function nflFormCardHtml(m){
+  const side = s => `
+    ${nflBreakdownTeamHead(s)}
+    <div class="hr-note">
+      ${s.schedule.last10 ? `Last 10 (straight-up): <strong>${escapeHtml(s.schedule.last10)}</strong>` : 'No completed games yet this season.'}
+      ${s.schedule.streak ? ` · ${escapeHtml(s.schedule.streak)}` : ''}
+      ${s.schedule.offBye ? ' · <span class="stat-pos">Off the bye</span>' : ''}
+    </div>`;
+  return nflBreakdownCard('Recent Form', `
+    <div class="nba-two-col">
+      <div>${side(m.away)}</div>
+      <div>${side(m.home)}</div>
+    </div>
+    <div class="hr-note" style="margin-top:8px;">Against-the-spread and over/under trend history requires paid closing-line data — form shown here is straight-up wins and losses from the schedule.</div>`);
+}
+function nflSummaryCardHtml(m){
+  const s = m.summary;
+  return nflBreakdownCard('Auto Game Read', `
+    <ul class="nba-summary-list">${s.insights.map(i=>`<li>${escapeHtml(i)}</li>`).join('')}</ul>
+    ${s.leans.length ? `<div class="nba-leans">${s.leans.map(l=>`<span class="nba-lean">${escapeHtml(l)}</span>`).join('')}</div>` : ''}
+    <div class="nba-confidence">Signal strength: <strong>${s.confidence}/10</strong></div>
+    <div class="hr-note" style="margin-top:6px;">${escapeHtml(s.note)}</div>`, true);
+}
+// Player Form (props context) — the one interactive panel. Caller supplies
+// rosters/analyzerPlayer/playerForm/gameId so this stays a pure render (all
+// the fetch/state-tracking lives in board.js, same as everything else here).
+function nflAnalyzerCardHtml(m, gameId, rosters, analyzerPlayerId, playerForm){
+  const options = [m.away, m.home].map(s=>{
+    const roster = (rosters[s.team.id] || []).filter(p=>['QB','RB','WR','TE'].includes(p.position));
+    return `<optgroup label="${escapeHtml(s.team.name)}">${roster.map(p=>`<option value="${escapeHtml(p.id)}" ${String(p.id)===String(analyzerPlayerId)?'selected':''}>${escapeHtml(p.name)} (${escapeHtml(p.position)})</option>`).join('')}</optgroup>`;
+  }).join('');
+  let body = `<div class="search-row" style="margin-bottom:10px;">
+    <select class="nba-team-select nfl-analyzer-select" data-game-id="${escapeHtml(gameId)}">${options || '<option>Loading rosters…</option>'}</select>
+    <button class="ghost nfl-analyzer-btn" data-game-id="${escapeHtml(gameId)}">Check form</button>
+  </div>`;
+  const pf = analyzerPlayerId && playerForm[analyzerPlayerId];
+  if(analyzerPlayerId && pf && pf !== 'loading'){
+    const p = Object.values(rosters).flat().find(x=>String(x.id)===String(analyzerPlayerId));
+    if(p) body += `<div class="nba-team-head" style="margin-bottom:8px;">${avatarUrlHtml(p.headshot, 32)}<strong>${escapeHtml(p.name)}</strong> <span class="nba-record">${escapeHtml(p.position)}</span></div>`;
+  }
+  if(pf === 'loading'){
+    body += `<div class="hr-note"><span class="spinner"></span> Pulling game logs (3 seasons for the head-to-head)…</div>`;
+  } else if(pf && pf.season.games){
+    const ydsLabels = [];
+    let seen = 0;
+    (pf.labels || []).forEach((l, i)=>{
+      if(l === 'YDS'){
+        seen++;
+        const before = pf.labels.slice(0, i).join(',');
+        ydsLabels.push(before.includes('CMP') && seen === 1 ? 'Pass YDS' : before.includes('REC') ? 'Rec YDS' : 'Rush YDS');
+      }
+    });
+    const vs = pf.vsOpponent;
+    const rows = [['Last 5', pf.last5], ['Season', pf.season]];
+    if(vs && vs.games) rows.push([`vs ${vs.abbrev || 'OPP'} (3 seasons)`, vs]);
+    body += `<div class="table-scroll"><table class="props-table"><thead>
+      <tr><th>Split</th><th>G</th>${ydsLabels[0]?`<th>${ydsLabels[0]}</th>`:''}${ydsLabels[1]?`<th>${ydsLabels[1]}</th>`:''}<th>TD</th>${pf.season.rec !== null ? '<th>REC</th>' : ''}</tr></thead><tbody>
+      ${rows.map(([label, r])=>`<tr><td style="font-weight:600;">${label}</td><td>${r.games}</td>${ydsLabels[0]?`<td>${nflFmt1(r.yds1)}</td>`:''}${ydsLabels[1]?`<td>${nflFmt1(r.yds2)}</td>`:''}<td>${nflFmt1(r.td1)}</td>${pf.season.rec !== null ? `<td>${nflFmt1(r.rec)}</td>` : ''}</tr>`).join('')}
+    </tbody></table></div>`;
+    if(vs && vs.meetings && vs.meetings.length){
+      body += `<div class="nfl-pos-group" style="margin-top:8px;">Last meetings vs ${escapeHtml(vs.abbrev || '')}</div>
+        <div class="table-scroll"><table class="props-table"><thead>
+        <tr><th>Date</th><th>Site</th>${ydsLabels[0]?`<th>${ydsLabels[0]}</th>`:''}<th>TD</th>${pf.season.rec !== null ? '<th>REC</th>' : ''}</tr></thead><tbody>
+        ${vs.meetings.map(mt=>`<tr><td>${escapeHtml(mt.date || '')}</td><td>${mt.home?'Home':'Away'}</td>${ydsLabels[0]?`<td>${mt.yds1 ?? '—'}</td>`:''}<td>${mt.td1 ?? '—'}</td>${pf.season.rec !== null ? `<td>${mt.rec ?? '—'}</td>` : ''}</tr>`).join('')}
+      </tbody></table></div>`;
+    } else if(vs){
+      body += `<div class="hr-note" style="margin-top:6px;">No meetings against this opponent in the last 3 seasons.</div>`;
+    }
+    if(vs && vs.games >= 2 && vs.yds1 !== null && pf.season.yds1 !== null){
+      const d = vs.yds1 - pf.season.yds1;
+      if(Math.abs(d) >= 15){
+        body += `<div class="nba-insight">Averages ${nflFmt1(Math.abs(d))} ${d > 0 ? 'MORE' : 'fewer'} yards against this opponent than his overall norm (${vs.games}-game sample).</div>`;
       }
     }
+    if(pf.last5.yds1 !== null && pf.season.yds1 !== null){
+      const d = pf.last5.yds1 - pf.season.yds1;
+      body += `<div class="nba-insight">${Math.abs(d) < 15 ? 'Producing right at season norm over the last 5.' : d > 0 ? `Averaging ${nflFmt1(d)} yards above season norm over the last 5 — favorable form for Over props.` : `Averaging ${nflFmt1(-d)} yards below season norm over the last 5 — caution on Overs.`}</div>`;
+    }
+  } else if(pf === null){
+    body += `<div class="hr-note">No game-log data for this player.</div>`;
   }
-  const ratingTag = firstPitchRating
-    ? `<span class="rating-tag ${firstPitchRating.cls}" title="Wind-speed heuristic at kickoff — 15+ mph starts affecting passing/kicking, 20+ is a real factor. Not a betting signal.">${firstPitchRating.dot} ${firstPitchRating.label}</span>`
-    : '';
-  const body = slotsHtml
-    ? `<div class="weather-slots">${slotsHtml}</div>`
-    : (w ? '<div class="weather-note">Game is beyond the 7-day forecast window — check back closer to kickoff.</div>' : '<div class="weather-note">Forecast unavailable right now.</div>');
-  return `<div class="weather-strip">
-    <div class="weather-head">☁ ${escapeHtml(stadium.park)} ${ratingTag}</div>
-    <div class="weather-body-row">${body}</div>
+  body += `<div class="hr-note" style="margin-top:8px;">Prop lines and odds live right above in this game's player-props panel — this card is the form behind them.</div>`;
+  return nflBreakdownCard('Player Form (props context)', body);
+}
+function buildNflFullBreakdownHtml(m, gameId, rosters, analyzerPlayerId, playerForm){
+  return `<div class="nfl-breakdown">
+    ${nflSummaryCardHtml(m)}
+    ${nflMatchupCardHtml(m)}
+    ${nflWeatherCardHtml(m)}
+    ${nflFormCardHtml(m)}
+    ${nflAnalyzerCardHtml(m, gameId, rosters, analyzerPlayerId, playerForm)}
   </div>`;
 }
 

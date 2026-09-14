@@ -655,7 +655,7 @@
   background:var(--bg-card);
 }
 .weather-head{
-  display:flex; align-items:center; gap:8px; margin-bottom:8px;
+  display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:8px;
   font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.5px; font-weight:700;
 }
 .roof-tag{
@@ -666,12 +666,15 @@
 .weather-body-row{display:flex; align-items:flex-start; gap:14px;}
 .weather-slots{display:flex; gap:6px; overflow-x:auto; padding-bottom:2px; flex:1; min-width:0;}
 .weather-slot{
-  min-width:86px; padding:7px 9px; border-radius:8px;
+  display:flex; align-items:center; gap:8px;
+  min-width:150px; padding:6px 10px 6px 6px; border-radius:8px;
   background:var(--bg-raised); border:1px solid var(--border-soft);
   font-size:11px; line-height:1.55; flex-shrink:0;
   transition:transform .15s ease, border-color .15s ease;
 }
 .weather-slot:hover{transform:translateY(-2px); border-color:var(--accent-dim);}
+.ws-field{display:block; flex-shrink:0;}
+.ws-info{min-width:0;}
 .weather-slot .w-time{color:var(--text-faint); font-weight:700; font-size:10px; text-transform:uppercase;}
 .weather-slot .w-temp{font-family:var(--font-mono); font-weight:600; font-size:13px;}
 .weather-slot .w-wind{color:var(--text-dim);}
@@ -696,16 +699,25 @@
 .pitcher-name{font-size:12.5px; font-weight:600; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
 .pitcher-team{font-size:10.5px; color:var(--text-faint);}
 .pitcher-vs{font-size:11px; color:var(--text-faint); font-weight:600; text-transform:uppercase; flex-shrink:0;}
-.wind-field-wrap{
-  margin-left:auto; display:flex; align-items:center; gap:8px; flex-shrink:0;
-}
-.wind-field{display:block;}
-.wind-mph{
-  font-family:var(--font-mono); font-size:13px; font-weight:600; line-height:1.25;
-  color:var(--text-dim); text-align:center; text-transform:none; letter-spacing:0;
-}
 .weather-note{font-size:11px; color:var(--text-faint);}
 .analyze-cost{font-size:10.5px; color:var(--text-faint); margin-left:8px;}
+
+/* ---------- Per-game injury report (NFL) ---------- */
+/* Reuses the NFL Dashboard's own nba-team-head/nfl-pos-group/nba-injury-list/
+   nfl-status/nfl-starter-tag classes (defined further down) so this looks
+   identical to the Injury Center it's standing in for on Board — just the
+   strip/layout wrapper is new. */
+.injuries-strip{
+  padding:10px 16px; border-bottom:1px solid var(--border-soft);
+  background:var(--bg-card);
+}
+.injuries-head{
+  font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.5px; font-weight:700;
+  margin-bottom:8px;
+}
+.injuries-body{display:flex; gap:16px; flex-wrap:wrap;}
+.injuries-team{flex:1; min-width:200px;}
+.next-man{font-size:10.5px; color:var(--text-faint); margin-top:2px;}
 
 /* ---------- NFL live field tracker (line of scrimmage / down / possession) ---------- */
 .nfl-field-wrap{
@@ -737,9 +749,17 @@
 .fs-score{font-family:var(--font-mono); font-size:15px; font-weight:700; color:var(--text); min-width:22px; text-align:right;}
 .fs-timeouts{font-size:9px; letter-spacing:2px; color:var(--text-faint);}
 
-/* ---------- Top HR hitters box (sits beside the weather slots) ---------- */
-.top-hitters-box{
-  flex-shrink:0; width:184px; background:var(--bg-raised); border:1px solid var(--border-soft);
+/* ---------- HR Watch / HR Leaders panels (own row on the MLB card) ---------- */
+.hr-panels-row{
+  display:flex; flex-wrap:wrap; gap:10px;
+  margin-top:8px; padding-top:8px; border-top:1px solid var(--border-soft);
+}
+.hr-watch-panel{
+  flex:2 1 240px; background:var(--bg-raised); border:1px solid var(--border-soft);
+  border-radius:8px; padding:8px 10px;
+}
+.hr-leaders-panel{
+  flex:1 1 150px; background:var(--bg-raised); border:1px solid var(--border-soft);
   border-radius:8px; padding:8px 10px;
 }
 .top-hitters-title{
@@ -752,6 +772,13 @@
 .hitter-team{font-size:9.5px; color:var(--text-faint); display:block; margin-top:1px;}
 .hitter-stat{font-family:var(--font-mono); font-weight:700; color:var(--good); font-size:13px; flex-shrink:0; text-align:right;}
 .hitter-stat-sub{font-size:9px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.3px; display:block; text-align:right;}
+.hr-stars{font-size:12px; letter-spacing:1px; white-space:nowrap;}
+.hr-stars-fill{color:var(--good);}
+.hr-stars-empty{color:var(--border);}
+.hr-watch-row{padding:6px 0;}
+.hr-watch-row + .hr-watch-row{border-top:1px solid var(--border-soft);}
+.hr-watch-top{display:flex; justify-content:space-between; align-items:flex-start; gap:8px;}
+.hr-watch-why{font-size:10px; color:var(--text-faint); line-height:1.5; margin-top:3px;}
 
 /* ---------- Shared motion utilities ---------- */
 @keyframes enterUp{
@@ -824,10 +851,12 @@
   .book-odds{margin-left:0;}
 }
 
-/* ---------- Weather row + top-hitters box stack on narrow cards ---------- */
+/* ---------- Weather row + HR panels stack on narrow cards ---------- */
 @media (max-width:640px){
   .weather-body-row{flex-direction:column;}
-  .top-hitters-box{width:100%;}
+}
+@media (max-width:480px){
+  .hr-watch-panel, .hr-leaders-panel{flex-basis:100%;}
 }
 
 /* ---------- Mobile tap targets (audit 2.5) ---------- */
