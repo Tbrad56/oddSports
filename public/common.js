@@ -810,9 +810,9 @@ function parkFieldSvg(dims, wind, bearing){
     dims && dims.rightLine   != null ? {abbr:'RF', val:dims.rightLine,    x:90, y:50} : null,
   ].filter(Boolean);
   const labelsHtml = labelPts.map(p => `
-      <text x="${p.x}" y="${p.y}" text-anchor="middle" style="paint-order:stroke; stroke:#16321C; stroke-width:2.4px; stroke-linejoin:round;">
-        <tspan x="${p.x}" dy="-3" font-size="5.5" font-family="var(--font-mono)" font-weight="700" letter-spacing="0.3px" fill="#BFE3C7">${p.abbr}</tspan>
-        <tspan x="${p.x}" dy="7.5" font-size="8.5" font-family="var(--font-mono)" font-weight="800" fill="#FFFFFF">${p.val}</tspan>
+      <text x="${p.x}" y="${p.y}" text-anchor="middle" style="paint-order:stroke; stroke:#16321C; stroke-width:3px; stroke-linejoin:round;">
+        <tspan x="${p.x}" dy="-3.5" font-size="7" font-family="var(--font-mono)" font-weight="700" letter-spacing="0.3px" fill="#BFE3C7">${p.abbr}</tspan>
+        <tspan x="${p.x}" dy="9" font-size="11" font-family="var(--font-mono)" font-weight="800" fill="#FFFFFF">${p.val}</tspan>
       </text>`).join('');
 
   let arrowHtml = '', mphHtml = '';
@@ -832,7 +832,7 @@ function parkFieldSvg(dims, wind, bearing){
   }
 
   return `<span class="wind-field-wrap" title="${escapeHtml(titleParts.join(' · '))}">
-    <svg class="wind-field" viewBox="0 0 100 100" width="132" height="132" aria-hidden="true">
+    <svg class="wind-field" viewBox="0 0 100 100" width="220" height="220" aria-hidden="true">
       <path d="M50,88 L4,44 A65,65 0 0 1 96,44 Z" fill="#2F6B3C" stroke="#1C3F24" stroke-width="2"/>
       <path d="M50,88 L74,64 L50,40 L26,64 Z" fill="#A5713F" stroke="#7A4F28" stroke-width="1.5"/>
       <path d="M50,76 L63,64 L50,52 L37,64 Z" fill="#3D8A4F" stroke="#276334" stroke-width="1"/>
@@ -924,7 +924,8 @@ function buildWeatherStrip(game, extraHtml){
   }
 
   return `<div class="weather-strip">
-    <div class="weather-head">☁ ${escapeHtml(stadium.park)} ${roofTag} ${ratingTag} ${fieldSvg}</div>
+    <div class="weather-head">☁ ${escapeHtml(stadium.park)} ${roofTag} ${ratingTag}</div>
+    ${fieldSvg ? `<div class="park-field-row">${fieldSvg}</div>` : ''}
     <div class="weather-body-row">${body}${extraHtml || ''}</div>
     ${buildParkDimsHtml(game)}
   </div>`;

@@ -652,7 +652,7 @@
       <div class="top-hitters-title">HR Watch</div>
       ${top.map(({b,rating})=>`<div class="hitter-row" title="${escapeHtml(rating.reasons.join(' · '))}">
         <div><div class="hitter-name">${escapeHtml(b.name)}</div><div class="hitter-team">${escapeHtml(b.team)}</div></div>
-        <div>${starsHtml(rating.stars)}</div>
+        <div style="text-align:right;">${starsHtml(rating.stars)}<span class="hitter-stat-sub">${b.hr} HR</span></div>
       </div>`).join('')}
     </div>`;
   }
