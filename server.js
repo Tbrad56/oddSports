@@ -1343,9 +1343,69 @@ function createApp({
   async function mlbTeamsList(){
     if (mlbTeamsCache) return mlbTeamsCache;
     const data = await fetchStats('/api/v1/teams?sportId=1&activeStatus=Y', 24 * 60 * 60 * 1000);
-    mlbTeamsCache = (data.teams || []).map(t => ({ id: t.id, name: t.name, abbrev: t.abbreviation, logo: `https://www.mlbstatic.com/team-logos/${t.id}.svg` }));
+    mlbTeamsCache = (data.teams || []).map(t => ({ id: t.id, name: t.name, abbrev: t.abbreviation, logo: `https://www.mlbstatic.com/team-logos/${t.id}.svg`, venueId: t.venue && t.venue.id }));
     return mlbTeamsCache;
   }
+
+  // Real, official fence distances for every park — straight from MLB's own
+  // venues endpoint (`fieldInfo`), one batched call covering all 30 venue ids
+  // at once. Dimensions essentially never change mid-season, so this is
+  // cached hard (24h) same as the team list it depends on.
+  // "Compact/Average/Spacious" is computed purely from the average of the 5
+  // real fence distances, ranked against the other 29 real parks — it does
+  // NOT capture altitude, wind, or roof effects. Coors Field is the one
+  // well-documented exception in MLB: it actually ranks LAST (roomiest
+  // average distance of all 30, verified) despite being famous for
+  // inflating offense, because Denver's mile-high altitude and thin air let
+  // the ball carry farther than its dimensions alone suggest — so it gets
+  // an explicit note instead of just a misleading "Spacious" tag.
+  let mlbParkDimsCache = null;
+  async function mlbParkDimensions(){
+    if (mlbParkDimsCache) return mlbParkDimsCache;
+    const teams = await mlbTeamsList();
+    const venueIds = [...new Set(teams.map(t => t.venueId).filter(Boolean))];
+    if (!venueIds.length) return {};
+    const data = await fetchStats(`/api/v1/venues?venueIds=${venueIds.join(',')}&hydrate=fieldInfo`, 24 * 60 * 60 * 1000);
+    const byVenueId = {};
+    (data.venues || []).forEach(v => {
+      const f = v.fieldInfo || {};
+      if (f.leftLine == null || f.center == null || f.rightLine == null) return;
+      byVenueId[v.id] = {
+        venue: v.name,
+        leftLine: f.leftLine, leftCenter: f.leftCenter ?? null, center: f.center,
+        rightCenter: f.rightCenter ?? null, rightLine: f.rightLine,
+        roofType: f.roofType || null, capacity: f.capacity ?? null
+      };
+    });
+    const rows = teams
+      .map(t => ({ team: t.name, d: byVenueId[t.venueId] }))
+      .filter(r => r.d);
+    rows.forEach(r => {
+      const pts = [r.d.leftLine, r.d.leftCenter, r.d.center, r.d.rightCenter, r.d.rightLine].filter(v => v != null);
+      r.avgDistance = Math.round((pts.reduce((a, b) => a + b, 0) / pts.length) * 10) / 10;
+    });
+    rows.sort((a, b) => a.avgDistance - b.avgDistance);
+    const n = rows.length;
+    rows.forEach((r, i) => {
+      r.rank = i + 1;
+      const pct = i / (n - 1); // 0 = most compact, 1 = roomiest
+      r.tier = pct < 1 / 3 ? 'Compact' : pct < 2 / 3 ? 'Average' : 'Spacious';
+    });
+    const map = {};
+    rows.forEach(r => {
+      map[r.team] = {
+        venue: r.d.venue, leftLine: r.d.leftLine, leftCenter: r.d.leftCenter, center: r.d.center,
+        rightCenter: r.d.rightCenter, rightLine: r.d.rightLine, roofType: r.d.roofType, capacity: r.d.capacity,
+        avgDistance: r.avgDistance, rank: r.rank, outOf: n, tier: r.tier,
+        altitudeNote: r.team === 'Colorado Rockies'
+          ? "Coors Field's roomy dimensions understate it — Denver's mile-high altitude is well documented to add real carry, making it MLB's most HR-friendly park despite ranking last here by distance alone."
+          : null
+      };
+    });
+    mlbParkDimsCache = map;
+    return map;
+  }
+
   // Note: MLB StatsAPI's `stats=sabermetrics` at team scope returns one row
   // PER PLAYER on the roster, not a team aggregate — there's no team-level
   // wRC+/FIP endpoint. `seasonAdvanced` is genuinely team-aggregated though,
@@ -1588,6 +1648,13 @@ function createApp({
       }));
       res.json({ players });
     })().catch(err => sendUpstreamError(res, err));
+  });
+
+  // Real fence distances for every park, keyed by home team name — see
+  // mlbParkDimensions() above for the "Compact/Average/Spacious" methodology
+  // and why Coors Field carries an explicit note instead of just a tier tag.
+  app.get('/api/mlb/park-dimensions', (req, res) => {
+    mlbParkDimensions().then(map => res.json(map)).catch(err => sendUpstreamError(res, err));
   });
 
   // Direct MLB player lookup by StatsAPI person id — for roster-driven clicks,

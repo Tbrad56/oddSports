@@ -664,6 +664,16 @@
   text-transform:uppercase; letter-spacing:.4px;
 }
 .weather-body-row{display:flex; align-items:flex-start; gap:14px;}
+.park-dims-row{
+  display:flex; align-items:center; flex-wrap:wrap; gap:8px;
+  margin-top:8px; padding-top:8px; border-top:1px solid var(--border-soft);
+  font-size:11px;
+}
+.park-dims-label{color:var(--text-faint); font-weight:700; text-transform:uppercase; letter-spacing:.4px; font-size:10px;}
+.park-dims-vals{font-family:var(--font-mono); color:var(--text-dim);}
+.park-altitude-note{
+  flex-basis:100%; font-size:10.5px; color:var(--warn); margin-top:2px; line-height:1.5;
+}
 .weather-slots{display:flex; gap:6px; overflow-x:auto; padding-bottom:2px; flex:1; min-width:0;}
 .weather-slot{
   min-width:86px; padding:7px 9px; border-radius:8px;

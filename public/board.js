@@ -184,6 +184,7 @@
         fetchStadiumWeather(games).then(scheduleRender).catch(()=>{});
         fetchStartingPitchers(games).then(scheduleRender).catch(()=>{});
         fetchTopHitters(games).then(scheduleRender).catch(()=>{});
+        fetchMlbParkDimensions().then(scheduleRender).catch(()=>{});
       }
       // NFL: injury report (weather's no longer shown on Board at all —
       // that space is injuries/replacements now).

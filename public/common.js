@@ -883,6 +883,34 @@ function buildWeatherStrip(game, extraHtml){
   return `<div class="weather-strip">
     <div class="weather-head">☁ ${escapeHtml(stadium.park)} ${roofTag} ${ratingTag} ${fieldSvg}</div>
     <div class="weather-body-row">${body}${extraHtml || ''}</div>
+    ${buildParkDimsHtml(game)}
+  </div>`;
+}
+
+// ---------- park dimensions (which fields are more HR-friendly) ----------
+// Real fence distances from MLB's own venues API (see server.js's
+// mlbParkDimensions for sourcing/methodology) — fetched once per session,
+// since dimensions essentially never change mid-season.
+let mlbParkDimsCache = null;
+async function fetchMlbParkDimensions(){
+  if(mlbParkDimsCache) return mlbParkDimsCache;
+  try{
+    const res = await fetch('/api/mlb/park-dimensions');
+    if(!res.ok) return null;
+    mlbParkDimsCache = await res.json();
+  }catch(e){ return null; }
+  return mlbParkDimsCache;
+}
+const PARK_TIER_CLASS = { Compact:'w-good', Average:'', Spacious:'w-bad' };
+function buildParkDimsHtml(game){
+  const d = mlbParkDimsCache && mlbParkDimsCache[game.home_team];
+  if(!d) return '';
+  const tierCls = PARK_TIER_CLASS[d.tier] || '';
+  return `<div class="park-dims-row">
+    <span class="park-dims-label">🏟️ Fences</span>
+    <span class="park-dims-vals">LF ${d.leftLine}${d.leftCenter!=null?` · LC ${d.leftCenter}`:''} · CF ${d.center}${d.rightCenter!=null?` · RC ${d.rightCenter}`:''} · RF ${d.rightLine}</span>
+    <span class="rating-tag ${tierCls}" title="Average of the park's 5 real fence distances, ranked #${d.rank} of ${d.outOf} (1 = most compact). Distance only — doesn't capture altitude, wind (shown separately above), or wall height.">${escapeHtml(d.tier)}</span>
+    ${d.altitudeNote ? `<div class="park-altitude-note">⚠ ${escapeHtml(d.altitudeNote)}</div>` : ''}
   </div>`;
 }
 

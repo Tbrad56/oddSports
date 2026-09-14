@@ -1317,3 +1317,53 @@ test('game-injuries: one team\'s depthchart failing still returns the other team
   assert.deepEqual(res.body.home.injuries, []);
   assert.equal(res.body.away.injuries[0].name, 'Away Guy');
 });
+
+// ---------- /api/mlb/park-dimensions ----------
+function mlbTeamsBody(){
+  return { teams: [
+    { id: 1, name: 'Compact Park Team', abbreviation: 'CPT', venue: { id: 100 } },
+    { id: 2, name: 'Roomy Park Team', abbreviation: 'RPT', venue: { id: 200 } },
+    { id: 3, name: 'Colorado Rockies', abbreviation: 'COL', venue: { id: 300 } }
+  ] };
+}
+function mlbVenuesBody(){
+  return { venues: [
+    { id: 100, name: 'Compact Field', fieldInfo: { leftLine: 300, leftCenter: 350, center: 380, rightCenter: 350, rightLine: 300, roofType: 'Open', capacity: 30000 } },
+    { id: 200, name: 'Roomy Field', fieldInfo: { leftLine: 340, leftCenter: 400, center: 430, rightCenter: 400, rightLine: 340, roofType: 'Open', capacity: 40000 } },
+    { id: 300, name: 'Coors Field', fieldInfo: { leftLine: 347, leftCenter: 420, center: 415, rightCenter: 424, rightLine: 350, roofType: 'Open', capacity: 50480 } }
+  ] };
+}
+
+test('park-dimensions: ranks real fence distances (compact < roomy), Coors gets the altitude note', async () => {
+  const f = routedFetch([
+    ['teams?sportId=1', okResponse(mlbTeamsBody())],
+    ['venues?venueIds=', okResponse(mlbVenuesBody())]
+  ]);
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/mlb/park-dimensions');
+  assert.equal(res.status, 200);
+  const compact = res.body['Compact Park Team'];
+  const roomy = res.body['Roomy Park Team'];
+  const coors = res.body['Colorado Rockies'];
+  // sorted ascending by avg distance: Compact(336) < Roomy(382) < Coors(391.2)
+  assert.ok(compact.avgDistance < roomy.avgDistance);
+  assert.ok(roomy.avgDistance < coors.avgDistance);
+  assert.equal(compact.tier, 'Compact');
+  assert.equal(coors.tier, 'Spacious'); // roomiest of the 3
+  assert.equal(compact.rank, 1);
+  assert.equal(res.body['Roomy Park Team'].outOf, 3);
+  assert.ok(coors.altitudeNote && coors.altitudeNote.includes('altitude'));
+  assert.equal(compact.altitudeNote, null);
+});
+
+test('park-dimensions: cached — a second request does not refetch', async () => {
+  const f = routedFetch([
+    ['teams?sportId=1', okResponse(mlbTeamsBody())],
+    ['venues?venueIds=', okResponse(mlbVenuesBody())]
+  ]);
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  await request(app).get('/api/mlb/park-dimensions');
+  const callsAfterFirst = f.calls.length;
+  await request(app).get('/api/mlb/park-dimensions');
+  assert.equal(f.calls.length, callsAfterFirst);
+});
