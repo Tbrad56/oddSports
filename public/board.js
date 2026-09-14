@@ -631,30 +631,42 @@
     }));
   }
 
-  // Top 3 HR Watch threats across both lineups, ranked by a composite star
-  // rating (power vs today's specific pitcher, ballpark, weather — see
-  // hrWatchRating in common.js) rather than raw season HR count. Shown
-  // beside the weather slots — empty until lineups post (2-4 hours before
-  // first pitch), same as the opt-in HR Matchups section below.
+  // Two small panels beside the weather slots — empty until lineups post
+  // (2-4 hours before first pitch), same as the opt-in HR Matchups section
+  // below:
+  //  - HR Watch: top 3 by a composite star rating (power vs today's specific
+  //    pitcher, ballpark, weather — see hrWatchRating in common.js).
+  //  - HR Leaders: top 3 by plain season HR count, regardless of tonight's
+  //    matchup — the two lists can (and often do) disagree, which is the point.
   function buildTopHittersHtml(game){
     const data = state.hrCache[game.id];
     if(!data || !data.matched) return '';
     const withTeam = (batters, team, pitcher) => (batters || []).map(b=>({...b, team, pitcher}));
-    const pool = [
+    const all = [
       ...withTeam(data.away.batters, game.away_team, data.home.pitcher),
       ...withTeam(data.home.batters, game.home_team, data.away.pitcher)
-    ]
-      .map(b => ({ b, rating: hrWatchRating(b, b.pitcher, game) }))
-      .filter(x => x.rating);
+    ];
+    const pool = all.map(b => ({ b, rating: hrWatchRating(b, b.pitcher, game) })).filter(x => x.rating);
     if(!pool.length) return '';
-    const top = pool.sort((a,b)=>b.rating.score-a.rating.score).slice(0,3);
-    return `<div class="top-hitters-box">
+    const watchTop = pool.slice().sort((a,b)=>b.rating.score-a.rating.score).slice(0,3);
+    const leaders = all.filter(b => b.hr !== null && b.hr !== undefined).sort((a,b)=>b.hr-a.hr).slice(0,3);
+
+    const watchHtml = `<div class="top-hitters-box">
       <div class="top-hitters-title">HR Watch</div>
-      ${top.map(({b,rating})=>`<div class="hitter-row" title="${escapeHtml(rating.reasons.join(' · '))}">
+      ${watchTop.map(({b,rating})=>`<div class="hitter-row" title="${escapeHtml(rating.reasons.join(' · '))}">
         <div><div class="hitter-name">${escapeHtml(b.name)}</div><div class="hitter-team">${escapeHtml(b.team)}</div></div>
         <div style="text-align:right;">${starsHtml(rating.stars)}<span class="hitter-stat-sub">${b.hr} HR</span></div>
       </div>`).join('')}
     </div>`;
+    const leadersHtml = leaders.length ? `<div class="top-hitters-box">
+      <div class="top-hitters-title">HR Leaders</div>
+      ${leaders.map(b=>`<div class="hitter-row">
+        <div><div class="hitter-name">${escapeHtml(b.name)}</div><div class="hitter-team">${escapeHtml(b.team)}</div></div>
+        <div><span class="hitter-stat">${b.hr}</span><span class="hitter-stat-sub">HR</span></div>
+      </div>`).join('')}
+    </div>` : '';
+
+    return `<div class="hitters-panels">${watchHtml}${leadersHtml}</div>`;
   }
 
   function buildStartingPitchersHtml(game){

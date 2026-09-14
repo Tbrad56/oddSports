@@ -763,7 +763,8 @@
 .fs-score{font-family:var(--font-mono); font-size:15px; font-weight:700; color:var(--text); min-width:22px; text-align:right;}
 .fs-timeouts{font-size:9px; letter-spacing:2px; color:var(--text-faint);}
 
-/* ---------- Top HR hitters box (sits beside the weather slots) ---------- */
+/* ---------- HR Watch / HR Leaders panels (sit beside the weather slots) ---------- */
+.hitters-panels{display:flex; flex-direction:column; gap:10px; flex-shrink:0;}
 .top-hitters-box{
   flex-shrink:0; width:184px; background:var(--bg-raised); border:1px solid var(--border-soft);
   border-radius:8px; padding:8px 10px;
@@ -856,6 +857,7 @@
 /* ---------- Weather row + top-hitters box stack on narrow cards ---------- */
 @media (max-width:640px){
   .weather-body-row{flex-direction:column;}
+  .hitters-panels{width:100%;}
   .top-hitters-box{width:100%;}
 }
 
