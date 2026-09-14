@@ -1255,6 +1255,12 @@ function nflBreakdownCard(title, bodyHtml, accent){
   </div>`;
 }
 function nflMatchupCardHtml(m){
+  // Every metric here is a season-to-date stat — before either team has
+  // played a game, it's all nulls, which would render as a wall of "—"
+  // that reads as broken rather than "too early." Say that plainly instead.
+  if(!m.away.schedule.gamesPlayed && !m.home.schedule.gamesPlayed){
+    return nflBreakdownCard('Matchup Breakdown', `<div class="hr-note">No games played yet this season — these are season-to-date stats, so there's nothing to show until Week 1 wraps. Check the Auto Game Read and Weather cards above for what's available now.</div>`);
+  }
   const cross = (off, def, label) => `
     <div class="nfl-cross-row">
       <div class="nfl-cross-side">

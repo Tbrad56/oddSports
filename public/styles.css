@@ -664,7 +664,7 @@
   text-transform:uppercase; letter-spacing:.4px;
 }
 .weather-body-row{display:flex; align-items:flex-start; gap:14px;}
-.weather-slots{display:flex; gap:6px; overflow-x:auto; padding-bottom:2px; flex:1; min-width:0;}
+.weather-slots{display:flex; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch; padding-bottom:2px; flex:1; min-width:0;}
 .weather-slot{
   display:flex; align-items:center; gap:8px;
   min-width:150px; padding:6px 10px 6px 6px; border-radius:8px;

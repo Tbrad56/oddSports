@@ -18,7 +18,8 @@
     altPropsView: {},    // "gameId|marketKey" -> 'standard' | 'alt' (default standard)
     nflTeamsByName: null,  // team display name -> {id, name, abbrev, logo}, fetched once (retired NFL Dashboard page's team picker, now resolved automatically)
     nflBreakdownOpen: {},  // gameId -> bool
-    nflBreakdown: {}       // gameId -> {matchup, rosters:{}, analyzerPlayer, playerForm:{}}
+    nflBreakdown: {},      // gameId -> {matchup, rosters:{}, analyzerPlayer, playerForm:{}}
+    nflInjuriesOpen: {}    // gameId -> bool, survives re-renders like propsOpen
   };
   let renderScheduled = false;
   // Coalesces multiple renderGames() requests (weather/pitchers post-fetches, audit 6.2)
@@ -185,11 +186,6 @@
         fetchStartingPitchers(games).then(scheduleRender).catch(()=>{});
         fetchTopHitters(games).then(scheduleRender).catch(()=>{});
         fetchMlbParkDimensions().then(scheduleRender).catch(()=>{});
-      }
-      // NFL: injury report (weather's no longer shown on Board at all —
-      // that space is injuries/replacements now).
-      if(sport === 'americanfootball_nfl' && games.length){
-        fetchNflGameInjuries(games).then(scheduleRender).catch(()=>{});
       }
       // Live scores: fetch now, then keep polling every 30s while this sport is loaded
       state.scores = []; state.mlbLive = [];
@@ -880,6 +876,16 @@
     hostEl.innerHTML = buildNflFullBreakdownHtml(b.matchup, game.id, b.rosters, b.analyzerPlayer, b.playerForm);
   }
 
+  async function loadNflInjuries(game){
+    const key = game.away_team+'|'+game.home_team;
+    if(nflInjuriesCache[key]) return;
+    try{
+      await fetchNflGameInjuries([game]);
+    }catch(e){ /* buildNflInjuriesHtml just keeps showing "Loading…" */ }
+    const host = document.querySelector(`.nfl-injuries-host[data-game-id="${CSS.escape(String(game.id))}"]`);
+    if(host) host.innerHTML = buildNflInjuriesHtml(game);
+  }
+
   async function loadNflBreakdown(game){
     if(state.nflBreakdown[game.id]) return;
     state.nflBreakdown[game.id] = { matchup: null, rosters: {}, analyzerPlayer: null, playerForm: {} };
@@ -937,6 +943,23 @@
   }
 
   document.getElementById('gamesArea').addEventListener('click', (e)=>{
+    const injuriesToggle = e.target.closest('.nfl-injuries-toggle');
+    if(injuriesToggle){
+      const gameId = injuriesToggle.dataset.gameId;
+      const isOpen = !!state.nflInjuriesOpen[gameId];
+      state.nflInjuriesOpen[gameId] = !isOpen;
+      const host = document.querySelector(`.nfl-injuries-host[data-game-id="${CSS.escape(String(gameId))}"]`);
+      if(!isOpen){
+        const game = state.games.find(g=>String(g.id)===String(gameId));
+        if(host){ host.style.display = 'block'; if(game) host.innerHTML = buildNflInjuriesHtml(game); }
+        if(game) loadNflInjuries(game);
+        injuriesToggle.textContent = 'Hide injury report';
+      } else {
+        if(host) host.style.display = 'none';
+        injuriesToggle.textContent = 'Injury report';
+      }
+      return;
+    }
     const breakdownToggle = e.target.closest('.nfl-breakdown-toggle');
     if(breakdownToggle){
       const gameId = breakdownToggle.dataset.gameId;
@@ -1090,19 +1113,35 @@
       }
       // NFL: injury report + who's stepping in for each injured starter,
       // plus the live line-of-scrimmage/down/possession field tracker.
-      // Weather's gone entirely now — this space is injuries/replacements
-      // instead. NCAAF gets the same field tracker (ESPN's live situation
-      // data works the same way) but no injury report — hundreds of
-      // schools, no depth-chart endpoint to key off.
+      // NCAAF gets the same field tracker (ESPN's live situation data works
+      // the same way) but no injury report — hundreds of schools, no
+      // depth-chart endpoint to key off.
       if(sportKey === 'americanfootball_nfl' || sportKey === 'americanfootball_ncaaf'){
-        if(sportKey === 'americanfootball_nfl'){
-          const inj = document.createElement('div');
-          inj.innerHTML = buildNflInjuriesHtml(game);
-          card.appendChild(inj.firstElementChild);
-        }
         const f = document.createElement('div');
         f.innerHTML = footballFieldTrackerSvg(sportKey, game, scoreEntry);
         card.appendChild(f.firstElementChild);
+      }
+
+      // NFL only: injury report, opt-in via a button right under the field
+      // instead of always showing — it was clutter on every card, most
+      // useful right before kickoff, not by default.
+      if(sportKey === 'americanfootball_nfl'){
+        const injToggleWrap = document.createElement('div');
+        injToggleWrap.className = 'props-toggle';
+        const injOpen = !!state.nflInjuriesOpen[game.id];
+        const injToggleBtn = document.createElement('button');
+        injToggleBtn.className = 'ghost nfl-injuries-toggle';
+        injToggleBtn.dataset.gameId = game.id;
+        injToggleBtn.textContent = injOpen ? 'Hide injury report' : 'Injury report';
+        injToggleWrap.appendChild(injToggleBtn);
+        card.appendChild(injToggleWrap);
+
+        const injHost = document.createElement('div');
+        injHost.className = 'nfl-injuries-host reveal' + (injOpen ? ' is-open' : '');
+        injHost.dataset.gameId = game.id;
+        injHost.style.display = injOpen ? 'block' : 'none';
+        card.appendChild(injHost);
+        if(injOpen) injHost.innerHTML = buildNflInjuriesHtml(game);
       }
 
       // NFL only: Matchup Breakdown / Weather / Recent Form / Player Form —
