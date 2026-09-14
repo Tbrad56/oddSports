@@ -823,6 +823,21 @@ function windFieldSvg(windFromDeg, windMph, bearing){
 // Builds the hourly weather strip for an MLB game card (first pitch through +4 hours).
 // extraHtml (e.g. a top-HR-hitters box) renders alongside the slots, filling
 // the leftover horizontal space to the right of them on wider cards.
+// First-pitch carry-conditions rating for a game, shared by the weather strip
+// and the HR Watch star rating below — a single source of truth so both
+// agree on what "good hitting weather" means for this game.
+function firstPitchWeatherRating(game){
+  const stadium = MLB_STADIUMS[game.home_team];
+  if(!stadium || stadium.roof === 'dome') return null;
+  const w = weatherCache[game.home_team];
+  if(!w) return null;
+  const gameHourUtc = game.commence_time.slice(0,13) + ':00';
+  const startIdx = w.time.indexOf(gameHourUtc);
+  if(startIdx === -1) return null;
+  const {score} = hittingScore(w.temp[startIdx], w.windDir[startIdx], w.wind[startIdx], w.precip[startIdx], stadium.bearing);
+  return scoreClass(score);
+}
+
 function buildWeatherStrip(game, extraHtml){
   const stadium = MLB_STADIUMS[game.home_team];
   if(!stadium) return '';
@@ -912,6 +927,76 @@ function buildParkDimsHtml(game){
     <span class="rating-tag ${tierCls}" title="Average of the park's 5 real fence distances, ranked #${d.rank} of ${d.outOf} (1 = most compact). Distance only — doesn't capture altitude, wind (shown separately above), or wall height.">${escapeHtml(d.tier)}</span>
     ${d.altitudeNote ? `<div class="park-altitude-note">⚠ ${escapeHtml(d.altitudeNote)}</div>` : ''}
   </div>`;
+}
+
+// ---------- HR Watch: composite star rating per batter ----------
+// Combines three things we already fetch for other cards — no extra API
+// calls: (a) hand-split power vs today's specific opposing pitcher (from
+// hr-matchups), (b) that park's fence-distance tier (park dimensions), and
+// (c) first-pitch carry conditions (weather). Stars are a transparent sum of
+// bounded pieces, not a black box — every piece shows up in the tooltip.
+//
+// MLB StatsAPI sitCodes are symmetric: 'vl' always means "vs lefties," so the
+// same code that picks a batter's split vs a given pitcher hand also picks a
+// pitcher's split vs a given batter hand.
+function hrSitCodeForBatterHand(batterHand, pitcherHand){
+  if(batterHand === 'S') return pitcherHand === 'L' ? 'vr' : 'vl'; // switch-hitters take the platoon side
+  return batterHand === 'L' ? 'vl' : 'vr';
+}
+
+function hrWatchRating(batter, pitcher, game){
+  if(batter.iso == null) return null;
+  const clamp = (v,lo,hi) => Math.max(lo, Math.min(hi, v));
+  const reasons = [];
+  let score = 0;
+
+  // Power at the plate, already hand-split vs today's opposing pitcher throwing hand.
+  const isoPart = clamp(batter.iso / 0.200, 0, 1.5) * 2;
+  score += isoPart;
+  reasons.push(`${batter.iso.toFixed(3)} ISO${pitcher && pitcher.hand ? ` vs ${pitcher.hand}HP` : ''}`);
+
+  // How many HRs this pitcher gives up to same-handed batters.
+  if(pitcher && pitcher.rows){
+    const code = hrSitCodeForBatterHand(batter.hand, pitcher.hand);
+    const st = pitcher.rows[code] || pitcher.rows.season;
+    if(st && st.hr9 != null){
+      const pitcherPart = clamp(st.hr9 / 1.3, 0, 1.6) * 1;
+      score += pitcherPart;
+      if(st.hr9 >= 1.3) reasons.push(`${st.hr9.toFixed(2)} HR/9 allowed by ${escapeHtml(pitcher.name)}`);
+    }
+  }
+
+  // Ballpark: real fence-distance tier, with the Coors altitude caveat overriding
+  // a "Spacious"-by-distance park that's actually MLB's most HR-friendly.
+  const park = mlbParkDimsCache && mlbParkDimsCache[game.home_team];
+  if(park){
+    let parkPart = park.tier === 'Compact' ? 0.7 : park.tier === 'Spacious' ? -0.7 : 0;
+    if(park.altitudeNote) parkPart = 0.7;
+    score += parkPart;
+    if(parkPart > 0) reasons.push(park.altitudeNote ? 'Altitude (Coors) adds real carry' : `${park.tier} park`);
+    else if(parkPart < 0) reasons.push(`${park.tier} park`);
+  }
+
+  // First-pitch carry conditions (temp + park-relative wind + rain risk).
+  const weather = firstPitchWeatherRating(game);
+  if(weather){
+    const wPart = weather.label === 'HR-friendly' ? 0.5 : weather.label === 'Carry-killing' ? -0.5 : 0;
+    score += wPart;
+    if(wPart !== 0) reasons.push(`${weather.label.toLowerCase()} weather`);
+  }
+
+  // Real career history vs this exact pitcher — tiny samples, small nudge only.
+  if(batter.bvp && batter.bvp.ab >= 8 && batter.bvp.hr > 0){
+    score += 0.3;
+    reasons.push(`${batter.bvp.hr} HR in ${batter.bvp.ab} AB career vs this pitcher`);
+  }
+
+  const stars = score >= 4 ? 5 : score >= 3 ? 4 : score >= 2 ? 3 : score >= 1 ? 2 : 1;
+  return { score, stars, reasons };
+}
+
+function starsHtml(n){
+  return `<span class="hr-stars" aria-hidden="true"><span class="hr-stars-fill">${'★'.repeat(n)}</span><span class="hr-stars-empty">${'☆'.repeat(5-n)}</span></span>`;
 }
 
 // ESPN's team-logo CDN, keyed by league path — driven by the numeric ESPN

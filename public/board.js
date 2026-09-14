@@ -631,24 +631,28 @@
     }));
   }
 
-  // Top 3 home-run threats across both lineups (by season HR count), shown
+  // Top 3 HR Watch threats across both lineups, ranked by a composite star
+  // rating (power vs today's specific pitcher, ballpark, weather — see
+  // hrWatchRating in common.js) rather than raw season HR count. Shown
   // beside the weather slots — empty until lineups post (2-4 hours before
   // first pitch), same as the opt-in HR Matchups section below.
   function buildTopHittersHtml(game){
     const data = state.hrCache[game.id];
     if(!data || !data.matched) return '';
-    const withTeam = (batters, team) => (batters || []).map(b=>({...b, team}));
+    const withTeam = (batters, team, pitcher) => (batters || []).map(b=>({...b, team, pitcher}));
     const pool = [
-      ...withTeam(data.away.batters, game.away_team),
-      ...withTeam(data.home.batters, game.home_team)
-    ].filter(b => b.hr !== null && b.hr !== undefined);
+      ...withTeam(data.away.batters, game.away_team, data.home.pitcher),
+      ...withTeam(data.home.batters, game.home_team, data.away.pitcher)
+    ]
+      .map(b => ({ b, rating: hrWatchRating(b, b.pitcher, game) }))
+      .filter(x => x.rating);
     if(!pool.length) return '';
-    const top = pool.sort((a,b)=>b.hr-a.hr).slice(0,3);
+    const top = pool.sort((a,b)=>b.rating.score-a.rating.score).slice(0,3);
     return `<div class="top-hitters-box">
-      <div class="top-hitters-title">Top HR threats</div>
-      ${top.map(b=>`<div class="hitter-row">
+      <div class="top-hitters-title">HR Watch</div>
+      ${top.map(({b,rating})=>`<div class="hitter-row" title="${escapeHtml(rating.reasons.join(' · '))}">
         <div><div class="hitter-name">${escapeHtml(b.name)}</div><div class="hitter-team">${escapeHtml(b.team)}</div></div>
-        <div><span class="hitter-stat">${b.hr}</span><span class="hitter-stat-sub">HR</span></div>
+        <div>${starsHtml(rating.stars)}</div>
       </div>`).join('')}
     </div>`;
   }
@@ -690,15 +694,19 @@
     return html;
   }
 
-  function batterTableHtml(teamName, side, hrOdds, statcast){
+  function batterTableHtml(teamName, side, hrOdds, statcast, pitcher, game){
     if(!side.lineupPosted){
       return `<div class="hr-pitcher" style="margin-top:12px;">${escapeHtml(teamName)} lineup</div>`
         + `<div class="hr-note">Lineups usually post 2-4 hours before first pitch.</div>`;
     }
     const scCols = statcast ? '<th>EV</th><th>Barrel%</th><th>HardHit%</th>' : '';
     let html = `<div class="hr-pitcher" style="margin-top:12px;">${escapeHtml(teamName)} lineup <span class="lineup-tag confirmed">✓ Confirmed</span></div>`;
-    html += `<div class="table-scroll"><table class="props-table"><thead><tr><th>Batter</th><th>HR odds</th><th>vs This P</th><th>HR</th><th>BA</th><th>OBP</th><th>SLG</th><th>ISO</th>${scCols}</tr></thead><tbody>`;
+    html += `<div class="table-scroll"><table class="props-table"><thead><tr><th>Watch</th><th>Batter</th><th>HR odds</th><th>vs This P</th><th>HR</th><th>BA</th><th>OBP</th><th>SLG</th><th>ISO</th>${scCols}</tr></thead><tbody>`;
     side.batters.forEach(b=>{
+      const rating = pitcher ? hrWatchRating(b, pitcher, game) : null;
+      const watchCell = rating
+        ? `<td title="${escapeHtml(rating.reasons.join(' · '))}">${starsHtml(rating.stars)}</td>`
+        : '<td>—</td>';
       const odds = hrOdds[b.name.toLowerCase()];
       const style = odds ? bookStyleFor(odds.bookKey) : null;
       const link = odds ? BOOK_LINKS[odds.bookKey.toLowerCase()] : null;
@@ -717,7 +725,9 @@
           ? statCell(m.ev, 90, 86, n=>n.toFixed(1)) + statCell(m.barrel, 10, 5, n=>n.toFixed(1)+'%') + statCell(m.hardhit, 42, 33, n=>n.toFixed(1)+'%')
           : '<td>—</td><td>—</td><td>—</td>';
       }
-      html += `<tr><td style="font-weight:600; white-space:nowrap;">${playerAvatarHtml(b.id, 22)}${escapeHtml(b.name)} <span class="hand-tag">${escapeHtml(b.hand)}</span></td>`
+      html += `<tr>`
+        + watchCell
+        + `<td style="font-weight:600; white-space:nowrap;">${playerAvatarHtml(b.id, 22)}${escapeHtml(b.name)} <span class="hand-tag">${escapeHtml(b.hand)}</span></td>`
         + oddsCell
         + bvpCell
         + `<td>${b.hr !== null ? b.hr : '—'}</td>`
@@ -741,10 +751,10 @@
     let html = '<div class="hr-block">';
     // Away lineup faces the home pitcher, and vice versa
     html += pitcherTableHtml(data.home.pitcher);
-    html += batterTableHtml(game.away_team, data.away, hrOdds, statcast);
+    html += batterTableHtml(game.away_team, data.away, hrOdds, statcast, data.home.pitcher, game);
     html += '<div style="height:10px;"></div>';
     html += pitcherTableHtml(data.away.pitcher);
-    html += batterTableHtml(game.home_team, data.home, hrOdds, statcast);
+    html += batterTableHtml(game.home_team, data.home, hrOdds, statcast, data.away.pitcher, game);
     html += `<div class="hr-note">Bands are league-average context, not picks. "vs This P" is career batter-vs-pitcher — samples are tiny, treat as color not signal.</div>`;
     html += '</div>';
     return html;

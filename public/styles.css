@@ -779,6 +779,9 @@
 .hitter-team{font-size:9.5px; color:var(--text-faint); display:block; margin-top:1px;}
 .hitter-stat{font-family:var(--font-mono); font-weight:700; color:var(--good); font-size:13px; flex-shrink:0; text-align:right;}
 .hitter-stat-sub{font-size:9px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.3px; display:block; text-align:right;}
+.hr-stars{font-size:12px; letter-spacing:1px; white-space:nowrap;}
+.hr-stars-fill{color:var(--good);}
+.hr-stars-empty{color:var(--border);}
 
 /* ---------- Shared motion utilities ---------- */
 @keyframes enterUp{
