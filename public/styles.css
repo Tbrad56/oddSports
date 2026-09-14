@@ -655,7 +655,7 @@
   background:var(--bg-card);
 }
 .weather-head{
-  display:flex; align-items:center; gap:8px; margin-bottom:8px;
+  display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:8px;
   font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.5px; font-weight:700;
 }
 .roof-tag{
@@ -669,10 +669,8 @@
   margin-top:8px; padding-top:8px; border-top:1px solid var(--border-soft);
   font-size:11px;
 }
-.park-dims-label{color:var(--text-faint); font-weight:700; text-transform:uppercase; letter-spacing:.4px; font-size:10px;}
-.park-dims-vals{font-family:var(--font-mono); color:var(--text-dim);}
 .park-altitude-note{
-  flex-basis:100%; font-size:10.5px; color:var(--warn); margin-top:2px; line-height:1.5;
+  flex:1; min-width:200px; font-size:10.5px; color:var(--warn); line-height:1.5;
 }
 .weather-slots{display:flex; gap:6px; overflow-x:auto; padding-bottom:2px; flex:1; min-width:0;}
 .weather-slot{
@@ -707,12 +705,15 @@
 .pitcher-team{font-size:10.5px; color:var(--text-faint);}
 .pitcher-vs{font-size:11px; color:var(--text-faint); font-weight:600; text-transform:uppercase; flex-shrink:0;}
 .wind-field-wrap{
-  margin-left:auto; display:flex; align-items:center; gap:8px; flex-shrink:0;
+  margin-left:auto; display:flex; align-items:center; gap:8px; flex-shrink:0; max-width:100%;
 }
-.wind-field{display:block;}
+.wind-field{display:block; width:132px; max-width:100%; height:auto;}
 .wind-mph{
   font-family:var(--font-mono); font-size:13px; font-weight:600; line-height:1.25;
   color:var(--text-dim); text-align:center; text-transform:none; letter-spacing:0;
+}
+@media (max-width:640px){
+  .wind-field-wrap{margin-left:0; width:100%; justify-content:center;}
 }
 .weather-note{font-size:11px; color:var(--text-faint);}
 .analyze-cost{font-size:10.5px; color:var(--text-faint); margin-left:8px;}

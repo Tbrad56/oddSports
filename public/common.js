@@ -795,14 +795,44 @@ function scoreClass(score){
   return {cls:'w-mod', label:'Neutral', dot:'●'};
 }
 
-// Mini baseball field with a wind arrow, drawn relative to the park:
-// center field always points up, so an up arrow = wind blowing straight out.
-function windFieldSvg(windFromDeg, windMph, bearing){
-  const rel = windRelativeToPark(windFromDeg, windMph, bearing);
-  const rotation = ((windFromDeg + 180) - bearing + 360) % 360; // 0 = out to CF
-  const arrowColor = rel.label === 'out' ? 'var(--good)' : rel.label === 'in' ? 'var(--bad)' : 'var(--warn)';
-  return `<span class="wind-field-wrap" title="Wind ${Math.round(windMph)} mph, blowing ${rel.label === 'cross' ? 'across the field' : rel.label + (rel.label==='out' ? ' toward CF' : ' from CF')} (field shown with CF up; park orientation approx.)">
-    <svg class="wind-field" viewBox="0 0 100 100" width="88" height="88" aria-hidden="true">
+// Baseball field diagram used on the weather strip: real fence distances
+// (from MLB's own venues data) labeled right on the fence line, plus a wind
+// arrow overlaid near the mound when a forecast is available — center field
+// always points up, so an up arrow = wind blowing straight out. Either input
+// can be missing (no forecast yet, or a dome with no wind) and the other
+// still renders on its own.
+function parkFieldSvg(dims, wind, bearing){
+  const labelPts = [
+    dims && dims.leftLine    != null ? {abbr:'LF', val:dims.leftLine,     x:10, y:50} : null,
+    dims && dims.leftCenter  != null ? {abbr:'LC', val:dims.leftCenter,   x:29, y:35} : null,
+    dims && dims.center      != null ? {abbr:'CF', val:dims.center,       x:50, y:29} : null,
+    dims && dims.rightCenter != null ? {abbr:'RC', val:dims.rightCenter,  x:71, y:35} : null,
+    dims && dims.rightLine   != null ? {abbr:'RF', val:dims.rightLine,    x:90, y:50} : null,
+  ].filter(Boolean);
+  const labelsHtml = labelPts.map(p => `
+      <text x="${p.x}" y="${p.y}" text-anchor="middle" style="paint-order:stroke; stroke:#16321C; stroke-width:2.4px; stroke-linejoin:round;">
+        <tspan x="${p.x}" dy="-3" font-size="5.5" font-family="var(--font-mono)" font-weight="700" letter-spacing="0.3px" fill="#BFE3C7">${p.abbr}</tspan>
+        <tspan x="${p.x}" dy="7.5" font-size="8.5" font-family="var(--font-mono)" font-weight="800" fill="#FFFFFF">${p.val}</tspan>
+      </text>`).join('');
+
+  let arrowHtml = '', mphHtml = '';
+  const titleParts = [];
+  if(dims) titleParts.push(`Real fence distances (MLB's own venues data)`);
+  if(wind){
+    const rel = windRelativeToPark(wind.dir, wind.mph, bearing);
+    const rotation = ((wind.dir + 180) - bearing + 360) % 360; // 0 = out to CF
+    const arrowColor = rel.label === 'out' ? 'var(--good)' : rel.label === 'in' ? 'var(--bad)' : 'var(--warn)';
+    arrowHtml = `
+      <g transform="rotate(${rotation.toFixed(0)} 50 58)">
+        <circle cx="50" cy="58" r="10" fill="${arrowColor}" opacity="0.94" stroke="#1B1B1B" stroke-width="1"/>
+        <path d="M50,65 L50,51 M50,51 l-5,5 M50,51 l5,5" stroke="#1B1B1B" stroke-width="3" fill="none" stroke-linecap="round"/>
+      </g>`;
+    mphHtml = `<span class="wind-mph">${Math.round(wind.mph)}<br>mph</span>`;
+    titleParts.push(`Wind ${Math.round(wind.mph)} mph, blowing ${rel.label === 'cross' ? 'across the field' : rel.label + (rel.label==='out' ? ' toward CF' : ' from CF')} (park orientation approx.)`);
+  }
+
+  return `<span class="wind-field-wrap" title="${escapeHtml(titleParts.join(' · '))}">
+    <svg class="wind-field" viewBox="0 0 100 100" width="132" height="132" aria-hidden="true">
       <path d="M50,88 L4,44 A65,65 0 0 1 96,44 Z" fill="#2F6B3C" stroke="#1C3F24" stroke-width="2"/>
       <path d="M50,88 L74,64 L50,40 L26,64 Z" fill="#A5713F" stroke="#7A4F28" stroke-width="1.5"/>
       <path d="M50,76 L63,64 L50,52 L37,64 Z" fill="#3D8A4F" stroke="#276334" stroke-width="1"/>
@@ -811,12 +841,10 @@ function windFieldSvg(windFromDeg, windMph, bearing){
       <rect x="47.7" y="37.7" width="4.6" height="4.6" fill="#F5F5F5" stroke="#999" stroke-width="0.6" transform="rotate(45 50 40)"/>
       <rect x="23.7" y="61.7" width="4.6" height="4.6" fill="#F5F5F5" stroke="#999" stroke-width="0.6" transform="rotate(45 26 64)"/>
       <path d="M46,88 L54,88 L54,84 L50,80 L46,84 Z" fill="#F5F5F5" stroke="#999" stroke-width="0.6"/>
-      <g transform="rotate(${rotation.toFixed(0)} 50 33)">
-        <circle cx="50" cy="33" r="12" fill="${arrowColor}" opacity="0.94" stroke="#1B1B1B" stroke-width="1"/>
-        <path d="M50,41 L50,25 M50,25 l-6,6 M50,25 l6,6" stroke="#1B1B1B" stroke-width="3.5" fill="none" stroke-linecap="round"/>
-      </g>
+      ${labelsHtml}
+      ${arrowHtml}
     </svg>
-    <span class="wind-mph">${Math.round(windMph)}<br>mph</span>
+    ${mphHtml}
   </span>`;
 }
 
@@ -880,9 +908,9 @@ function buildWeatherStrip(game, extraHtml){
   const ratingTag = (firstPitchRating && stadium.roof !== 'dome')
     ? `<span class="rating-tag ${firstPitchRating.cls}" title="Carry-conditions heuristic (temp + park-relative wind + rain risk) at first pitch. Rates weather only — not a betting signal.">${firstPitchRating.dot} ${firstPitchRating.label}</span>`
     : '';
-  const fieldSvg = (firstPitchWind && stadium.roof !== 'dome')
-    ? windFieldSvg(firstPitchWind.dir, firstPitchWind.mph, stadium.bearing)
-    : '';
+  const dims = mlbParkDimsCache && mlbParkDimsCache[game.home_team];
+  const wind = (firstPitchWind && stadium.roof !== 'dome') ? firstPitchWind : null;
+  const fieldSvg = (dims || wind) ? parkFieldSvg(dims, wind, stadium.bearing) : '';
 
   let body;
   if(stadium.roof === 'dome'){
@@ -917,15 +945,15 @@ async function fetchMlbParkDimensions(){
   return mlbParkDimsCache;
 }
 const PARK_TIER_CLASS = { Compact:'w-good', Average:'', Spacious:'w-bad' };
+// Fence numbers themselves now live on the field diagram (parkFieldSvg) —
+// this just carries the at-a-glance tier tag and the Coors-style caveat.
 function buildParkDimsHtml(game){
   const d = mlbParkDimsCache && mlbParkDimsCache[game.home_team];
   if(!d) return '';
   const tierCls = PARK_TIER_CLASS[d.tier] || '';
   return `<div class="park-dims-row">
-    <span class="park-dims-label">🏟️ Fences</span>
-    <span class="park-dims-vals">LF ${d.leftLine}${d.leftCenter!=null?` · LC ${d.leftCenter}`:''} · CF ${d.center}${d.rightCenter!=null?` · RC ${d.rightCenter}`:''} · RF ${d.rightLine}</span>
-    <span class="rating-tag ${tierCls}" title="Average of the park's 5 real fence distances, ranked #${d.rank} of ${d.outOf} (1 = most compact). Distance only — doesn't capture altitude, wind (shown separately above), or wall height.">${escapeHtml(d.tier)}</span>
-    ${d.altitudeNote ? `<div class="park-altitude-note">⚠ ${escapeHtml(d.altitudeNote)}</div>` : ''}
+    <span class="rating-tag ${tierCls}" title="Average of the park's 5 real fence distances, ranked #${d.rank} of ${d.outOf} (1 = most compact). Distance only — doesn't capture altitude, wind (shown on the field above), or wall height.">🏟️ ${escapeHtml(d.tier)}</span>
+    ${d.altitudeNote ? `<span class="park-altitude-note">⚠ ${escapeHtml(d.altitudeNote)}</span>` : ''}
   </div>`;
 }
 
