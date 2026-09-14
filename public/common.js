@@ -795,57 +795,26 @@ function scoreClass(score){
   return {cls:'w-mod', label:'Neutral', dot:'●'};
 }
 
-// Baseball field diagram used on the weather strip: real fence distances
-// (from MLB's own venues data) labeled right on the fence line, plus a wind
-// arrow overlaid near the mound when a forecast is available — center field
-// always points up, so an up arrow = wind blowing straight out. Either input
-// can be missing (no forecast yet, or a dome with no wind) and the other
-// still renders on its own.
-function parkFieldSvg(dims, wind, bearing){
-  const labelPts = [
-    dims && dims.leftLine    != null ? {abbr:'LF', val:dims.leftLine,     x:10, y:50} : null,
-    dims && dims.leftCenter  != null ? {abbr:'LC', val:dims.leftCenter,   x:29, y:35} : null,
-    dims && dims.center      != null ? {abbr:'CF', val:dims.center,       x:50, y:29} : null,
-    dims && dims.rightCenter != null ? {abbr:'RC', val:dims.rightCenter,  x:71, y:35} : null,
-    dims && dims.rightLine   != null ? {abbr:'RF', val:dims.rightLine,    x:90, y:50} : null,
-  ].filter(Boolean);
-  const labelsHtml = labelPts.map(p => `
-      <text x="${p.x}" y="${p.y}" text-anchor="middle" style="paint-order:stroke; stroke:#16321C; stroke-width:3px; stroke-linejoin:round;">
-        <tspan x="${p.x}" dy="-3.5" font-size="7" font-family="var(--font-mono)" font-weight="700" letter-spacing="0.3px" fill="#BFE3C7">${p.abbr}</tspan>
-        <tspan x="${p.x}" dy="9" font-size="11" font-family="var(--font-mono)" font-weight="800" fill="#FFFFFF">${p.val}</tspan>
-      </text>`).join('');
-
-  let arrowHtml = '', mphHtml = '';
-  const titleParts = [];
-  if(dims) titleParts.push(`Real fence distances (MLB's own venues data)`);
-  if(wind){
-    const rel = windRelativeToPark(wind.dir, wind.mph, bearing);
-    const rotation = ((wind.dir + 180) - bearing + 360) % 360; // 0 = out to CF
-    const arrowColor = rel.label === 'out' ? 'var(--good)' : rel.label === 'in' ? 'var(--bad)' : 'var(--warn)';
-    arrowHtml = `
-      <g transform="rotate(${rotation.toFixed(0)} 50 58)">
-        <circle cx="50" cy="58" r="10" fill="${arrowColor}" opacity="0.94" stroke="#1B1B1B" stroke-width="1"/>
-        <path d="M50,65 L50,51 M50,51 l-5,5 M50,51 l5,5" stroke="#1B1B1B" stroke-width="3" fill="none" stroke-linecap="round"/>
-      </g>`;
-    mphHtml = `<span class="wind-mph">${Math.round(wind.mph)}<br>mph</span>`;
-    titleParts.push(`Wind ${Math.round(wind.mph)} mph, blowing ${rel.label === 'cross' ? 'across the field' : rel.label + (rel.label==='out' ? ' toward CF' : ' from CF')} (park orientation approx.)`);
-  }
-
-  return `<span class="wind-field-wrap" title="${escapeHtml(titleParts.join(' · '))}">
-    <svg class="wind-field" viewBox="0 0 100 100" width="220" height="220" aria-hidden="true">
+// Compact baseball-field-with-wind-arrow icon, one per hourly weather slot —
+// center field always points up, so an up arrow = wind blowing straight out
+// for THAT hour specifically, which is why it's built fresh per slot rather
+// than once for the whole card: as the hourly forecast changes, so does the
+// arrow. No fence-distance labels here (removed — see park dims history).
+function miniWindFieldSvg(windFromDeg, windMph, bearing){
+  const rel = windRelativeToPark(windFromDeg, windMph, bearing);
+  const rotation = ((windFromDeg + 180) - bearing + 360) % 360; // 0 = out to CF
+  const arrowColor = rel.label === 'out' ? 'var(--good)' : rel.label === 'in' ? 'var(--bad)' : 'var(--warn)';
+  return `<svg class="ws-field" viewBox="0 0 100 100" width="46" height="46" aria-hidden="true">
       <path d="M50,88 L4,44 A65,65 0 0 1 96,44 Z" fill="#2F6B3C" stroke="#1C3F24" stroke-width="2"/>
       <path d="M50,88 L74,64 L50,40 L26,64 Z" fill="#A5713F" stroke="#7A4F28" stroke-width="1.5"/>
       <path d="M50,76 L63,64 L50,52 L37,64 Z" fill="#3D8A4F" stroke="#276334" stroke-width="1"/>
       <circle cx="50" cy="64" r="4" fill="#8A5A34" stroke="#6B4527" stroke-width="1"/>
-      <rect x="71.7" y="61.7" width="4.6" height="4.6" fill="#F5F5F5" stroke="#999" stroke-width="0.6" transform="rotate(45 74 64)"/>
-      <rect x="47.7" y="37.7" width="4.6" height="4.6" fill="#F5F5F5" stroke="#999" stroke-width="0.6" transform="rotate(45 50 40)"/>
-      <rect x="23.7" y="61.7" width="4.6" height="4.6" fill="#F5F5F5" stroke="#999" stroke-width="0.6" transform="rotate(45 26 64)"/>
       <path d="M46,88 L54,88 L54,84 L50,80 L46,84 Z" fill="#F5F5F5" stroke="#999" stroke-width="0.6"/>
-      ${labelsHtml}
-      ${arrowHtml}
-    </svg>
-    ${mphHtml}
-  </span>`;
+      <g transform="rotate(${rotation.toFixed(0)} 50 38)">
+        <circle cx="50" cy="38" r="14" fill="${arrowColor}" opacity="0.94" stroke="#1B1B1B" stroke-width="1"/>
+        <path d="M50,48 L50,28 M50,28 l-7,7 M50,28 l7,7" stroke="#1B1B1B" stroke-width="4" fill="none" stroke-linecap="round"/>
+      </g>
+    </svg>`;
 }
 
 // Builds the hourly weather strip for an MLB game card (first pitch through +4 hours).
@@ -873,7 +842,6 @@ function buildWeatherStrip(game, extraHtml){
 
   let slotsHtml = '';
   let firstPitchRating = null;
-  let firstPitchWind = null;
   if(w){
     const gameHourUtc = game.commence_time.slice(0,13) + ':00'; // floor to the hour, matches Open-Meteo's UTC time format
     const startIdx = w.time.indexOf(gameHourUtc);
@@ -885,16 +853,18 @@ function buildWeatherStrip(game, extraHtml){
         const rating = scoreClass(score);
         if(i === startIdx){
           firstPitchRating = rating;
-          firstPitchWind = {dir: w.windDir[i], mph: w.wind[i]};
         }
         const windTxt = rel.label === 'cross'
           ? `${Math.round(w.wind[i])} mph cross`
           : `${Math.round(w.wind[i])} mph ${rel.label}`;
         slotsHtml += `<div class="weather-slot ${rating.cls}" title="${rating.label} conditions · wind ${windCompass(w.windDir[i])} ${Math.round(w.wind[i])} mph, ${rel.label === 'out' ? 'blowing out toward CF' : rel.label === 'in' ? 'blowing in from CF' : 'crosswind'} (park orientation approx.)">
-          <div class="w-time">${local.toLocaleTimeString([], {hour:'numeric'})}${i===startIdx ? ' · 1st pitch' : ''}</div>
-          <div class="w-temp">${Math.round(w.temp[i])}°F</div>
-          <div class="w-wind">${windTxt}</div>
-          <div class="w-rain${precip >= 30 ? ' wet' : ''}">${precip}% rain</div>
+          ${miniWindFieldSvg(w.windDir[i], w.wind[i], stadium.bearing)}
+          <div class="ws-info">
+            <div class="w-time">${local.toLocaleTimeString([], {hour:'numeric'})}${i===startIdx ? ' · 1st pitch' : ''}</div>
+            <div class="w-temp">${Math.round(w.temp[i])}°F</div>
+            <div class="w-wind">${windTxt}</div>
+            <div class="w-rain${precip >= 30 ? ' wet' : ''}">${precip}% rain</div>
+          </div>
         </div>`;
       }
     }
@@ -908,10 +878,6 @@ function buildWeatherStrip(game, extraHtml){
   const ratingTag = (firstPitchRating && stadium.roof !== 'dome')
     ? `<span class="rating-tag ${firstPitchRating.cls}" title="Carry-conditions heuristic (temp + park-relative wind + rain risk) at first pitch. Rates weather only — not a betting signal.">${firstPitchRating.dot} ${firstPitchRating.label}</span>`
     : '';
-  const dims = mlbParkDimsCache && mlbParkDimsCache[game.home_team];
-  const wind = (firstPitchWind && stadium.roof !== 'dome') ? firstPitchWind : null;
-  const fieldSvg = (dims || wind) ? parkFieldSvg(dims, wind, stadium.bearing) : '';
-
   let body;
   if(stadium.roof === 'dome'){
     body = '<div class="weather-note">Indoor stadium — conditions don\'t affect play.</div>';
@@ -925,9 +891,8 @@ function buildWeatherStrip(game, extraHtml){
 
   return `<div class="weather-strip">
     <div class="weather-head">☁ ${escapeHtml(stadium.park)} ${roofTag} ${ratingTag}</div>
-    ${fieldSvg ? `<div class="park-field-row">${fieldSvg}</div>` : ''}
-    <div class="weather-body-row">${body}${extraHtml || ''}</div>
-    ${buildParkDimsHtml(game)}
+    <div class="weather-body-row">${body}</div>
+    ${extraHtml || ''}
   </div>`;
 }
 
@@ -945,18 +910,9 @@ async function fetchMlbParkDimensions(){
   }catch(e){ return null; }
   return mlbParkDimsCache;
 }
-const PARK_TIER_CLASS = { Compact:'w-good', Average:'', Spacious:'w-bad' };
-// Fence numbers themselves now live on the field diagram (parkFieldSvg) —
-// this just carries the at-a-glance tier tag and the Coors-style caveat.
-function buildParkDimsHtml(game){
-  const d = mlbParkDimsCache && mlbParkDimsCache[game.home_team];
-  if(!d) return '';
-  const tierCls = PARK_TIER_CLASS[d.tier] || '';
-  return `<div class="park-dims-row">
-    <span class="rating-tag ${tierCls}" title="Average of the park's 5 real fence distances, ranked #${d.rank} of ${d.outOf} (1 = most compact). Distance only — doesn't capture altitude, wind (shown on the field above), or wall height.">🏟️ ${escapeHtml(d.tier)}</span>
-    ${d.altitudeNote ? `<span class="park-altitude-note">⚠ ${escapeHtml(d.altitudeNote)}</span>` : ''}
-  </div>`;
-}
+// Park dimensions no longer render on the card (the field diagram/fence
+// numbers were removed) — mlbParkDimsCache is still fetched and used purely
+// as a scoring input to hrWatchRating below (park tier + Coors altitude note).
 
 // ---------- HR Watch: composite star rating per batter ----------
 // Combines three things we already fetch for other cards — no extra API
@@ -973,25 +929,60 @@ function hrSitCodeForBatterHand(batterHand, pitcherHand){
   return batterHand === 'L' ? 'vl' : 'vr';
 }
 
+// Builds a one-sentence, plain-English readout from the same numbers the
+// score is built from — not a model call, just deterministic phrasing over
+// real stats, so it's free and instant but still reads like an explanation
+// rather than a stat dump.
+function hrWatchSummary(batter, pitcher, park, weather, powerBand, pitcherHr9){
+  const parts = [];
+  const first = batter.name.split(' ')[0];
+
+  if(powerBand === 'elite') parts.push(`${first} has real thump vs ${pitcher && pitcher.hand ? pitcher.hand + 'HP' : 'this hand'} (${batter.iso.toFixed(3)} ISO)`);
+  else if(powerBand === 'good') parts.push(`${first} brings solid pop vs ${pitcher && pitcher.hand ? pitcher.hand + 'HP' : 'this hand'} (${batter.iso.toFixed(3)} ISO)`);
+  else parts.push(`${first}'s power is modest here (${batter.iso.toFixed(3)} ISO)`);
+
+  if(pitcher && pitcherHr9 != null){
+    if(pitcherHr9 >= 1.3) parts.push(`facing a homer-prone ${pitcher.name} (${pitcherHr9.toFixed(2)} HR/9)`);
+    else if(pitcherHr9 <= 0.8) parts.push(`against a stingy ${pitcher.name} (${pitcherHr9.toFixed(2)} HR/9)`);
+  }
+
+  if(park){
+    if(park.altitudeNote) parts.push(`at altitude, which carries further than the fences suggest`);
+    else if(park.tier === 'Compact') parts.push(`in a hitter-friendly park`);
+    else if(park.tier === 'Spacious') parts.push(`in a pitcher-friendly park`);
+  }
+
+  if(weather){
+    if(weather.label === 'HR-friendly') parts.push(`with the wind helping carry`);
+    else if(weather.label === 'Carry-killing') parts.push(`fighting the wind tonight`);
+  }
+
+  if(batter.bvp && batter.bvp.ab >= 8 && batter.bvp.hr > 0){
+    parts.push(`and has gone deep off him before (${batter.bvp.hr} HR in ${batter.bvp.ab} AB career)`);
+  }
+
+  // First clause reads as the subject/verb, the rest join as ", " clauses.
+  return parts[0] + (parts.length > 1 ? ', ' + parts.slice(1).join(', ') : '') + '.';
+}
+
 function hrWatchRating(batter, pitcher, game){
   if(batter.iso == null) return null;
   const clamp = (v,lo,hi) => Math.max(lo, Math.min(hi, v));
-  const reasons = [];
   let score = 0;
 
   // Power at the plate, already hand-split vs today's opposing pitcher throwing hand.
   const isoPart = clamp(batter.iso / 0.200, 0, 1.5) * 2;
   score += isoPart;
-  reasons.push(`${batter.iso.toFixed(3)} ISO${pitcher && pitcher.hand ? ` vs ${pitcher.hand}HP` : ''}`);
+  const powerBand = batter.iso >= 0.200 ? 'elite' : batter.iso >= 0.150 ? 'good' : 'modest';
 
   // How many HRs this pitcher gives up to same-handed batters.
+  let pitcherHr9 = null;
   if(pitcher && pitcher.rows){
     const code = hrSitCodeForBatterHand(batter.hand, pitcher.hand);
     const st = pitcher.rows[code] || pitcher.rows.season;
     if(st && st.hr9 != null){
-      const pitcherPart = clamp(st.hr9 / 1.3, 0, 1.6) * 1;
-      score += pitcherPart;
-      if(st.hr9 >= 1.3) reasons.push(`${st.hr9.toFixed(2)} HR/9 allowed by ${escapeHtml(pitcher.name)}`);
+      pitcherHr9 = st.hr9;
+      score += clamp(st.hr9 / 1.3, 0, 1.6) * 1;
     }
   }
 
@@ -1002,26 +993,22 @@ function hrWatchRating(batter, pitcher, game){
     let parkPart = park.tier === 'Compact' ? 0.7 : park.tier === 'Spacious' ? -0.7 : 0;
     if(park.altitudeNote) parkPart = 0.7;
     score += parkPart;
-    if(parkPart > 0) reasons.push(park.altitudeNote ? 'Altitude (Coors) adds real carry' : `${park.tier} park`);
-    else if(parkPart < 0) reasons.push(`${park.tier} park`);
   }
 
   // First-pitch carry conditions (temp + park-relative wind + rain risk).
   const weather = firstPitchWeatherRating(game);
   if(weather){
-    const wPart = weather.label === 'HR-friendly' ? 0.5 : weather.label === 'Carry-killing' ? -0.5 : 0;
-    score += wPart;
-    if(wPart !== 0) reasons.push(`${weather.label.toLowerCase()} weather`);
+    score += weather.label === 'HR-friendly' ? 0.5 : weather.label === 'Carry-killing' ? -0.5 : 0;
   }
 
   // Real career history vs this exact pitcher — tiny samples, small nudge only.
   if(batter.bvp && batter.bvp.ab >= 8 && batter.bvp.hr > 0){
     score += 0.3;
-    reasons.push(`${batter.bvp.hr} HR in ${batter.bvp.ab} AB career vs this pitcher`);
   }
 
   const stars = score >= 4 ? 5 : score >= 3 ? 4 : score >= 2 ? 3 : score >= 1 ? 2 : 1;
-  return { score, stars, reasons };
+  const summary = hrWatchSummary(batter, pitcher, park, weather, powerBand, pitcherHr9);
+  return { score, stars, summary };
 }
 
 function starsHtml(n){
