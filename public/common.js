@@ -1042,8 +1042,8 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
   let badgeX = 150;
   if(live && sit.yardLine != null && sit.yardLine >= 0 && sit.yardLine <= 100){
     const x = 24 + (sit.yardLine / 100) * 252;
-    losMark = `<line x1="${x.toFixed(1)}" y1="8" x2="${x.toFixed(1)}" y2="112" stroke="#F5D400" stroke-width="2"/>`;
-    ballMark = `<ellipse cx="${x.toFixed(1)}" cy="60" rx="5" ry="3.2" fill="#7B4A22" stroke="#241609" stroke-width="1"/>`;
+    losMark = `<line x1="${x.toFixed(1)}" y1="28" x2="${x.toFixed(1)}" y2="132" stroke="#F5D400" stroke-width="2"/>`;
+    ballMark = `<ellipse cx="${x.toFixed(1)}" cy="80" rx="5" ry="3.2" fill="#7B4A22" stroke="#241609" stroke-width="1"/>`;
     // Possession drives toward the OPPONENT's goal: home team → toward the
     // away end (x decreasing, driveDir -1), away team → toward the home end
     // (x increasing, driveDir +1). Both the first-down marker and the drive
@@ -1052,19 +1052,19 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
     const towardAway = sit.possessionTeamId && sit.possessionTeamId === sit.homeTeamId;
     const driveDir = towardAway ? -1 : 1;
     const fx = Math.max(24, Math.min(276, x + driveDir * sit.distance * 2.52));
-    firstDownMark = `<line x1="${fx.toFixed(1)}" y1="8" x2="${fx.toFixed(1)}" y2="112" stroke="#FFA940" stroke-width="2" stroke-dasharray="4,3"/>`;
+    firstDownMark = `<line x1="${fx.toFixed(1)}" y1="28" x2="${fx.toFixed(1)}" y2="132" stroke="#FFA940" stroke-width="2" stroke-dasharray="4,3"/>`;
     if(sit.possessionTeamId && (sit.possessionTeamId === sit.homeTeamId || sit.possessionTeamId === sit.awayTeamId)){
       const ax = x + driveDir * 18;
       const tip = ax + driveDir * 10;
-      dirArrow = `<path d="M${ax.toFixed(1)},52 L${tip.toFixed(1)},60 L${ax.toFixed(1)},68 Z" fill="#F5F5F5" opacity="0.9"/>`;
+      dirArrow = `<path d="M${ax.toFixed(1)},72 L${tip.toFixed(1)},80 L${ax.toFixed(1)},88 Z" fill="#F5F5F5" opacity="0.9"/>`;
       // A small logo of whichever team actually has the ball, right above it —
       // the midfield logo is always the home team's turf logo, so on its own
       // it can't answer "who has the ball" once the away team is on offense.
       const posLogoUrl = espnTeamLogoUrl(sportKey, sit.possessionTeamId);
       if(posLogoUrl){
         possessionMark = `<g>
-          <circle cx="${x.toFixed(1)}" cy="38" r="13" fill="#F5F5F5" opacity="0.95"/>
-          <image href="${posLogoUrl}" x="${(x-11).toFixed(1)}" y="27" width="22" height="22" preserveAspectRatio="xMidYMid meet"/>
+          <circle cx="${x.toFixed(1)}" cy="58" r="13" fill="#F5F5F5" opacity="0.95"/>
+          <image href="${posLogoUrl}" x="${(x-11).toFixed(1)}" y="47" width="22" height="22" preserveAspectRatio="xMidYMid meet"/>
         </g>`;
       }
     }
@@ -1076,16 +1076,16 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
   const yardLabels = [10,20,30,40,50,40,30,20,10];
   let li = 0;
   for(let x = 49.2; x <= 250.8 + 0.1; x += 25.2, li++){
-    yardTicks += `<line x1="${x.toFixed(1)}" y1="8" x2="${x.toFixed(1)}" y2="112" stroke="#1C3F24" stroke-width="0.6" opacity="0.5"/>`;
+    yardTicks += `<line x1="${x.toFixed(1)}" y1="28" x2="${x.toFixed(1)}" y2="132" stroke="#1C3F24" stroke-width="0.6" opacity="0.5"/>`;
     const label = yardLabels[li];
     if(label != null){
-      yardNumbers += `<text x="${x.toFixed(1)}" y="24" text-anchor="middle" font-size="11" font-weight="700" fill="#E8F0EA" opacity="0.55">${label}</text>`;
-      yardNumbers += `<text x="${x.toFixed(1)}" y="102" text-anchor="middle" font-size="11" font-weight="700" fill="#E8F0EA" opacity="0.55">${label}</text>`;
+      yardNumbers += `<text x="${x.toFixed(1)}" y="44" text-anchor="middle" font-size="11" font-weight="700" fill="#E8F0EA" opacity="0.55">${label}</text>`;
+      yardNumbers += `<text x="${x.toFixed(1)}" y="122" text-anchor="middle" font-size="11" font-weight="700" fill="#E8F0EA" opacity="0.55">${label}</text>`;
     }
   }
   const homeLogoUrl = espnTeamLogoUrl(sportKey, sit && sit.homeTeamId);
   const homeLogoMark = homeLogoUrl
-    ? `<image href="${homeLogoUrl}" x="122" y="32" width="56" height="56" opacity="0.3" preserveAspectRatio="xMidYMid meet"/>`
+    ? `<image href="${homeLogoUrl}" x="122" y="52" width="56" height="56" opacity="0.3" preserveAspectRatio="xMidYMid meet"/>`
     : '';
   // Down & distance as a bold, centered badge ON the field itself (like a
   // broadcast scoreboard bug) instead of small corner text — reads at a
@@ -1098,17 +1098,36 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
     const w = Math.max(76, label.length * 8.2 + 24);
     const bx = Math.max(26 + w/2, Math.min(274 - w/2, badgeX));
     downBadge = `<g>
-      <rect x="${(bx - w/2).toFixed(1)}" y="47" width="${w.toFixed(1)}" height="26" rx="13" fill="#141414" opacity="0.72"/>
-      <text x="${bx.toFixed(1)}" y="64" text-anchor="middle" font-size="15" font-weight="800" fill="#F5F5F5" letter-spacing="0.4">${escapeHtml(label)}</text>
+      <rect x="${(bx - w/2).toFixed(1)}" y="67" width="${w.toFixed(1)}" height="26" rx="13" fill="#141414" opacity="0.72"/>
+      <text x="${bx.toFixed(1)}" y="84" text-anchor="middle" font-size="15" font-weight="800" fill="#F5F5F5" letter-spacing="0.4">${escapeHtml(label)}</text>
     </g>`;
   }
   const clockBits = [];
   if(started && !sit.isHalftime && sit.period) clockBits.push('Q' + sit.period);
   if(started && !sit.isHalftime && sit.displayClock) clockBits.push(sit.displayClock);
   const redZoneTag = live && sit.isRedZone ? '<span class="rz-tag">RED ZONE</span>' : '';
-  const banner = started
-    ? `<div class="field-banner"><span>${escapeHtml(clockBits.join(' · '))}</span>${redZoneTag}</div>`
+  // Clock + timeouts now live on the field itself (clockBug below) instead of
+  // this HTML banner — the banner sticks around only for the Red Zone flag.
+  const banner = redZoneTag
+    ? `<div class="field-banner">${redZoneTag}</div>`
     : '';
+  // Broadcast-style scorebug strip along the very top of the field itself:
+  // quarter + game clock centered, each team's remaining timeouts (●=have,
+  // ○=used) on their own side — away left, home right, matching the
+  // scorebox's away-then-home order elsewhere on this card.
+  let clockBug = '';
+  if(started){
+    const clockText = clockBits.join(' · ') || (sit.isHalftime ? 'HALFTIME' : '');
+    const pips = (n) => n == null ? '' : '●'.repeat(Math.max(0, n)) + '○'.repeat(Math.max(0, 3 - n));
+    const awayPips = pips(sit.awayTimeouts);
+    const homePips = pips(sit.homeTimeouts);
+    clockBug = `<g>
+      <rect x="0" y="0" width="300" height="20" fill="#141414" opacity="0.82"/>
+      ${awayPips ? `<text x="10" y="14" text-anchor="start" font-size="10" font-weight="700" fill="#F5F5F5" letter-spacing="1">${awayPips}</text>` : ''}
+      ${clockText ? `<text x="150" y="14" text-anchor="middle" font-size="12" font-weight="800" fill="#F5F5F5" letter-spacing="0.3">${escapeHtml(clockText)}</text>` : ''}
+      ${homePips ? `<text x="290" y="14" text-anchor="end" font-size="10" font-weight="700" fill="#F5F5F5" letter-spacing="1">${homePips}</text>` : ''}
+    </g>`;
+  }
   const kickoffNote = !started
     ? `<div class="field-note">Kickoff ${new Date(game.commence_time).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'})} — live tracker starts at kickoff</div>`
     : '';
@@ -1141,20 +1160,21 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
   return `<div class="nfl-field-wrap">
     ${scorebox}
     ${banner}
-    <svg class="nfl-field" viewBox="0 0 300 120" width="100%" height="120" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-      <rect x="0" y="8" width="24" height="104" fill="#265C33" stroke="#1C3F24" stroke-width="1.5"/>
-      <rect x="276" y="8" width="24" height="104" fill="#265C33" stroke="#1C3F24" stroke-width="1.5"/>
-      <rect x="24" y="8" width="252" height="104" fill="#2F6B3C" stroke="#1C3F24" stroke-width="2"/>
+    <svg class="nfl-field" viewBox="0 0 300 140" width="100%" height="140" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+      <rect x="0" y="28" width="24" height="104" fill="#265C33" stroke="#1C3F24" stroke-width="1.5"/>
+      <rect x="276" y="28" width="24" height="104" fill="#265C33" stroke="#1C3F24" stroke-width="1.5"/>
+      <rect x="24" y="28" width="252" height="104" fill="#2F6B3C" stroke="#1C3F24" stroke-width="2"/>
       ${yardTicks}
       ${yardNumbers}
       ${homeLogoMark}
-      <line x1="150" y1="8" x2="150" y2="112" stroke="#F5F5F5" stroke-width="1" opacity="0.6"/>
+      <line x1="150" y1="28" x2="150" y2="132" stroke="#F5F5F5" stroke-width="1" opacity="0.6"/>
       ${firstDownMark}
       ${losMark}
       ${dirArrow}
       ${ballMark}
       ${possessionMark}
       ${downBadge}
+      ${clockBug}
     </svg>
     ${kickoffNote}
   </div>`;
