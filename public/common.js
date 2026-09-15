@@ -1337,12 +1337,56 @@ function nflFormCardHtml(m){
     </div>
     <div class="hr-note" style="margin-top:8px;">Against-the-spread and over/under trend history requires paid closing-line data — form shown here is straight-up wins and losses from the schedule.</div>`);
 }
-function nflSummaryCardHtml(m){
+// Ties Auto Game Read's stats-only insights to the real current line instead
+// of leaving them floating with no reference to what's actually being bet.
+// FanDuel is the default book (falls back to whichever else is available),
+// with a chip row to switch — never silently swaps to "best price" the way
+// Value Finder does, since the whole point here is "the line," not "the
+// best number across books."
+const LINE_CONTEXT_BOOK_PRIORITY = { fanduel: 0, draftkings: 1 };
+function nflLineContextHtml(m, game, selectedBookKey){
+  if(!game || !game.bookmakers || !game.bookmakers.length) return '';
+  const pool = poolFor(game.bookmakers);
+  const spreadRows = modalPointRows(pool, 'spreads', m.home.team.name);
+  const totalRows = modalPointRows(pool, 'totals', 'Over');
+  if(!spreadRows.length && !totalRows.length) return '';
+
+  const bookKeys = [...new Set([...spreadRows, ...totalRows].map(r=>r.bookKey))]
+    .sort((a,b)=>(LINE_CONTEXT_BOOK_PRIORITY[a] ?? 99) - (LINE_CONTEXT_BOOK_PRIORITY[b] ?? 99));
+  const active = bookKeys.includes(selectedBookKey) ? selectedBookKey : bookKeys[0];
+  const spreadRow = spreadRows.find(r=>r.bookKey===active);
+  const totalRow = totalRows.find(r=>r.bookKey===active);
+
+  const chips = bookKeys.map(k=>{
+    const style = bookStyleFor(k);
+    return `<span class="lc-chip${k===active?' active':''}" data-game-id="${escapeHtml(String(game.id))}" data-book-key="${escapeHtml(k)}">${escapeHtml(style ? style.name : k)}</span>`;
+  }).join('');
+
+  const nums = [];
+  if(spreadRow) nums.push(`${escapeHtml(m.home.team.abbrev)} ${spreadRow.point > 0 ? '+' : ''}${spreadRow.point}`);
+  if(totalRow) nums.push(`O/U ${totalRow.point}`);
+
+  // Modest agreement check against the weather lean only — never a pick, just
+  // whether the stats above happen to point the same way as the real total.
+  let extra = '';
+  if(totalRow && m.summary && m.summary.leans){
+    if(m.summary.leans.some(l=>/under/i.test(l))) extra = 'weather lean points Under, matching this total.';
+    else if(m.summary.leans.some(l=>/over/i.test(l))) extra = 'weather lean points Over, matching this total.';
+  }
+
+  return `<div class="line-context">
+    <div class="lc-label">Current line</div>
+    <div class="lc-chips">${chips}</div>
+    <div class="lc-numbers">${nums.map(n=>`<span class="lc-line">${n}</span>`).join('')}${extra ? ` <span class="lc-extra">— ${escapeHtml(extra)}</span>` : ''}</div>
+  </div>`;
+}
+function nflSummaryCardHtml(m, game, selectedBookKey){
   const s = m.summary;
   return nflBreakdownCard('Auto Game Read', `
     <ul class="nba-summary-list">${s.insights.map(i=>`<li>${escapeHtml(i)}</li>`).join('')}</ul>
     ${s.leans.length ? `<div class="nba-leans">${s.leans.map(l=>`<span class="nba-lean">${escapeHtml(l)}</span>`).join('')}</div>` : ''}
     <div class="nba-confidence">Signal strength: <strong>${s.confidence}/10</strong></div>
+    ${nflLineContextHtml(m, game, selectedBookKey)}
     <div class="hr-note" style="margin-top:6px;">${escapeHtml(s.note)}</div>`, true);
 }
 // Player Form (props context) — the one interactive panel. Caller supplies
@@ -1406,9 +1450,9 @@ function nflAnalyzerCardHtml(m, gameId, rosters, analyzerPlayerId, playerForm){
   body += `<div class="hr-note" style="margin-top:8px;">Prop lines and odds live right above in this game's player-props panel — this card is the form behind them.</div>`;
   return nflBreakdownCard('Player Form (props context)', body);
 }
-function buildNflFullBreakdownHtml(m, gameId, rosters, analyzerPlayerId, playerForm){
+function buildNflFullBreakdownHtml(m, gameId, rosters, analyzerPlayerId, playerForm, game, selectedBookKey){
   return `<div class="nfl-breakdown">
-    ${nflSummaryCardHtml(m)}
+    ${nflSummaryCardHtml(m, game, selectedBookKey)}
     ${nflMatchupCardHtml(m)}
     ${nflWeatherCardHtml(m)}
     ${nflFormCardHtml(m)}

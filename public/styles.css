@@ -991,6 +991,19 @@
   border:1px solid var(--accent-dim); color:var(--accent); border-radius:14px; padding:4px 11px;
 }
 .nba-confidence{margin-top:10px; font-size:12.5px; color:var(--text-dim); font-family:var(--font-mono);}
+.line-context{margin-top:10px; padding-top:10px; border-top:1px solid var(--border-soft);}
+.lc-label{font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--text-faint); margin-bottom:6px;}
+.lc-chips{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px;}
+.lc-chip{
+  font-family:var(--font-body); font-size:11px; font-weight:700;
+  background:var(--bg-raised); border:1px solid var(--border); color:var(--text-dim);
+  padding:4px 10px; border-radius:12px; cursor:pointer; transition:all .15s ease;
+}
+.lc-chip:hover{border-color:var(--accent-dim); color:var(--text);}
+.lc-chip.active{background:rgba(61,220,132,0.14); border-color:var(--good); color:var(--good);}
+.lc-numbers{font-size:12.5px; color:var(--text-dim);}
+.lc-line{font-family:var(--font-mono); font-weight:700; color:var(--text); margin-right:10px;}
+.lc-extra{color:var(--text-faint);}
 
 /* ---------- NFL Dashboard (shares the .nba-* dashboard styles) ---------- */
 .nfl-pos-group{

@@ -19,7 +19,8 @@
     nflTeamsByName: null,  // team display name -> {id, name, abbrev, logo}, fetched once (retired NFL Dashboard page's team picker, now resolved automatically)
     nflBreakdownOpen: {},  // gameId -> bool
     nflBreakdown: {},      // gameId -> {matchup, rosters:{}, analyzerPlayer, playerForm:{}}
-    nflInjuriesOpen: {}    // gameId -> bool, survives re-renders like propsOpen
+    nflInjuriesOpen: {},   // gameId -> bool, survives re-renders like propsOpen
+    nflLineContextBook: {} // gameId -> bookKey, which book's line Auto Game Read shows (defaults to FanDuel)
   };
   let renderScheduled = false;
   // Coalesces multiple renderGames() requests (weather/pitchers post-fetches, audit 6.2)
@@ -873,7 +874,7 @@
   function renderNflBreakdownInto(hostEl, game){
     const b = state.nflBreakdown[game.id];
     if(!b || !b.matchup){ hostEl.innerHTML = '<div class="hr-note"><span class="spinner"></span> Building the breakdown — first run computes league-wide ranks (32 teams), later ones are cached and fast.</div>'; return; }
-    hostEl.innerHTML = buildNflFullBreakdownHtml(b.matchup, game.id, b.rosters, b.analyzerPlayer, b.playerForm);
+    hostEl.innerHTML = buildNflFullBreakdownHtml(b.matchup, game.id, b.rosters, b.analyzerPlayer, b.playerForm, game, state.nflLineContextBook[game.id]);
   }
 
   async function loadNflInjuries(game){
@@ -951,11 +952,11 @@
       const host = document.querySelector(`.nfl-injuries-host[data-game-id="${CSS.escape(String(gameId))}"]`);
       if(!isOpen){
         const game = state.games.find(g=>String(g.id)===String(gameId));
-        if(host){ host.style.display = 'block'; if(game) host.innerHTML = buildNflInjuriesHtml(game); }
+        if(host){ if(game) host.innerHTML = buildNflInjuriesHtml(game); revealShow(host); }
         if(game) loadNflInjuries(game);
         injuriesToggle.textContent = 'Hide injury report';
       } else {
-        if(host) host.style.display = 'none';
+        if(host) revealHide(host);
         injuriesToggle.textContent = 'Injury report';
       }
       return;
@@ -969,11 +970,11 @@
         const game = state.games.find(g=>String(g.id)===String(gameId));
         if(game && !state.nflBreakdown[gameId]) loadNflBreakdown(game);
         const host = document.querySelector(`.nfl-breakdown-host[data-game-id="${CSS.escape(String(gameId))}"]`);
-        if(host){ host.style.display = 'block'; if(state.nflBreakdown[gameId]){ const g = state.games.find(x=>String(x.id)===String(gameId)); if(g) renderNflBreakdownInto(host, g); } }
+        if(host){ if(state.nflBreakdown[gameId]){ const g = state.games.find(x=>String(x.id)===String(gameId)); if(g) renderNflBreakdownInto(host, g); } revealShow(host); }
         breakdownToggle.textContent = 'Hide full breakdown';
       } else {
         const host = document.querySelector(`.nfl-breakdown-host[data-game-id="${CSS.escape(String(gameId))}"]`);
-        if(host) host.style.display = 'none';
+        if(host) revealHide(host);
         breakdownToggle.textContent = 'Show full breakdown';
       }
       return;
@@ -983,6 +984,15 @@
       const gameId = analyzerBtn.dataset.gameId;
       const select = document.querySelector(`.nfl-analyzer-select[data-game-id="${CSS.escape(String(gameId))}"]`);
       if(select && select.value) checkNflPlayerForm(gameId, select.value);
+      return;
+    }
+    const lcChip = e.target.closest('.lc-chip');
+    if(lcChip){
+      const gameId = lcChip.dataset.gameId;
+      state.nflLineContextBook[gameId] = lcChip.dataset.bookKey;
+      const host = document.querySelector(`.nfl-breakdown-host[data-game-id="${CSS.escape(String(gameId))}"]`);
+      const game = state.games.find(g=>String(g.id)===String(gameId));
+      if(host && game) renderNflBreakdownInto(host, game);
       return;
     }
   });
