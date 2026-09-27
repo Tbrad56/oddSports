@@ -128,15 +128,26 @@
           </div>
           <button class="remove-btn" title="Remove">×</button>
         </div>
-        <label class="leg-book-row">
-          <span class="leg-book-label">Book</span>
-          <select class="leg-book-select">
-            ${pickList.map(r=>{
-              const style = bookStyleFor(r.bookKey);
-              return `<option value="${escapeHtml(r.bookKey)}" ${r.bookKey===selected.bookKey?'selected':''}>${escapeHtml(style ? style.name : r.bookTitle)} · ${fmtAmerican(r.odds)}</option>`;
-            }).join('')}
-          </select>
-        </label>
+        <div class="leg-book-tabs" role="tablist" aria-label="Book">
+          ${pickList.map(r=>{
+            const style = bookStyleFor(r.bookKey);
+            const active = r.bookKey === selected.bookKey;
+            return `<button type="button" class="leg-book-tab${active?' active':''}" data-book-key="${escapeHtml(r.bookKey)}" role="tab" aria-selected="${active}">
+              <span>${escapeHtml(style ? style.name : r.bookTitle)}</span>
+              <span class="leg-book-tab-odds">${fmtAmerican(r.odds)}</span>
+            </button>`;
+          }).join('')}
+        </div>
+        ${(()=>{
+          if(!leg.pendingRows) return '';
+          const freshRow = leg.pendingRows.find(r=>r.bookKey===selected.bookKey);
+          if(!freshRow) return '';
+          const style = bookStyleFor(selected.bookKey);
+          return `<div class="leg-odds-moved">
+            <span>Price moved at ${escapeHtml(style ? style.name : selected.bookTitle)}: ${fmtAmerican(selected.odds)} → <b>${fmtAmerican(freshRow.odds)}</b></span>
+            <button type="button" class="ghost leg-update-btn">Update</button>
+          </div>`;
+        })()}
       `;
       div.querySelector('.remove-btn').addEventListener('click', ()=>{
         div.classList.add('removing');
@@ -145,10 +156,38 @@
           renderSlip();
         }, 200);
       });
-      div.querySelector('.leg-book-select').addEventListener('change', (e)=>{
-        updateLegBook(leg.id, e.target.value);
-        renderParlay();
+      div.querySelectorAll('.leg-book-tab').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          updateLegBook(leg.id, btn.dataset.bookKey);
+          div.querySelectorAll('.leg-book-tab').forEach(b=>{
+            const isActive = b === btn;
+            b.classList.toggle('active', isActive);
+            b.setAttribute('aria-selected', String(isActive));
+          });
+          // Switching tabs means whatever "price moved" notice was pinned to
+          // the old selection no longer applies to what's now showing —
+          // drop it without a full re-render, same lightweight update as
+          // the tab switch itself.
+          const s = getSlip();
+          const l = s.find(x=>x.id===leg.id);
+          if(l && l.pendingRows){
+            delete l.pendingRows;
+            saveSlip(s);
+            const notice = div.querySelector('.leg-odds-moved');
+            if(notice) notice.remove();
+          }
+          renderParlay();
+        });
       });
+      const updateBtn = div.querySelector('.leg-update-btn');
+      if(updateBtn){
+        updateBtn.addEventListener('click', ()=>{
+          const s = getSlip();
+          const l = s.find(x=>x.id===leg.id);
+          if(l && l.pendingRows){ l.rows = l.pendingRows; delete l.pendingRows; saveSlip(s); }
+          renderSlip();
+        });
+      }
       legsEl.appendChild(div);
     });
 
@@ -213,7 +252,7 @@
     const area = document.getElementById('parlayArea');
     if(slip.length < 1){ area.innerHTML=''; return; }
 
-    const selectedRows = slip.map(selectedRowFor);
+    const selectedRows = slip.map(leg => selectedRowFor(leg, slip));
 
     if(slip.length === 1){
       const row = selectedRows[0];
@@ -419,9 +458,62 @@
     renderSavedBets();
   });
 
+  // Board-added legs carry `meta` (sport/market/selection/point) — enough to
+  // look the same outcome back up in a fresh odds fetch instead of trusting
+  // whatever price was frozen in when "+ Slip" was clicked, which can be
+  // hours or days stale if the leg's just been sitting here. Cache-only,
+  // same reasoning as the ticker fetch below — this never spends a fresh
+  // credit, just picks up whatever's already warmed the cache (e.g. from
+  // using Board). Prop legs have no meta and are left as-is.
+  // Board-added legs (moneyline/spread/total, via `meta`) get checked against
+  // the cached feed on load. A price change on a book you're not even looking
+  // at gets folded in silently — nothing about that affects what you'd see or
+  // place. But if the book your leg's tab is actually sitting on moved, this
+  // doesn't just swap the number out from under you (that's what the parlay
+  // handoff bug in section 8 was, minus the crash) — it holds the new price
+  // as `leg.pendingRows` and renderSlip() surfaces it as an explicit "price
+  // moved, Update?" on that leg, same idea as FanDuel's own "odds have
+  // changed, accept?" prompt on a real bet slip.
+  async function refreshSlipOdds(){
+    const slip = getSlip();
+    const sports = [...new Set(slip.filter(l=>l.meta).map(l=>l.meta.sport))];
+    if(!sports.length) return false;
+    const gamesBySport = {};
+    await Promise.all(sports.map(async sport=>{
+      try{ gamesBySport[sport] = (await fetchOddsFor(sport, {cacheOnly:true})).games; }
+      catch(e){ gamesBySport[sport] = []; }
+    }));
+    let changed = false;
+    slip.forEach(leg=>{
+      if(!leg.meta) return;
+      const games = gamesBySport[leg.meta.sport] || [];
+      const game = games.find(g => leg.matchup === `${g.away_team} @ ${g.home_team}`);
+      if(!game) return;
+      const pool = poolFor(game.bookmakers);
+      const freshRows = leg.meta.market === 'h2h'
+        ? rowsFor(pool, leg.meta.market, leg.meta.selection)
+        : modalPointRows(pool, leg.meta.market, leg.meta.selection);
+      if(!freshRows.length) return;
+      const oldRow = leg.rows.find(r => r.bookKey === leg.selectedBookKey);
+      const freshRow = freshRows.find(r => r.bookKey === leg.selectedBookKey);
+      if(oldRow && freshRow && oldRow.odds !== freshRow.odds){
+        leg.pendingRows = freshRows;
+      } else {
+        leg.rows = freshRows;
+        delete leg.pendingRows;
+      }
+      changed = true;
+    });
+    if(changed) saveSlip(slip);
+    return changed;
+  }
+
   renderSlip();
   renderManual();
   renderSavedBets();
+
+  // Re-renders only if a leg's price actually moved since it was added.
+  refreshSlipOdds().then(changed => { if(changed) renderSlip(); }).catch(()=>{});
 
   // fill the ticker quietly, cache-only — never spends a fresh credit just to decorate this page
   fetchOddsFor(getSport(), {cacheOnly:true}).then(r=>updateTicker(r.games)).catch(()=>{});

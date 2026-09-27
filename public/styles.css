@@ -368,17 +368,7 @@
   .props-table td.stat-r{color:var(--bad); font-weight:600;}
   .hr-note{font-size:10.5px; color:var(--text-faint); margin-top:10px;}
 
-  /* ---------- Cheatsheet ---------- */
-  .cheat-row{
-    display:flex; justify-content:space-between; align-items:center;
-    padding:8px 0; border-bottom:1px solid var(--border-soft); font-size:12.5px;
-  }
-  .cheat-row:last-child{border-bottom:none;}
-  .cheat-row .cheat-side{font-weight:600;}
-  .cheat-row .cheat-sub{color:var(--text-faint); font-size:11px;}
-  .cheat-row .cheat-odds{font-family:var(--font-mono); color:var(--warn); font-weight:700;}
-
-  /* ---------- Cheatsheet: Value Finder ---------- */
+  /* ---------- Value Finder (lives on Board) ---------- */
   .value-row{
     display:grid; grid-template-columns:1fr auto auto auto;
     align-items:center; gap:14px; padding:10px 8px;
@@ -454,16 +444,25 @@
     cursor:pointer; padding:0 2px; line-height:1;
   }
   .leg-item .remove-btn:hover{color:var(--bad);}
-  .leg-book-row{
-    display:flex; align-items:center; gap:8px; margin-top:8px;
+  .leg-book-tabs{display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;}
+  .leg-book-tab{
+    display:flex; flex-direction:column; align-items:flex-start; gap:1px;
+    font-family:var(--font-body); font-size:11px; font-weight:700;
+    background:var(--bg-card); border:1px solid var(--border); color:var(--text-dim);
+    padding:5px 10px; border-radius:8px; cursor:pointer; transition:all .15s ease;
   }
-  .leg-book-label{font-size:11px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.6px; font-weight:600;}
-  .leg-book-select{
-    flex:1; font-family:var(--font-mono); font-size:12.5px; font-weight:600;
-    color:var(--good); background:var(--bg-card); border:1px solid var(--border);
-    border-radius:6px; padding:6px 8px;
+  .leg-book-tab:hover{border-color:var(--accent-dim); color:var(--text);}
+  .leg-book-tab.active{background:rgba(61,220,132,0.14); border-color:var(--good); color:var(--good);}
+  .leg-book-tab-odds{font-family:var(--font-mono); font-size:12px; font-weight:700; color:var(--text);}
+  .leg-book-tab.active .leg-book-tab-odds{color:var(--good);}
+
+  .leg-odds-moved{
+    display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
+    margin-top:8px; padding:7px 10px; border-radius:7px; font-size:11.5px;
+    background:rgba(255,180,67,0.08); border:1px solid rgba(255,180,67,0.35); color:var(--text-dim);
   }
-  .leg-book-select:focus{border-color:var(--accent);}
+  .leg-odds-moved b{color:var(--warn);}
+  .leg-odds-moved .leg-update-btn{font-size:11px; padding:4px 10px; flex-shrink:0;}
 
   .parlay-picker-label{
     font-size:11px; color:var(--text-faint); text-transform:uppercase;
@@ -780,13 +779,15 @@
 .hitter-team{font-size:9.5px; color:var(--text-faint); display:block; margin-top:1px;}
 .hitter-stat{font-family:var(--font-mono); font-weight:700; color:var(--good); font-size:13px; flex-shrink:0; text-align:right;}
 .hitter-stat-sub{font-size:9px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.3px; display:block; text-align:right;}
-.hr-stars{font-size:12px; letter-spacing:1px; white-space:nowrap;}
-.hr-stars-fill{color:var(--good);}
+.hr-stars{font-size:12.5px; letter-spacing:1.5px; white-space:nowrap;}
 .hr-stars-empty{color:var(--border);}
-.hr-watch-row{padding:6px 0;}
+.hr-stars-fill.tier-strong{color:var(--good);}
+.hr-stars-fill.tier-live{color:var(--warn);}
+.hr-stars-fill.tier-modest{color:var(--text-faint);}
+.hr-watch-row{padding:7px 0;}
 .hr-watch-row + .hr-watch-row{border-top:1px solid var(--border-soft);}
-.hr-watch-top{display:flex; justify-content:space-between; align-items:flex-start; gap:8px;}
-.hr-watch-why{font-size:10px; color:var(--text-faint); line-height:1.5; margin-top:3px;}
+.hr-watch-top{display:flex; justify-content:space-between; align-items:flex-start; gap:10px;}
+.hr-watch-why{font-size:10.5px; color:var(--text-dim); line-height:1.55; margin-top:4px;}
 
 /* ---------- Shared motion utilities ---------- */
 @keyframes enterUp{

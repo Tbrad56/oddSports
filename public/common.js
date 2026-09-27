@@ -5,6 +5,7 @@ const SPORTS = [
   ["americanfootball_nfl","NFL"],
   ["basketball_nba","NBA"],
   ["baseball_mlb","MLB"],
+  ["basketball_wnba","WNBA"],
   ["icehockey_nhl","NHL"],
   ["americanfootball_ncaaf","NCAA Football"],
   ["basketball_ncaab","NCAA Basketball"],
@@ -20,6 +21,7 @@ const SPORTS = [
 const SPORT_LOGOS = {
   americanfootball_nfl: "https://a.espncdn.com/i/teamlogos/leagues/500/nfl.png",
   basketball_nba: "https://a.espncdn.com/i/teamlogos/leagues/500/nba.png",
+  basketball_wnba: "https://a.espncdn.com/i/teamlogos/leagues/500/wnba.png",
   baseball_mlb: "https://a.espncdn.com/i/teamlogos/leagues/500/mlb.png",
   icehockey_nhl: "https://a.espncdn.com/i/teamlogos/leagues/500/nhl.png",
   americanfootball_ncaaf: "https://a.espncdn.com/redesign/assets/img/icons/ESPN-icon-football-college.png",
@@ -68,6 +70,7 @@ const BOOK_LINKS = {
 const PROP_MARKETS = {
   americanfootball_nfl:["player_pass_yds","player_pass_tds","player_rush_yds","player_receptions","player_reception_yds","player_anytime_td"],
   basketball_nba:["player_points","player_rebounds","player_assists","player_threes","player_points_rebounds_assists"],
+  basketball_wnba:["player_points","player_rebounds","player_assists","player_threes","player_points_rebounds_assists"],
   baseball_mlb:["batter_hits","batter_home_runs","batter_total_bases","batter_rbis","pitcher_strikeouts"],
   icehockey_nhl:["player_points","player_assists","player_shots_on_goal","player_goal_scorer_anytime"]
 };
@@ -389,6 +392,7 @@ const NAV_GROUPS = [
   { key:'nba', href:'/board.html?sport=basketball_nba', icon:'🏀', label:'NBA' },
   { key:'nfl', href:'/board.html?sport=americanfootball_nfl', icon:'🏈', label:'NFL' },
   { key:'more', icon:'🏆', label:'More', children:[
+    ['board','/board.html?sport=basketball_wnba','🏀','WNBA'],
     ['board','/board.html?sport=icehockey_nhl','🏒','NHL'],
     ['board','/board.html?sport=americanfootball_ncaaf','🎓','NCAA Football'],
     ['board','/board.html?sport=basketball_ncaab','🎓','NCAA Basketball'],
@@ -929,90 +933,188 @@ function hrSitCodeForBatterHand(batterHand, pitcherHand){
   return batterHand === 'L' ? 'vl' : 'vr';
 }
 
-// Builds a one-sentence, plain-English readout from the same numbers the
-// score is built from — not a model call, just deterministic phrasing over
-// real stats, so it's free and instant but still reads like an explanation
-// rather than a stat dump.
-function hrWatchSummary(batter, pitcher, park, weather, powerBand, pitcherHr9){
-  const parts = [];
+// Power always leads the sentence (it's the batter's own skill, the natural
+// subject) — everything else is a ranked list of supporting factors, built
+// in hrWatchRating below and passed in already sorted by actual weight, so
+// the sentence always surfaces whichever 1-2 things actually moved the score
+// the most instead of a fixed pitcher-then-park-then-weather checklist that
+// could bury a bigger factor behind a smaller one.
+function hrWatchSummary(batter, pitcher, powerBand, rankedFactors){
   const first = batter.name.split(' ')[0];
+  const hand = pitcher && pitcher.hand ? `${pitcher.hand}HP` : 'this pitcher';
+  const powerWord = powerBand === 'elite' ? 'plus power' : powerBand === 'good' ? 'solid pop' : 'modest power';
+  let lead = `${first} brings ${powerWord} vs ${hand} (${batter.iso.toFixed(3)} ISO`;
+  lead += batter.seasonHr != null ? `, ${batter.seasonHr} HR this year)` : ')';
 
-  if(powerBand === 'elite') parts.push(`${first} has real thump vs ${pitcher && pitcher.hand ? pitcher.hand + 'HP' : 'this hand'} (${batter.iso.toFixed(3)} ISO)`);
-  else if(powerBand === 'good') parts.push(`${first} brings solid pop vs ${pitcher && pitcher.hand ? pitcher.hand + 'HP' : 'this hand'} (${batter.iso.toFixed(3)} ISO)`);
-  else parts.push(`${first}'s power is modest here (${batter.iso.toFixed(3)} ISO)`);
-
-  if(pitcher && pitcherHr9 != null){
-    if(pitcherHr9 >= 1.3) parts.push(`facing a homer-prone ${pitcher.name} (${pitcherHr9.toFixed(2)} HR/9)`);
-    else if(pitcherHr9 <= 0.8) parts.push(`against a stingy ${pitcher.name} (${pitcherHr9.toFixed(2)} HR/9)`);
-  }
-
-  if(park){
-    if(park.altitudeNote) parts.push(`at altitude, which carries further than the fences suggest`);
-    else if(park.tier === 'Compact') parts.push(`in a hitter-friendly park`);
-    else if(park.tier === 'Spacious') parts.push(`in a pitcher-friendly park`);
-  }
-
-  if(weather){
-    if(weather.label === 'HR-friendly') parts.push(`with the wind helping carry`);
-    else if(weather.label === 'Carry-killing') parts.push(`fighting the wind tonight`);
-  }
-
-  if(batter.bvp && batter.bvp.ab >= 8 && batter.bvp.hr > 0){
-    parts.push(`and has gone deep off him before (${batter.bvp.hr} HR in ${batter.bvp.ab} AB career)`);
-  }
-
-  // First clause reads as the subject/verb, the rest join as ", " clauses.
-  return parts[0] + (parts.length > 1 ? ', ' + parts.slice(1).join(', ') : '') + '.';
+  const supporting = rankedFactors.slice(0, 2).map(f => f.text);
+  return lead + (supporting.length ? ' — ' + supporting.join(', ') : '') + '.';
 }
 
 function hrWatchRating(batter, pitcher, game){
   if(batter.iso == null) return null;
   const clamp = (v,lo,hi) => Math.max(lo, Math.min(hi, v));
-  let score = 0;
+  const factors = []; // {weight, text} — ranked and trimmed to the top few for the summary
 
   // Power at the plate, already hand-split vs today's opposing pitcher throwing hand.
   const isoPart = clamp(batter.iso / 0.200, 0, 1.5) * 2;
-  score += isoPart;
   const powerBand = batter.iso >= 0.200 ? 'elite' : batter.iso >= 0.150 ? 'good' : 'modest';
 
   // How many HRs this pitcher gives up to same-handed batters.
-  let pitcherHr9 = null;
+  let pitcherPart = 0;
   if(pitcher && pitcher.rows){
     const code = hrSitCodeForBatterHand(batter.hand, pitcher.hand);
     const st = pitcher.rows[code] || pitcher.rows.season;
     if(st && st.hr9 != null){
-      pitcherHr9 = st.hr9;
-      score += clamp(st.hr9 / 1.3, 0, 1.6) * 1;
+      pitcherPart = clamp(st.hr9 / 1.3, 0, 1.6) * 1;
+      const text = st.hr9 >= 1.3
+        ? `${pitcher.name} has been homer-prone this year (${st.hr9.toFixed(2)} HR/9)`
+        : st.hr9 <= 0.8
+          ? `${pitcher.name} has kept the ball in the yard (${st.hr9.toFixed(2)} HR/9)`
+          : `${pitcher.name} is about league-average for homers allowed (${st.hr9.toFixed(2)} HR/9)`;
+      factors.push({ weight: pitcherPart, text });
     }
   }
 
   // Ballpark: real fence-distance tier, with the Coors altitude caveat overriding
   // a "Spacious"-by-distance park that's actually MLB's most HR-friendly.
   const park = mlbParkDimsCache && mlbParkDimsCache[game.home_team];
+  let parkPart = 0;
   if(park){
-    let parkPart = park.tier === 'Compact' ? 0.7 : park.tier === 'Spacious' ? -0.7 : 0;
+    parkPart = park.tier === 'Compact' ? 0.7 : park.tier === 'Spacious' ? -0.7 : 0;
     if(park.altitudeNote) parkPart = 0.7;
-    score += parkPart;
+    if(parkPart > 0) factors.push({ weight: parkPart, text: park.altitudeNote ? 'the altitude here carries further than the fences suggest' : 'the park favors hitters' });
+    else if(parkPart < 0) factors.push({ weight: Math.abs(parkPart), text: 'the park favors pitchers' });
   }
 
   // First-pitch carry conditions (temp + park-relative wind + rain risk).
   const weather = firstPitchWeatherRating(game);
+  let weatherPart = 0;
   if(weather){
-    score += weather.label === 'HR-friendly' ? 0.5 : weather.label === 'Carry-killing' ? -0.5 : 0;
+    weatherPart = weather.label === 'HR-friendly' ? 0.5 : weather.label === 'Carry-killing' ? -0.5 : 0;
+    if(weatherPart > 0) factors.push({ weight: weatherPart, text: 'the wind is helping carry it out' });
+    else if(weatherPart < 0) factors.push({ weight: Math.abs(weatherPart), text: 'the wind is working against carry tonight' });
   }
 
   // Real career history vs this exact pitcher — tiny samples, small nudge only.
+  let bvpPart = 0;
   if(batter.bvp && batter.bvp.ab >= 8 && batter.bvp.hr > 0){
-    score += 0.3;
+    bvpPart = 0.3;
+    factors.push({ weight: bvpPart, text: `he's gone deep off him before (${batter.bvp.hr} HR in ${batter.bvp.ab} career AB)` });
   }
 
+  const score = isoPart + pitcherPart + parkPart + weatherPart + bvpPart;
   const stars = score >= 4 ? 5 : score >= 3 ? 4 : score >= 2 ? 3 : score >= 1 ? 2 : 1;
-  const summary = hrWatchSummary(batter, pitcher, park, weather, powerBand, pitcherHr9);
+  factors.sort((a,b) => b.weight - a.weight);
+  const summary = hrWatchSummary(batter, pitcher, powerBand, factors);
   return { score, stars, summary };
 }
 
+// Combines this game's Value Finder scan (real edge math, no threshold —
+// caller decides what counts as "real") with whatever sport-specific signal
+// the caller has for it into one sentence instead of two separate panels.
+// Sport-agnostic on purpose: MLB's HR Watch and NFL's Auto Game Read look
+// nothing alike internally, so each gets its own adapter (hrWatchSignal,
+// nflReadSignal below) that boils down to the same {summary, strong, kind}
+// shape — this function only ever narrates that shape, never the sport's
+// own rating math. Same deterministic math every panel already shows, just
+// narrated together — no model call, no new data.
+function bestBetSummary(topEdge, signal){
+  if(!topEdge && !signal) return null;
+
+  const edgeClause = topEdge
+    ? `${topEdge.side} is a real price edge here — +${(topEdge.edge*100).toFixed(2)}% vs consensus at ${topEdge.bookTitle}`
+    : null;
+
+  if(topEdge && signal){
+    // A real edge (2%+) always leads; a strong signal still gets its own
+    // clause rather than getting buried under it. What counts as "strong"
+    // is the adapter's call (HR Watch's 4-5★, Auto Game Read's 7+/9.5).
+    return signal.strong
+      ? `${edgeClause}. Worth pairing with the ${signal.kind} too — ${signal.summary}`
+      : `${edgeClause}.`;
+  }
+  if(topEdge) return `${edgeClause}.`;
+  if(signal) return `No real price edge in this game tonight — books are bunched too close together to call. The ${signal.kind}'s the better angle: ${signal.summary}`;
+  return null;
+}
+
+// MLB adapter: HR Watch's top pick -> bestBetSummary's generic signal shape.
+function hrWatchSignal(topHrPick){
+  if(!topHrPick) return null;
+  return { summary: topHrPick.rating.summary, strong: topHrPick.rating.stars >= 4, kind: 'HR prop' };
+}
+
+// NFL adapter: Auto Game Read's server-computed {insights, leans, confidence}
+// -> the same shape. Leads with the single strongest insight rather than the
+// whole list — bestBetSummary is one sentence, not a bullet dump — and folds
+// in the lean when there is one. Confidence starts at a flat 5 and only rises
+// per real factor found (see server.js), so 7+ is a genuinely stacked matchup,
+// the same "worth its own clause" bar HR Watch's 4-5★ sets.
+function nflReadSignal(m){
+  if(!m || !m.summary || !m.summary.insights || !m.summary.insights.length) return null;
+  const s = m.summary;
+  if(/^No strong statistical edges detected/.test(s.insights[0])) return null;
+  const leanText = s.leans.length ? ` Leans: ${s.leans.join(', ')}.` : '';
+  return { summary: `${s.insights[0]}${leanText}`, strong: s.confidence >= 7, kind: 'matchup read' };
+}
+
+// ---------- Best Bets: up to 3 real signals per game, never padded ----------
+// "No real price edge" only means Value Finder's specific book-vs-book price
+// check came up empty — it says nothing about HR Watch, Get Props' model
+// edges, or Auto Game Read, which measure completely different things. This
+// pools whatever of those actually exist for a game and ranks them so the
+// most objective signal always leads: a real price edge (pure math, no
+// prediction involved) outranks a model-based edge, which outranks a
+// single-metric standout. Never invents a 2nd or 3rd pick just to fill a
+// slot — a game with one real signal returns one item, zero real signals
+// returns [].
+const SIGNAL_TIER = { edge: 0, propEdge: 1, hrWatch: 2, gameRead: 3 };
+function bestBetsForGame(candidates){
+  return candidates
+    .filter(Boolean)
+    .sort((a, b) => SIGNAL_TIER[a.type] - SIGNAL_TIER[b.type])
+    .slice(0, 3);
+}
+
+// MLB candidate list: Value Finder edges (this game only), HR Watch's
+// strong (4-5★) picks, and Get Props' model edges. That last one only shows
+// up if the caller already has it — Get Props hits a per-game props
+// endpoint that costs real API quota, so this never fetches it just to fill
+// a slot in a free sentence. If you haven't clicked "Load Props" for this
+// game, that source is simply absent, same as HR Watch is absent before
+// lineups post.
+function mlbBestBetCandidates(edgeCandidates, hrPool, propsAnalysis){
+  const candidates = [];
+  (edgeCandidates || []).forEach(c => {
+    candidates.push({ type: 'edge', summary: `${c.side} — +${(c.edge * 100).toFixed(2)}% vs consensus at ${c.best.bookTitle}` });
+  });
+  (hrPool || []).filter(x => x.rating.stars >= 4).forEach(x => {
+    candidates.push({ type: 'hrWatch', summary: `${x.b.name.split(' ')[0]} HR prop — ${x.rating.summary}` });
+  });
+  // 5%+ model-vs-implied gap, same bar Get Props' own table treats as a real edge.
+  ((propsAnalysis && propsAnalysis.picks) || []).filter(p => p.edge >= 0.05).forEach(p => {
+    candidates.push({ type: 'propEdge', summary: `${p.player} ${p.side} ${p.line} ${marketLabel(p.market)} — model ${(p.modelP * 100).toFixed(0)}% vs book-implied ${(p.impliedP * 100).toFixed(0)}%` });
+  });
+  return bestBetsForGame(candidates);
+}
+
+// NFL/NBA candidate list: Value Finder edges plus Auto Game Read, which is
+// inherently one whole-game read (not per-player), so it contributes at
+// most a single slot alongside however many real price edges exist.
+function teamSportBestBetCandidates(edgeCandidates, gameReadSignal){
+  const candidates = (edgeCandidates || []).map(c =>
+    ({ type: 'edge', summary: `${c.side} — +${(c.edge * 100).toFixed(2)}% vs consensus at ${c.best.bookTitle}` }));
+  if(gameReadSignal) candidates.push({ type: 'gameRead', summary: gameReadSignal.summary });
+  return bestBetsForGame(candidates);
+}
+
+// Stars are color-coded by tier so the rating reads at a glance without
+// counting: 4-5★ green (strong play), 3★ amber (worth a look), 1-2★ faint
+// (long shot) — the same good/warn/faint vocabulary the rest of the app
+// already uses for weather and injury-status tags.
 function starsHtml(n){
-  return `<span class="hr-stars" aria-hidden="true"><span class="hr-stars-fill">${'★'.repeat(n)}</span><span class="hr-stars-empty">${'☆'.repeat(5-n)}</span></span>`;
+  const tierCls = n >= 4 ? 'tier-strong' : n === 3 ? 'tier-live' : 'tier-modest';
+  return `<span class="hr-stars" aria-hidden="true"><span class="hr-stars-fill ${tierCls}">${'★'.repeat(n)}</span><span class="hr-stars-empty">${'☆'.repeat(5-n)}</span></span>`;
 }
 
 // ESPN's team-logo CDN, keyed by league path — driven by the numeric ESPN
@@ -1514,6 +1616,13 @@ const TEAM_LOGOS = {
     "San Antonio Spurs":"sa", "Toronto Raptors":"tor", "Utah Jazz":"utah",
     "Washington Wizards":"wsh"
   },
+  basketball_wnba: {
+    "Atlanta Dream":"atl", "Chicago Sky":"chi", "Connecticut Sun":"con",
+    "Dallas Wings":"dal", "Golden State Valkyries":"gs", "Indiana Fever":"ind",
+    "Las Vegas Aces":"lv", "Los Angeles Sparks":"la", "Minnesota Lynx":"min",
+    "New York Liberty":"ny", "Phoenix Mercury":"phx", "Portland Fire":"por",
+    "Seattle Storm":"sea", "Toronto Tempo":"tor", "Washington Mystics":"wsh"
+  },
   americanfootball_nfl: {
     "Arizona Cardinals":"ari", "Atlanta Falcons":"atl", "Baltimore Ravens":"bal",
     "Buffalo Bills":"buf", "Carolina Panthers":"car", "Chicago Bears":"chi",
@@ -1544,7 +1653,7 @@ const TEAM_LOGOS = {
 function teamLogoUrl(sportKey, teamName){
   const league = TEAM_LOGOS[sportKey];
   const abbrev = league ? league[teamName] : null;
-  return abbrev ? `https://a.espncdn.com/i/teamlogos/${sportKey === 'baseball_mlb' ? 'mlb' : sportKey === 'basketball_nba' ? 'nba' : sportKey === 'americanfootball_nfl' ? 'nfl' : 'nhl'}/500/${abbrev}.png` : null;
+  return abbrev ? `https://a.espncdn.com/i/teamlogos/${sportKey === 'baseball_mlb' ? 'mlb' : sportKey === 'basketball_nba' ? 'nba' : sportKey === 'basketball_wnba' ? 'wnba' : sportKey === 'americanfootball_nfl' ? 'nfl' : 'nhl'}/500/${abbrev}.png` : null;
 }
 // Returns an <img> tag, or '' when this sport/team has no mapped logo (NCAA,
 // EPL, MMA, or an unmapped name) — callers can just concatenate the result.
