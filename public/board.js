@@ -136,7 +136,8 @@
     area.querySelectorAll('.value-row').forEach((row, i)=>{
       row.querySelector('.value-add-btn').addEventListener('click', ()=>{
         const c = candidates[i];
-        addLegToSlip({ id: Date.now()+Math.random(), matchup: c.matchup, side: c.side, rows: c.rows });
+        addLegToSlip({ id: Date.now()+Math.random(), matchup: c.matchup, side: c.side, rows: c.rows,
+          meta: { sport: c.sport, market: c.meta.market, selection: c.meta.selection, point: c.meta.point } });
         trackBet({ sport: c.sport, homeTeam: c.homeTeam, awayTeam: c.awayTeam, commenceTime: c.commenceTime,
           matchup: c.matchup, market: c.meta.market, selection: c.meta.selection, point: c.meta.point });
         showToast('Added ✓');
@@ -1199,7 +1200,11 @@
 
         const addLeg = (side, rows, cellEl, meta)=>{
           if(!rows.length) return;
-          addLegToSlip({ id: Date.now()+Math.random(), matchup: `${awayTeam} @ ${homeTeam}`, side, rows });
+          // No meta.sport on F5 legs — F5 markets aren't in the bulk odds
+          // fetch (see the comment above), so there's no market key Slip
+          // could use to refresh them later; they just stay a frozen price.
+          addLegToSlip({ id: Date.now()+Math.random(), matchup: `${awayTeam} @ ${homeTeam}`, side, rows,
+            meta: (meta && !suffix) ? { sport: sportKey, market: meta.market, selection: meta.selection, point: meta.point } : undefined });
           // F5 (first-5-innings) legs aren't tracked — grading needs the
           // through-5 score, which ESPN's scoreboard doesn't expose, only the
           // final. Only full-game legs are actually gradable server-side.
@@ -1301,7 +1306,10 @@
               id: Date.now()+Math.random(),
               matchup: `${game.away_team} @ ${game.home_team}`,
               side: sideLabel,
-              rows: rows
+              rows: rows,
+              // F5 (marketKey !== 'h2h') isn't in the bulk odds fetch, so
+              // there's nothing Slip could refresh it against later.
+              meta: marketKey === 'h2h' ? { sport: sportKey, market: 'h2h', selection: team, point: null } : undefined
             });
             if(marketKey === 'h2h'){
               trackBet({ sport: sportKey, homeTeam: game.home_team, awayTeam: game.away_team,
@@ -1369,11 +1377,21 @@
       }
 
       // MLB: F5 toggle swaps the same grid between full-game and first-5-innings lines.
-      // NFL/NCAAF/NCAAB: same Spread/Total/Money grid, just without the F5 tabs
-      // (no period-market equivalent fetched for those). College sports stop
-      // here — no player props, no moneyline-only "to win" view, just this grid.
+      // Everyone else with real, reliably-posted spread/total markets (NFL,
+      // NCAAF, NCAAB, NBA, WNBA, NHL) gets the same Spread/Total/Money grid,
+      // just without the F5 tabs (no period-market equivalent fetched for
+      // those) — one consistent look across sports instead of two different
+      // UIs. Two deliberate exceptions, both verified live: MMA has no
+      // spreads market at all (no such thing as a point spread in a fight),
+      // and EPL's tracked/regulated books post zero spreads across every
+      // current game (checked all 19) — only offshore books this app doesn't
+      // track carry it. Both would show a permanently-empty Spread column on
+      // the grid, so they stay on the book-row list below instead, which
+      // only shows markets that actually exist.
       if(sportKey === 'baseball_mlb' || sportKey === 'americanfootball_nfl'
-        || sportKey === 'americanfootball_ncaaf' || sportKey === 'basketball_ncaab'){
+        || sportKey === 'americanfootball_ncaaf' || sportKey === 'basketball_ncaab'
+        || sportKey === 'basketball_nba' || sportKey === 'basketball_wnba'
+        || sportKey === 'icehockey_nhl'){
         let view = 'full';
         if(sportKey === 'baseball_mlb'){
           view = state.oddsView[game.id] === 'f5' ? 'f5' : 'full';

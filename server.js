@@ -16,7 +16,8 @@ const UPSTREAM = 'https://api.the-odds-api.com';
 
 const SPORTS = new Set([
   'americanfootball_nfl', 'basketball_nba', 'baseball_mlb', 'icehockey_nhl',
-  'americanfootball_ncaaf', 'basketball_ncaab', 'soccer_epl', 'mma_mixed_martial_arts'
+  'americanfootball_ncaaf', 'basketball_ncaab', 'soccer_epl', 'mma_mixed_martial_arts',
+  'basketball_wnba'
 ]);
 
 // Server-controlled prop markets per sport (quota protection: clients
@@ -28,6 +29,7 @@ const SPORTS = new Set([
 const PROP_MARKETS = {
   americanfootball_nfl: ['player_pass_yds', 'player_pass_tds', 'player_rush_yds', 'player_receptions', 'player_reception_yds', 'player_anytime_td'],
   basketball_nba: ['player_points', 'player_rebounds', 'player_assists', 'player_threes', 'player_points_rebounds_assists'],
+  basketball_wnba: ['player_points', 'player_rebounds', 'player_assists', 'player_threes', 'player_points_rebounds_assists'],
   baseball_mlb: ['batter_hits', 'batter_home_runs', 'batter_total_bases', 'batter_rbis', 'pitcher_strikeouts'],
   icehockey_nhl: ['player_points', 'player_assists', 'player_shots_on_goal', 'player_goal_scorer_anytime']
 };
@@ -1796,16 +1798,25 @@ function createApp({
   app.get('/api/odds/:sport', (req, res) => {
     const { sport } = req.params;
     if (!SPORTS.has(sport)) return res.status(400).json({ error: 'Unknown sport' });
-    // MLB, NFL, and college football/basketball: full-game spreads/totals
+    // Every sport with a real spreads/totals market: full-game spreads/totals
     // alongside moneyline — Board's Game Lines grid needs Spread/Total/Money
     // for these (costs 3x the credits of a moneyline-only call, same tradeoff
-    // already made for MLB). College sports get spread/total/moneyline only —
-    // no player props — since that's what's actually legal to bet on in states
-    // like Ohio. F5 markets are deliberately NOT requested here (see
-    // MLB_F5_MARKETS above — the bulk endpoint 422s the whole request if asked
-    // for them).
+    // already made for MLB, now extended to most sports for a consistent grid
+    // look across Board instead of a second, book-row-list UI). Two deliberate
+    // exceptions, both verified live: MMA has no spreads market at all (no
+    // such thing as a point spread in a fight), and EPL's tracked/regulated
+    // books (FanDuel/DraftKings/BetMGM/BetRivers) post zero spreads across
+    // all 19 live games checked — only offshore books not in TRACKED_KEYS
+    // carry it. Both stay moneyline+totals-only here and keep the book-row
+    // list client-side rather than show a permanently-empty Spread column.
+    // College sports get spread/total/moneyline only — no player props —
+    // since that's what's actually legal to bet on in states like Ohio.
+    // F5 markets are deliberately NOT requested here (see MLB_F5_MARKETS
+    // above — the bulk endpoint 422s the whole request if asked for them).
     const gridSports = sport === 'baseball_mlb' || sport === 'americanfootball_nfl'
-      || sport === 'americanfootball_ncaaf' || sport === 'basketball_ncaab';
+      || sport === 'americanfootball_ncaaf' || sport === 'basketball_ncaab'
+      || sport === 'basketball_nba' || sport === 'basketball_wnba'
+      || sport === 'icehockey_nhl';
     const markets = gridSports ? ['h2h', 'spreads', 'totals'] : ['h2h'];
     const upstreamPath = `/v4/sports/${sport}/odds/?regions=us&markets=${markets.join(',')}&oddsFormat=american&includeLinks=true&includeSids=true`;
     // Pages that aren't actually about odds (Cheatsheet's team search, Slip,
@@ -1834,6 +1845,7 @@ function createApp({
   const ESPN_SCOREBOARDS = {
     baseball_mlb: 'baseball/mlb',
     basketball_nba: 'basketball/nba',
+    basketball_wnba: 'basketball/wnba',
     americanfootball_nfl: 'football/nfl',
     icehockey_nhl: 'hockey/nhl',
     americanfootball_ncaaf: 'football/college-football',

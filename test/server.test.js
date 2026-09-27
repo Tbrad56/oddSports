@@ -29,7 +29,7 @@ function fakeFetch(responder) {
 test('rejects unknown sport with 400 and never calls upstream', async () => {
   const f = fakeFetch(() => okResponse([]));
   const app = createApp({ apiKey: 'k', fetchFn: f });
-  const res = await request(app).get('/api/odds/basketball_wnba');
+  const res = await request(app).get('/api/odds/basketball_madeup');
   assert.equal(res.status, 400);
   assert.equal(f.calls.length, 0);
 });
@@ -38,13 +38,13 @@ test('proxies a valid sport, appends key upstream, passes body and quota header 
   const games = [{ id: 'abc', home_team: 'A', away_team: 'B' }];
   const f = fakeFetch(() => okResponse(games, '123'));
   const app = createApp({ apiKey: 'sekret', fetchFn: f });
-  const res = await request(app).get('/api/odds/basketball_nba');
+  const res = await request(app).get('/api/odds/soccer_epl');
   assert.equal(res.status, 200);
   assert.deepEqual(res.body, games);
   assert.equal(res.headers['x-requests-remaining'], '123');
   assert.equal(res.headers['x-cache-age-seconds'], '0');
   assert.equal(f.calls.length, 1);
-  assert.match(f.calls[0], /^https:\/\/api\.the-odds-api\.com\/v4\/sports\/basketball_nba\/odds\/\?regions=us&markets=h2h&oddsFormat=american&includeLinks=true&includeSids=true&apiKey=sekret$/);
+  assert.match(f.calls[0], /^https:\/\/api\.the-odds-api\.com\/v4\/sports\/soccer_epl\/odds\/\?regions=us&markets=h2h&oddsFormat=american&includeLinks=true&includeSids=true&apiKey=sekret$/);
 });
 
 test('MLB odds request includes full-game spreads/totals in one call', async () => {
@@ -68,7 +68,7 @@ test('non-MLB odds request does not include F5 markets', async () => {
   const app = createApp({ apiKey: 'k', fetchFn: f });
   const res = await request(app).get('/api/odds/basketball_nba');
   assert.equal(res.status, 200);
-  assert.match(f.calls[0], /markets=h2h&/);
+  assert.match(f.calls[0], /markets=h2h,spreads,totals&/);
   assert.doesNotMatch(f.calls[0], /1st_5_innings/);
 });
 
@@ -81,12 +81,24 @@ test('NFL odds request includes full-game spreads/totals in one call, same as ML
   assert.match(f.calls[0], /markets=h2h,spreads,totals&/);
 });
 
-test('NHL odds request stays moneyline-only (grid is MLB/NFL only)', async () => {
-  const f = fakeFetch(() => okResponse([]));
-  const app = createApp({ apiKey: 'k', fetchFn: f });
-  const res = await request(app).get('/api/odds/icehockey_nhl');
-  assert.equal(res.status, 200);
-  assert.match(f.calls[0], /markets=h2h&/);
+test('NHL/NBA/WNBA odds requests include full-game spreads/totals too (grid applies to them now)', async () => {
+  for (const sport of ['icehockey_nhl', 'basketball_nba', 'basketball_wnba']) {
+    const f = fakeFetch(() => okResponse([]));
+    const app = createApp({ apiKey: 'k', fetchFn: f });
+    const res = await request(app).get(`/api/odds/${sport}`);
+    assert.equal(res.status, 200);
+    assert.match(f.calls[0], /markets=h2h,spreads,totals&/);
+  }
+});
+
+test('EPL/MMA odds requests stay moneyline-only (no reliable spreads market for either, verified live)', async () => {
+  for (const sport of ['soccer_epl', 'mma_mixed_martial_arts']) {
+    const f = fakeFetch(() => okResponse([]));
+    const app = createApp({ apiKey: 'k', fetchFn: f });
+    const res = await request(app).get(`/api/odds/${sport}`);
+    assert.equal(res.status, 200);
+    assert.match(f.calls[0], /markets=h2h&/);
+  }
 });
 
 test('second request within TTL is served from cache', async () => {
@@ -548,7 +560,7 @@ test('filtered list dedupes a batter benched across multiple markets', async () 
 test('scores: rejects unknown sport with 400, never calls upstream', async () => {
   const f = fakeFetch(() => okResponse([]));
   const app = createApp({ apiKey: 'k', fetchFn: f });
-  const res = await request(app).get('/api/scores/basketball_wnba');
+  const res = await request(app).get('/api/scores/basketball_madeup');
   assert.equal(res.status, 400);
   assert.equal(f.calls.length, 0);
 });
@@ -949,7 +961,7 @@ test('watchlist: starts empty with default prefs', async () => {
 
 test('watchlist: rejects an unknown sport, nothing added', async () => {
   const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
-  const res = await request(app).post('/api/watchlist').send({ sport: 'basketball_wnba', team: 'Aces' });
+  const res = await request(app).post('/api/watchlist').send({ sport: 'basketball_madeup', team: 'Aces' });
   assert.equal(res.status, 400);
   const list = await request(app).get('/api/watchlist');
   assert.deepEqual(list.body.watchlist, []);
@@ -1053,7 +1065,7 @@ function espnFootballGame({ id = 'g1', home, away, homeScore, awayScore, state =
 test('track-bet: rejects unknown sport, bad market, missing selection, missing point for spreads/totals', async () => {
   const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
   const base = { homeTeam: 'A', awayTeam: 'B', market: 'h2h', selection: 'A' };
-  assert.equal((await request(app).post('/api/track-bet').send({ ...base, sport: 'basketball_wnba' })).status, 400);
+  assert.equal((await request(app).post('/api/track-bet').send({ ...base, sport: 'basketball_madeup' })).status, 400);
   assert.equal((await request(app).post('/api/track-bet').send({ ...base, sport: 'americanfootball_ncaaf', market: 'weird' })).status, 400);
   assert.equal((await request(app).post('/api/track-bet').send({ ...base, sport: 'americanfootball_ncaaf', selection: undefined })).status, 400);
   assert.equal((await request(app).post('/api/track-bet').send({ ...base, sport: 'americanfootball_ncaaf', market: 'spreads' })).status, 400); // no point
