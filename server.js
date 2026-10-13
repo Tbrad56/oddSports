@@ -793,6 +793,46 @@ function createApp({
     return (data.athletes || []).map(a => ({ id: a.id, name: a.displayName, position: a.position?.abbreviation || '', headshot: a.headshot?.href || null }));
   }
 
+  // WNBA/NHL teams+rosters for prop headshots — same ESPN site-API shape as
+  // nbaTeams/nbaRosterPlayers above (every league exposes the same
+  // /teams and /teams/{id}/roster routes), so this is the same two calls,
+  // just pointed at a different league path.
+  const ESPN_WNBA = 'https://site.api.espn.com/apis/site/v2/sports/basketball/wnba';
+  const ESPN_NHL = 'https://site.api.espn.com/apis/site/v2/sports/hockey/nhl';
+  async function wnbaTeams(){
+    const data = await fetchExternal(`${ESPN_WNBA}/teams?limit=16`, 24 * 60 * 60 * 1000);
+    const teams = [];
+    (data.sports?.[0]?.leagues?.[0]?.teams || []).forEach(t => {
+      const team = t.team || {};
+      teams.push({ id: team.id, name: team.displayName, abbrev: team.abbreviation,
+        logo: (team.logos || [])[0]?.href || null });
+    });
+    return teams;
+  }
+  async function wnbaRosterPlayers(teamId){
+    const data = await fetchExternal(`${ESPN_WNBA}/teams/${teamId}/roster`, NBA_TTL_MS);
+    return (data.athletes || []).map(a => ({ id: a.id, name: a.displayName, position: a.position?.abbreviation || '', headshot: a.headshot?.href || null }));
+  }
+  async function nhlTeams(){
+    const data = await fetchExternal(`${ESPN_NHL}/teams?limit=32`, 24 * 60 * 60 * 1000);
+    const teams = [];
+    (data.sports?.[0]?.leagues?.[0]?.teams || []).forEach(t => {
+      const team = t.team || {};
+      teams.push({ id: team.id, name: team.displayName, abbrev: team.abbreviation,
+        logo: (team.logos || [])[0]?.href || null });
+    });
+    return teams;
+  }
+  async function nhlRosterPlayers(teamId){
+    const data = await fetchExternal(`${ESPN_NHL}/teams/${teamId}/roster`, NBA_TTL_MS);
+    // NHL's roster, unlike NBA/NFL/WNBA, groups athletes by position
+    // ({position: 'Centers', items: [...]}) instead of a flat list — flatten
+    // it first or every "player" here is really a position-group object with
+    // no name/id of its own, and name-matching below silently finds no one.
+    const flat = (data.athletes || []).flatMap(group => group.items || [group]);
+    return flat.map(a => ({ id: a.id, name: a.displayName, position: a.position?.abbreviation || '', headshot: a.headshot?.href || null }));
+  }
+
   app.get('/api/nba/roster', (req, res) => {
     (async () => {
       const { team } = req.query;
@@ -2017,16 +2057,23 @@ function createApp({
 
     let body = r.body;
     // Resolve each prop's player name to a real headshot URL — MLB via
-    // StatsAPI personId (same helper /api/analyze uses), NBA/NFL via the two
-    // teams' ESPN rosters (already fetched/cached for the roster pages, so
-    // this doesn't cost a fresh request beyond the two roster calls
-    // themselves). Best-effort throughout — a miss just means that player's
-    // row falls back to the blank avatar placeholder, never an error.
+    // StatsAPI personId (same helper /api/analyze uses), everyone else via
+    // the two teams' ESPN rosters (already fetched/cached for the roster
+    // pages, so this doesn't cost a fresh request beyond the two roster
+    // calls themselves). Best-effort throughout — a miss just means that
+    // player's row falls back to the blank avatar placeholder, never an
+    // error.
     const names = new Set();
     (body.bookmakers || []).forEach(bm => (bm.markets || []).forEach(m => (m.outcomes || []).forEach(o => {
       const nm = o.description || o.name;
       if (nm) names.add(nm);
     })));
+    const ESPN_ROSTER_SPORTS = {
+      basketball_nba: { teams: nbaTeams, roster: nbaRosterPlayers },
+      americanfootball_nfl: { teams: nflTeams, roster: nflRosterPlayers },
+      basketball_wnba: { teams: wnbaTeams, roster: wnbaRosterPlayers },
+      icehockey_nhl: { teams: nhlTeams, roster: nhlRosterPlayers }
+    };
     const headshots = {};
     if (sport === 'baseball_mlb') {
       const season = new Date(now()).getFullYear();
@@ -2036,10 +2083,10 @@ function createApp({
           if (id) headshots[nm.toLowerCase()] = `https://img.mlbstatic.com/mlb-photos/image/upload/w_180,q_100/v1/people/${id}/headshot/67/current.png`;
         } catch (e) { /* a missed id just means no photo for that player */ }
       }
-    } else if (names.size && (sport === 'basketball_nba' || sport === 'americanfootball_nfl')) {
+    } else if (names.size && ESPN_ROSTER_SPORTS[sport]) {
       try {
-        const teams = sport === 'basketball_nba' ? await nbaTeams() : await nflTeams();
-        const rosterFn = sport === 'basketball_nba' ? nbaRosterPlayers : nflRosterPlayers;
+        const { teams: teamsFn, roster: rosterFn } = ESPN_ROSTER_SPORTS[sport];
+        const teams = await teamsFn();
         const sides = [body.home_team, body.away_team]
           .map(teamName => teams.find(t => t.name === teamName))
           .filter(Boolean);
