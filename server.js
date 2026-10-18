@@ -1042,6 +1042,7 @@ function createApp({
       ypp: rushing.totalOffensivePlays ? totalYards / rushing.totalOffensivePlays : null,
       topSecPerGame: misc.possessionTimeSeconds ? misc.possessionTimeSeconds / g : null,
       completionPct: passing.completionPct ?? null,
+      passAttPerGame: passAttempts / g,
       thirdDownPct: misc.thirdDownConvPct ?? null,
       redZoneTdPct: misc.redzoneTouchdownPct ?? misc.redzoneScoringPct ?? null,
       explosive: ((rushing.rushingBigPlays || 0) + (categories.receiving?.receivingBigPlays || 0)) / g,
@@ -1182,6 +1183,7 @@ function createApp({
           metrics: {
             rushYpg: m.rushYpg ?? null, passYpg: m.passYpg ?? null, ypg: m.ypg ?? null, ypp: m.ypp ?? null,
             topSecPerGame: m.topSecPerGame ?? null, completionPct: m.completionPct ?? null,
+            passAttPerGame: m.passAttPerGame ?? null,
             thirdDownPct: m.thirdDownPct ?? null, redZoneTdPct: m.redZoneTdPct ?? null,
             explosive: m.explosive ?? null, explosiveRate: m.explosiveRate ?? null, anyA: m.anyA ?? null,
             sacksMadePerGame: m.sacksMadePerGame ?? null, sacksAllowedPerGame: m.sacksAllowedPerGame ?? null,
@@ -1347,12 +1349,12 @@ function createApp({
         const v = list.map(r => Number(r.stats[i])).filter(x => !isNaN(x));
         return v.length ? Math.round(v.reduce((s,x)=>s+x,0) / v.length * 10) / 10 : null;
       };
-      const yds = idxAll('YDS'), td = idxAll('TD'), rec = idxAll('REC');
+      const yds = idxAll('YDS'), td = idxAll('TD'), rec = idxAll('REC'), tgt = idxAll('TGTS');
       const pack = list => ({
         games: list.length,
         yds1: avgAt(list, yds[0]), yds2: avgAt(list, yds[1]),
         td1: avgAt(list, td[0]), td2: avgAt(list, td[1]),
-        rec: avgAt(list, rec[0])
+        rec: avgAt(list, rec[0]), tgt: avgAt(list, tgt[0])
       });
       const seasonRows = wantVs ? allRows.filter(r => new Date(r.date) > new Date(now() - 370*86400000)) : allRows;
       const out = { labels, last5: pack(seasonRows.slice(0, 5)), season: pack(seasonRows) };

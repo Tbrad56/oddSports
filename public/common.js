@@ -1009,6 +1009,56 @@ function hrWatchRating(batter, pitcher, game){
   return { score, stars, summary };
 }
 
+// ---------- NFL Target Watch: composite star rating for a WR/TE/RB's role
+// in the passing game, same spirit as HR Watch above but for the one NFL
+// stat actually free and real: target share (this player's season targets
+// divided by his own team's season pass attempts per game). Both numbers
+// already get fetched for Player Form and Auto Game Read respectively — no
+// extra request. Red-zone-specific target share and red-zone defense are
+// NOT in any free feed (checked directly against ESPN's team-stats and
+// gamelog endpoints — neither exposes a red-zone split), so this only
+// claims what it can actually back with a real number, same honesty rule
+// bestBetSummary already follows for "no real price edge."
+function nflTargetWatchRating(player, playerForm, teamPassAttPerGame){
+  if(!playerForm || playerForm.season.tgt == null || !teamPassAttPerGame) return null;
+  const clamp = (v,lo,hi) => Math.max(lo, Math.min(hi, v));
+  const factors = [];
+
+  const share = playerForm.season.tgt / teamPassAttPerGame;
+  const shareBand = share >= 0.25 ? 'elite' : share >= 0.15 ? 'good' : 'modest';
+  const sharePart = clamp(share / 0.25, 0, 1.4) * 2.5;
+
+  let trendPart = 0;
+  if(playerForm.last5.tgt != null){
+    const d = playerForm.last5.tgt - playerForm.season.tgt;
+    if(Math.abs(d) >= 1.5){
+      trendPart = clamp(Math.abs(d) / 3, 0, 1);
+      const text = d > 0
+        ? `seeing more targets lately than his season norm (${playerForm.last5.tgt.toFixed(1)}/g over the last 5 vs ${playerForm.season.tgt.toFixed(1)} season)`
+        : `fewer targets lately than his season norm (${playerForm.last5.tgt.toFixed(1)}/g over the last 5 vs ${playerForm.season.tgt.toFixed(1)} season)`;
+      factors.push({ weight: trendPart, text });
+    }
+  }
+
+  const score = sharePart + trendPart;
+  const stars = score >= 3.2 ? 5 : score >= 2.4 ? 4 : score >= 1.6 ? 3 : score >= 0.8 ? 2 : 1;
+  factors.sort((a,b) => b.weight - a.weight);
+  const shareWord = shareBand === 'elite' ? 'a true #1 target share' : shareBand === 'good' ? 'a real share of the targets' : 'a modest share of the targets';
+  const first = player.name.split(' ')[0];
+  let summary = `${first} commands ${shareWord} (${(share * 100).toFixed(0)}% of team targets, ${playerForm.season.tgt.toFixed(1)}/g)`;
+  const supporting = factors.slice(0, 1).map(f => f.text);
+  summary += (supporting.length ? ' — ' + supporting.join(', ') : '') + '.';
+  return { score, stars, summary, share };
+}
+
+// NFL adapter: a checked player's Target Watch rating -> bestBetSummary's
+// generic signal shape. 4-5★ (true #1 target share) counts as strong, same
+// bar HR Watch's 4-5★ and Auto Game Read's 7+ confidence set.
+function nflTargetSignal(topTargetPick){
+  if(!topTargetPick) return null;
+  return { summary: topTargetPick.rating.summary, strong: topTargetPick.rating.stars >= 4, kind: 'target share' };
+}
+
 // Combines this game's Value Finder scan (real edge math, no threshold —
 // caller decides what counts as "real") with whatever sport-specific signal
 // the caller has for it into one sentence instead of two separate panels.
@@ -1068,7 +1118,7 @@ function nflReadSignal(m){
 // single-metric standout. Never invents a 2nd or 3rd pick just to fill a
 // slot — a game with one real signal returns one item, zero real signals
 // returns [].
-const SIGNAL_TIER = { edge: 0, propEdge: 1, hrWatch: 2, gameRead: 3 };
+const SIGNAL_TIER = { edge: 0, propEdge: 1, playerRating: 2, gameRead: 3 };
 function bestBetsForGame(candidates){
   return candidates
     .filter(Boolean)
@@ -1089,7 +1139,7 @@ function mlbBestBetCandidates(edgeCandidates, hrPool, propsAnalysis){
     candidates.push({ type: 'edge', summary: `${c.side} — +${(c.edge * 100).toFixed(2)}% vs consensus at ${c.best.bookTitle}` });
   });
   (hrPool || []).filter(x => x.rating.stars >= 4).forEach(x => {
-    candidates.push({ type: 'hrWatch', summary: `${x.b.name.split(' ')[0]} HR prop — ${x.rating.summary}` });
+    candidates.push({ type: 'playerRating', summary: `${x.b.name.split(' ')[0]} HR prop — ${x.rating.summary}` });
   });
   // 5%+ model-vs-implied gap, same bar Get Props' own table treats as a real edge.
   ((propsAnalysis && propsAnalysis.picks) || []).filter(p => p.edge >= 0.05).forEach(p => {
@@ -1098,12 +1148,18 @@ function mlbBestBetCandidates(edgeCandidates, hrPool, propsAnalysis){
   return bestBetsForGame(candidates);
 }
 
-// NFL/NBA candidate list: Value Finder edges plus Auto Game Read, which is
-// inherently one whole-game read (not per-player), so it contributes at
-// most a single slot alongside however many real price edges exist.
-function teamSportBestBetCandidates(edgeCandidates, gameReadSignal){
+// NFL/NBA candidate list: Value Finder edges, Auto Game Read (one whole-
+// game read, not per-player, so at most a single slot), plus any NFL
+// Target Watch picks the caller already has. That last one is opportunistic
+// the same way Get Props' MLB edges are — a player's gamelog is only
+// fetched when you check their form in Player Form, so this never fetches
+// one just to fill a slot in a free sentence.
+function teamSportBestBetCandidates(edgeCandidates, gameReadSignal, targetPicks){
   const candidates = (edgeCandidates || []).map(c =>
     ({ type: 'edge', summary: `${c.side} — +${(c.edge * 100).toFixed(2)}% vs consensus at ${c.best.bookTitle}` }));
+  (targetPicks || []).filter(p => p.rating.stars >= 4).forEach(p => {
+    candidates.push({ type: 'playerRating', summary: `${p.player.name.split(' ')[0]} target share — ${p.rating.summary}` });
+  });
   if(gameReadSignal) candidates.push({ type: 'gameRead', summary: gameReadSignal.summary });
   return bestBetsForGame(candidates);
 }
@@ -1524,8 +1580,13 @@ function nflAnalyzerCardHtml(m, gameId, rosters, analyzerPlayerId, playerForm){
     <button class="ghost nfl-analyzer-btn" data-game-id="${escapeHtml(gameId)}">Check form</button>
   </div>`;
   const pf = analyzerPlayerId && playerForm[analyzerPlayerId];
+  let analyzerPlayer = null, analyzerPassAttPerGame = null;
   if(analyzerPlayerId && pf && pf !== 'loading'){
-    const p = Object.values(rosters).flat().find(x=>String(x.id)===String(analyzerPlayerId));
+    const teamId = Object.keys(rosters).find(tid => (rosters[tid] || []).some(x => String(x.id) === String(analyzerPlayerId)));
+    const p = teamId ? rosters[teamId].find(x => String(x.id) === String(analyzerPlayerId)) : null;
+    analyzerPlayer = p;
+    const side = [m.home, m.away].find(s => String(s.team.id) === String(teamId));
+    analyzerPassAttPerGame = side && side.metrics ? side.metrics.passAttPerGame : null;
     if(p) body += `<div class="nba-team-head" style="margin-bottom:8px;">${avatarUrlHtml(p.headshot, 32)}<strong>${escapeHtml(p.name)}</strong> <span class="nba-record">${escapeHtml(p.position)}</span></div>`;
   }
   if(pf === 'loading'){
@@ -1544,9 +1605,19 @@ function nflAnalyzerCardHtml(m, gameId, rosters, analyzerPlayerId, playerForm){
     const rows = [['Last 5', pf.last5], ['Season', pf.season]];
     if(vs && vs.games) rows.push([`vs ${vs.abbrev || 'OPP'} (3 seasons)`, vs]);
     body += `<div class="table-scroll"><table class="props-table"><thead>
-      <tr><th>Split</th><th>G</th>${ydsLabels[0]?`<th>${ydsLabels[0]}</th>`:''}${ydsLabels[1]?`<th>${ydsLabels[1]}</th>`:''}<th>TD</th>${pf.season.rec !== null ? '<th>REC</th>' : ''}</tr></thead><tbody>
-      ${rows.map(([label, r])=>`<tr><td style="font-weight:600;">${label}</td><td>${r.games}</td>${ydsLabels[0]?`<td>${nflFmt1(r.yds1)}</td>`:''}${ydsLabels[1]?`<td>${nflFmt1(r.yds2)}</td>`:''}<td>${nflFmt1(r.td1)}</td>${pf.season.rec !== null ? `<td>${nflFmt1(r.rec)}</td>` : ''}</tr>`).join('')}
+      <tr><th>Split</th><th>G</th>${ydsLabels[0]?`<th>${ydsLabels[0]}</th>`:''}${ydsLabels[1]?`<th>${ydsLabels[1]}</th>`:''}<th>TD</th>${pf.season.rec !== null ? '<th>REC</th>' : ''}${pf.season.tgt !== null ? '<th>TGT</th>' : ''}</tr></thead><tbody>
+      ${rows.map(([label, r])=>`<tr><td style="font-weight:600;">${label}</td><td>${r.games}</td>${ydsLabels[0]?`<td>${nflFmt1(r.yds1)}</td>`:''}${ydsLabels[1]?`<td>${nflFmt1(r.yds2)}</td>`:''}<td>${nflFmt1(r.td1)}</td>${pf.season.rec !== null ? `<td>${nflFmt1(r.rec)}</td>` : ''}${pf.season.tgt !== null ? `<td>${nflFmt1(r.tgt)}</td>` : ''}</tr>`).join('')}
     </tbody></table></div>`;
+    // Target Watch — HR Watch's same composite-rating idea, for the one real
+    // free NFL stat: season target share. Only renders for a receiving role
+    // with real targets and a real team pass-attempts number to divide by.
+    const targetRating = analyzerPlayer ? nflTargetWatchRating(analyzerPlayer, pf, analyzerPassAttPerGame) : null;
+    if(targetRating){
+      body += `<div class="nba-insight" style="display:flex; align-items:flex-start; gap:8px; justify-content:space-between;">
+        <span>${escapeHtml(targetRating.summary)}</span>
+        ${starsHtml(targetRating.stars)}
+      </div>`;
+    }
     if(vs && vs.meetings && vs.meetings.length){
       body += `<div class="nfl-pos-group" style="margin-top:8px;">Last meetings vs ${escapeHtml(vs.abbrev || '')}</div>
         <div class="table-scroll"><table class="props-table"><thead>
