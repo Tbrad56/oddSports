@@ -1161,6 +1161,57 @@ function nflTargetSignal(topPick, kind){
   return { summary: topPick.rating.summary, strong: topPick.rating.stars >= 4, kind: kind || 'target share' };
 }
 
+// Every player checked so far this session, from EITHER team — mixes both
+// squads, not scoped to whichever one you looked up last. `playerForm` is
+// already keyed by player id across every "Check form" click, so this is
+// free to compute (no new fetch): walk whoever's cached, run whichever of
+// the three Watch ratings apply to their real numbers, rank by stars.
+function nflWatchBoard(m, rosters, playerForm){
+  const picks = [];
+  Object.keys(playerForm || {}).forEach(pid => {
+    const pf = playerForm[pid];
+    if(!pf || pf === 'loading') return;
+    const teamId = Object.keys(rosters).find(tid => (rosters[tid] || []).some(x => String(x.id) === String(pid)));
+    const player = teamId ? rosters[teamId].find(x => String(x.id) === String(pid)) : null;
+    if(!player) return;
+    const side = [m.home, m.away].find(s => String(s.team.id) === String(teamId));
+    const opp = [m.home, m.away].find(s => String(s.team.id) !== String(teamId));
+    // Position-gated: a QB's td1 is passing TDs, not TDs he scores himself —
+    // running TD Watch's "carries a real touchdown threat" framing on that
+    // number would read as if he's the one crossing the goal line. Pass
+    // Yards Watch is the QB-shaped version of the same "how does he
+    // actually produce" question; Target/TD Watch stay scoped to the
+    // positions that actually catch passes and score themselves.
+    const isQb = player.position === 'QB';
+    const candidates = isQb
+      ? [['pass yards', nflPassYardsWatchRating(player, pf, opp && opp.ranks && opp.ranks.pa, opp && opp.team && opp.team.name)]]
+      : [
+          ['target share', nflTargetWatchRating(player, pf, side && side.metrics && side.metrics.passAttPerGame)],
+          ['TD watch', nflTouchdownWatchRating(player, pf, side && side.metrics && side.metrics.redZoneTdPct)]
+        ];
+    candidates.forEach(([label, rating]) => {
+      if(rating) picks.push({ player, teamName: side && side.team && side.team.name, label, rating });
+    });
+  });
+  picks.sort((a, b) => b.rating.stars - a.rating.stars);
+  return picks;
+}
+
+function nflWatchBoardHtml(picks){
+  if(!picks.length) return '';
+  const top = picks.slice(0, 5);
+  return `<div class="hr-panel" style="margin-top:10px;">
+    <div class="hr-title">Watch Board — both teams, everyone checked so far</div>
+    ${top.map(p => `<div class="hr-row">
+      <div class="hr-top">
+        <div><div class="hitter-name">${escapeHtml(p.player.name)}</div><div class="hitter-team">${escapeHtml(p.teamName || '')} · ${escapeHtml(p.label)}</div></div>
+        ${starsHtml(p.rating.stars)}
+      </div>
+      <div class="hr-why">${escapeHtml(p.rating.summary)}</div>
+    </div>`).join('')}
+  </div>`;
+}
+
 // Combines this game's Value Finder scan (real edge math, no threshold —
 // caller decides what counts as "real") with whatever sport-specific signal
 // the caller has for it into one sentence instead of two separate panels.
@@ -1718,10 +1769,13 @@ function nflAnalyzerCardHtml(m, gameId, rosters, analyzerPlayerId, playerForm){
     // the real free NFL stats each position actually has: target share and
     // TD rate for a receiver/back, passing yards for a QB. Whichever apply
     // to this player's own real numbers render — never forced, never padded.
+    // Same QB gate as nflWatchBoard — a QB's td1 is passing TDs, not a
+    // touchdown he scores himself.
+    const analyzerIsQb = analyzerPlayer && analyzerPlayer.position === 'QB';
     const watchRatings = [
-      analyzerPlayer && analyzerSide ? { label: 'target share', rating: nflTargetWatchRating(analyzerPlayer, pf, analyzerSide.metrics && analyzerSide.metrics.passAttPerGame) } : null,
-      analyzerPlayer && analyzerSide ? { label: 'TD watch', rating: nflTouchdownWatchRating(analyzerPlayer, pf, analyzerSide.metrics && analyzerSide.metrics.redZoneTdPct) } : null,
-      analyzerPlayer && analyzerOpp ? { label: 'pass yards', rating: nflPassYardsWatchRating(analyzerPlayer, pf, analyzerOpp.ranks && analyzerOpp.ranks.pa, analyzerOpp.team.name) } : null
+      (!analyzerIsQb && analyzerPlayer && analyzerSide) ? { label: 'target share', rating: nflTargetWatchRating(analyzerPlayer, pf, analyzerSide.metrics && analyzerSide.metrics.passAttPerGame) } : null,
+      (!analyzerIsQb && analyzerPlayer && analyzerSide) ? { label: 'TD watch', rating: nflTouchdownWatchRating(analyzerPlayer, pf, analyzerSide.metrics && analyzerSide.metrics.redZoneTdPct) } : null,
+      (analyzerIsQb && analyzerPlayer && analyzerOpp) ? { label: 'pass yards', rating: nflPassYardsWatchRating(analyzerPlayer, pf, analyzerOpp.ranks && analyzerOpp.ranks.pa, analyzerOpp.team.name) } : null
     ].filter(w => w && w.rating);
     watchRatings.forEach(w => {
       body += `<div class="nba-insight" style="display:flex; align-items:flex-start; gap:8px; justify-content:space-between;">
@@ -1761,6 +1815,7 @@ function buildNflFullBreakdownHtml(m, gameId, rosters, analyzerPlayerId, playerF
     ${nflWeatherCardHtml(m)}
     ${nflFormCardHtml(m)}
     ${nflAnalyzerCardHtml(m, gameId, rosters, analyzerPlayerId, playerForm)}
+    ${nflWatchBoardHtml(nflWatchBoard(m, rosters, playerForm))}
   </div>`;
 }
 
