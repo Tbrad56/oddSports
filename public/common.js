@@ -1051,12 +1051,114 @@ function nflTargetWatchRating(player, playerForm, teamPassAttPerGame){
   return { score, stars, summary, share };
 }
 
-// NFL adapter: a checked player's Target Watch rating -> bestBetSummary's
-// generic signal shape. 4-5★ (true #1 target share) counts as strong, same
-// bar HR Watch's 4-5★ and Auto Game Read's 7+ confidence set.
-function nflTargetSignal(topTargetPick){
-  if(!topTargetPick) return null;
-  return { summary: topTargetPick.rating.summary, strong: topTargetPick.rating.stars >= 4, kind: 'target share' };
+// ---------- NFL TD Watch: best anytime-TD candidate. Real receiving +
+// rushing TD rate (both already in playerForm — pack() grabs the 1st and
+// 2nd 'TD' column by occurrence, which lands on receiving then rushing
+// regardless of position, so this covers WR/TE/RB alike) combined with his
+// own offense's red zone scoring efficiency (already fetched for Auto Game
+// Read) — a player who gets to the red zone a lot on a team that actually
+// finishes drives there is a stronger TD bet than raw volume alone shows.
+function nflTouchdownWatchRating(player, playerForm, teamRedZoneTdPct){
+  const tdRate = (playerForm?.season?.td1 || 0) + (playerForm?.season?.td2 || 0);
+  if(!playerForm || tdRate <= 0) return null;
+  const clamp = (v,lo,hi) => Math.max(lo, Math.min(hi, v));
+  const factors = [];
+
+  const tdBand = tdRate >= 0.6 ? 'elite' : tdRate >= 0.35 ? 'good' : 'modest';
+  const tdPart = clamp(tdRate / 0.6, 0, 1.6) * 2.3;
+
+  let rzPart = 0;
+  if(teamRedZoneTdPct != null){
+    if(teamRedZoneTdPct >= 60){
+      rzPart = 1;
+      factors.push({ weight: rzPart, text: `his offense finishes drives (${teamRedZoneTdPct.toFixed(0)}% red zone TD rate)` });
+    } else if(teamRedZoneTdPct <= 45){
+      rzPart = -0.5;
+      factors.push({ weight: 0.5, text: `his offense stalls in the red zone (${teamRedZoneTdPct.toFixed(0)}% TD rate) — real drag here` });
+    }
+  }
+
+  const last5Td = (playerForm.last5?.td1 || 0) + (playerForm.last5?.td2 || 0);
+  let trendPart = 0;
+  if(playerForm.last5){
+    const d = last5Td - tdRate;
+    if(Math.abs(d) >= 0.25){
+      trendPart = clamp(Math.abs(d) / 0.5, 0, 1) * 0.8;
+      const text = d > 0
+        ? `finding the end zone more lately (${last5Td.toFixed(2)}/g last 5 vs ${tdRate.toFixed(2)} season)`
+        : `cooled off on touchdowns lately (${last5Td.toFixed(2)}/g last 5 vs ${tdRate.toFixed(2)} season)`;
+      factors.push({ weight: trendPart, text });
+    }
+  }
+
+  const score = Math.max(0, tdPart + rzPart + trendPart);
+  const stars = score >= 4 ? 5 : score >= 3 ? 4 : score >= 2 ? 3 : score >= 1 ? 2 : 1;
+  factors.sort((a,b) => b.weight - a.weight);
+  const tdWord = tdBand === 'elite' ? 'a real touchdown threat' : tdBand === 'good' ? 'a legitimate scoring role' : 'a modest scoring role';
+  const first = player.name.split(' ')[0];
+  let summary = `${first} carries ${tdWord} (${tdRate.toFixed(2)} TD/g)`;
+  const supporting = factors.slice(0, 2).map(f => f.text);
+  summary += (supporting.length ? ' — ' + supporting.join(', ') : '') + '.';
+  return { score, stars, summary };
+}
+
+// ---------- NFL Passing Yards Watch: the starting QB's real per-game
+// yardage (same gamelog pack() already used for WRs — 'YDS' at the first
+// occurrence lands on passing yards for a QB's label order), with recent
+// trend and the opponent's points-allowed rank as the closest real, free
+// stand-in for "tough matchup" — true pass-defense-yardage splits aren't on
+// any free feed (checked directly against ESPN's team-stats endpoint).
+function nflPassYardsWatchRating(player, playerForm, oppPaRank, oppTeamName){
+  if(!playerForm || playerForm.season.yds1 == null) return null;
+  const clamp = (v,lo,hi) => Math.max(lo, Math.min(hi, v));
+  const factors = [];
+
+  const ypg = playerForm.season.yds1;
+  const ypgBand = ypg >= 260 ? 'elite' : ypg >= 220 ? 'good' : 'modest';
+  const ypgPart = clamp(ypg / 260, 0, 1.4) * 2.3;
+
+  let oppPart = 0;
+  if(oppPaRank){
+    if(oppPaRank >= 22){
+      oppPart = clamp((oppPaRank - 21) / 11, 0, 1) * 1.1;
+      factors.push({ weight: oppPart, text: `${oppTeamName || 'this defense'} ranks bottom-11 in points allowed (#${oppPaRank})` });
+    } else if(oppPaRank <= 8){
+      oppPart = -0.6;
+      factors.push({ weight: 0.6, text: `${oppTeamName || 'this defense'} is a top-8 defense (#${oppPaRank}) — tougher matchup than usual` });
+    }
+  }
+
+  let trendPart = 0;
+  if(playerForm.last5.yds1 != null){
+    const d = playerForm.last5.yds1 - ypg;
+    if(Math.abs(d) >= 20){
+      trendPart = clamp(Math.abs(d) / 60, 0, 1) * 0.8;
+      const text = d > 0
+        ? `throwing for more lately (${playerForm.last5.yds1.toFixed(0)}/g last 5 vs ${ypg.toFixed(0)} season)`
+        : `throwing for less lately (${playerForm.last5.yds1.toFixed(0)}/g last 5 vs ${ypg.toFixed(0)} season)`;
+      factors.push({ weight: trendPart, text });
+    }
+  }
+
+  const score = Math.max(0, ypgPart + oppPart + trendPart);
+  const stars = score >= 4 ? 5 : score >= 3 ? 4 : score >= 2 ? 3 : score >= 1 ? 2 : 1;
+  factors.sort((a,b) => b.weight - a.weight);
+  const ypgWord = ypgBand === 'elite' ? 'elite yardage production' : ypgBand === 'good' ? 'solid yardage production' : 'modest yardage production';
+  const first = player.name.split(' ')[0];
+  let summary = `${first} brings ${ypgWord} (${ypg.toFixed(0)} pass yds/g)`;
+  const supporting = factors.slice(0, 2).map(f => f.text);
+  summary += (supporting.length ? ' — ' + supporting.join(', ') : '') + '.';
+  return { score, stars, summary };
+}
+
+// NFL adapter: any one of the three Watch ratings above -> bestBetSummary's
+// generic signal shape. Same shape, same meaning, regardless of which of
+// the three categories produced it — the caller passes whichever one is
+// strongest for this player/game. 4-5★ counts as strong, same bar HR
+// Watch's 4-5★ and Auto Game Read's 7+ confidence set.
+function nflTargetSignal(topPick, kind){
+  if(!topPick) return null;
+  return { summary: topPick.rating.summary, strong: topPick.rating.stars >= 4, kind: kind || 'target share' };
 }
 
 // Combines this game's Value Finder scan (real edge math, no threshold —
@@ -1154,11 +1256,15 @@ function mlbBestBetCandidates(edgeCandidates, hrPool, propsAnalysis){
 // the same way Get Props' MLB edges are — a player's gamelog is only
 // fetched when you check their form in Player Form, so this never fetches
 // one just to fill a slot in a free sentence.
-function teamSportBestBetCandidates(edgeCandidates, gameReadSignal, targetPicks){
+// `watchPicks` is any mix of the three NFL Watch ratings (Target, TD, Pass
+// Yards) a caller already has checked — each entry {player, rating, label}.
+// Opportunistic same as before: nobody's gamelog gets fetched just to try
+// filling this list.
+function teamSportBestBetCandidates(edgeCandidates, gameReadSignal, watchPicks){
   const candidates = (edgeCandidates || []).map(c =>
     ({ type: 'edge', summary: `${c.side} — +${(c.edge * 100).toFixed(2)}% vs consensus at ${c.best.bookTitle}` }));
-  (targetPicks || []).filter(p => p.rating.stars >= 4).forEach(p => {
-    candidates.push({ type: 'playerRating', summary: `${p.player.name.split(' ')[0]} target share — ${p.rating.summary}` });
+  (watchPicks || []).filter(p => p.rating.stars >= 4).forEach(p => {
+    candidates.push({ type: 'playerRating', summary: `${p.player.name.split(' ')[0]} ${p.label} — ${p.rating.summary}` });
   });
   if(gameReadSignal) candidates.push({ type: 'gameRead', summary: gameReadSignal.summary });
   return bestBetsForGame(candidates);
@@ -1580,13 +1686,13 @@ function nflAnalyzerCardHtml(m, gameId, rosters, analyzerPlayerId, playerForm){
     <button class="ghost nfl-analyzer-btn" data-game-id="${escapeHtml(gameId)}">Check form</button>
   </div>`;
   const pf = analyzerPlayerId && playerForm[analyzerPlayerId];
-  let analyzerPlayer = null, analyzerPassAttPerGame = null;
+  let analyzerPlayer = null, analyzerSide = null, analyzerOpp = null;
   if(analyzerPlayerId && pf && pf !== 'loading'){
     const teamId = Object.keys(rosters).find(tid => (rosters[tid] || []).some(x => String(x.id) === String(analyzerPlayerId)));
     const p = teamId ? rosters[teamId].find(x => String(x.id) === String(analyzerPlayerId)) : null;
     analyzerPlayer = p;
-    const side = [m.home, m.away].find(s => String(s.team.id) === String(teamId));
-    analyzerPassAttPerGame = side && side.metrics ? side.metrics.passAttPerGame : null;
+    analyzerSide = [m.home, m.away].find(s => String(s.team.id) === String(teamId));
+    analyzerOpp = [m.home, m.away].find(s => String(s.team.id) !== String(teamId));
     if(p) body += `<div class="nba-team-head" style="margin-bottom:8px;">${avatarUrlHtml(p.headshot, 32)}<strong>${escapeHtml(p.name)}</strong> <span class="nba-record">${escapeHtml(p.position)}</span></div>`;
   }
   if(pf === 'loading'){
@@ -1608,16 +1714,21 @@ function nflAnalyzerCardHtml(m, gameId, rosters, analyzerPlayerId, playerForm){
       <tr><th>Split</th><th>G</th>${ydsLabels[0]?`<th>${ydsLabels[0]}</th>`:''}${ydsLabels[1]?`<th>${ydsLabels[1]}</th>`:''}<th>TD</th>${pf.season.rec !== null ? '<th>REC</th>' : ''}${pf.season.tgt !== null ? '<th>TGT</th>' : ''}</tr></thead><tbody>
       ${rows.map(([label, r])=>`<tr><td style="font-weight:600;">${label}</td><td>${r.games}</td>${ydsLabels[0]?`<td>${nflFmt1(r.yds1)}</td>`:''}${ydsLabels[1]?`<td>${nflFmt1(r.yds2)}</td>`:''}<td>${nflFmt1(r.td1)}</td>${pf.season.rec !== null ? `<td>${nflFmt1(r.rec)}</td>` : ''}${pf.season.tgt !== null ? `<td>${nflFmt1(r.tgt)}</td>` : ''}</tr>`).join('')}
     </tbody></table></div>`;
-    // Target Watch — HR Watch's same composite-rating idea, for the one real
-    // free NFL stat: season target share. Only renders for a receiving role
-    // with real targets and a real team pass-attempts number to divide by.
-    const targetRating = analyzerPlayer ? nflTargetWatchRating(analyzerPlayer, pf, analyzerPassAttPerGame) : null;
-    if(targetRating){
+    // Three Watch ratings, HR Watch's same composite-rating idea applied to
+    // the real free NFL stats each position actually has: target share and
+    // TD rate for a receiver/back, passing yards for a QB. Whichever apply
+    // to this player's own real numbers render — never forced, never padded.
+    const watchRatings = [
+      analyzerPlayer && analyzerSide ? { label: 'target share', rating: nflTargetWatchRating(analyzerPlayer, pf, analyzerSide.metrics && analyzerSide.metrics.passAttPerGame) } : null,
+      analyzerPlayer && analyzerSide ? { label: 'TD watch', rating: nflTouchdownWatchRating(analyzerPlayer, pf, analyzerSide.metrics && analyzerSide.metrics.redZoneTdPct) } : null,
+      analyzerPlayer && analyzerOpp ? { label: 'pass yards', rating: nflPassYardsWatchRating(analyzerPlayer, pf, analyzerOpp.ranks && analyzerOpp.ranks.pa, analyzerOpp.team.name) } : null
+    ].filter(w => w && w.rating);
+    watchRatings.forEach(w => {
       body += `<div class="nba-insight" style="display:flex; align-items:flex-start; gap:8px; justify-content:space-between;">
-        <span>${escapeHtml(targetRating.summary)}</span>
-        ${starsHtml(targetRating.stars)}
+        <span>${escapeHtml(w.rating.summary)}</span>
+        ${starsHtml(w.rating.stars)}
       </div>`;
-    }
+    });
     if(vs && vs.meetings && vs.meetings.length){
       body += `<div class="nfl-pos-group" style="margin-top:8px;">Last meetings vs ${escapeHtml(vs.abbrev || '')}</div>
         <div class="table-scroll"><table class="props-table"><thead>
