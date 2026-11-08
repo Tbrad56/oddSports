@@ -1949,7 +1949,9 @@ function createApp({
           homeTeamId: (home.team && home.team.id) || null,
           awayTeamId: (away.team && away.team.id) || null,
           homeTimeouts: sit.homeTimeouts != null ? sit.homeTimeouts : null,
-          awayTimeouts: sit.awayTimeouts != null ? sit.awayTimeouts : null
+          awayTimeouts: sit.awayTimeouts != null ? sit.awayTimeouts : null,
+          lastPlayText: (sit.lastPlay && sit.lastPlay.text) ? sit.lastPlay.text.trim() : null,
+          lastPlayId: (sit.lastPlay && sit.lastPlay.id) || null
         };
       }
       return out;

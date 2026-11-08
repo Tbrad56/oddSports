@@ -1382,16 +1382,30 @@ function endZoneLabel(name, abbrev){
   if(!name) return '';
   return name.trim().split(/\s+/).pop().slice(0, 4).toUpperCase();
 }
+// Generic 11v11 formation — not real player tracking (ESPN gives us none),
+// just a fixed shape that lines up on the LOS and glides to the new one each
+// play so the field doesn't look static between score/situation polls.
+// Offsets are [alongLOS, acrossField] in local field units before driveDir
+// flips the "along" axis toward the offense's own side of the ball.
+const FP_OFFENSE_SHAPE = [[-2,-16],[-2,-8],[-2,0],[-2,8],[-2,16],[-9,0],[-15,6],[-2,-46],[-2,46],[-1,22],[-10,-20]];
+const FP_DEFENSE_SHAPE = [[2,-12],[2,-4],[2,4],[2,12],[7,-18],[7,0],[7,18],[1,-46],[1,46],[14,-20],[14,20]];
+function formationDotsSvg(x, driveDir){
+  const dot = (cx, cy, side, idx, color) =>
+    `<circle class="fp-dot" data-side="${side}" data-idx="${idx}" cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="3" fill="${color}" stroke="#0A0A0A" stroke-width="0.6"/>`;
+  const offense = FP_OFFENSE_SHAPE.map((d, i) => dot(x + d[0] * driveDir, 80 + d[1], 'off', i, '#FF1F4B')).join('');
+  const defense = FP_DEFENSE_SHAPE.map((d, i) => dot(x + d[0] * driveDir, 80 + d[1], 'def', i, '#00E5FF')).join('');
+  return `<g class="fp-dots">${offense}${defense}</g>`;
+}
 function footballFieldTrackerSvg(sportKey, game, scoreEntry){
   const sit = scoreEntry && scoreEntry.situation;
   const started = !!sit;
   const live = !!(sit && !sit.isHalftime && sit.down > 0 && sit.distance >= 0);
-  let losMark = '', ballMark = '', firstDownMark = '', dirArrow = '', possessionMark = '';
+  let losMark = '', ballMark = '', firstDownMark = '', dirArrow = '', possessionMark = '', dotsMark = '';
   let badgeX = 150;
   if(live && sit.yardLine != null && sit.yardLine >= 0 && sit.yardLine <= 100){
     const x = 276 - (sit.yardLine / 100) * 252;
-    losMark = `<line x1="${x.toFixed(1)}" y1="28" x2="${x.toFixed(1)}" y2="132" stroke="#F5D400" stroke-width="2"/>`;
-    ballMark = `<ellipse cx="${x.toFixed(1)}" cy="80" rx="5" ry="3.2" fill="#7B4A22" stroke="#241609" stroke-width="1"/>`;
+    losMark = `<line class="fp-los" x1="${x.toFixed(1)}" y1="28" x2="${x.toFixed(1)}" y2="132" stroke="#F5D400" stroke-width="2"/>`;
+    ballMark = `<ellipse class="fp-ball" cx="${x.toFixed(1)}" cy="80" rx="5" ry="3.2" fill="#7B4A22" stroke="#241609" stroke-width="1"/>`;
     // Possession drives toward the OPPONENT's goal: home team → toward the
     // away end (x decreasing, driveDir -1), away team → toward the home end
     // (x increasing, driveDir +1). Both the first-down marker and the drive
@@ -1399,18 +1413,19 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
     // pointing the wrong way whenever the home team has the ball.
     const towardAway = sit.possessionTeamId && sit.possessionTeamId === sit.homeTeamId;
     const driveDir = towardAway ? -1 : 1;
+    dotsMark = formationDotsSvg(x, driveDir);
     const fx = Math.max(24, Math.min(276, x + driveDir * sit.distance * 2.52));
-    firstDownMark = `<line x1="${fx.toFixed(1)}" y1="28" x2="${fx.toFixed(1)}" y2="132" stroke="#FFA940" stroke-width="2" stroke-dasharray="4,3"/>`;
+    firstDownMark = `<line class="fp-firstdown" x1="${fx.toFixed(1)}" y1="28" x2="${fx.toFixed(1)}" y2="132" stroke="#FFA940" stroke-width="2" stroke-dasharray="4,3"/>`;
     if(sit.possessionTeamId && (sit.possessionTeamId === sit.homeTeamId || sit.possessionTeamId === sit.awayTeamId)){
       const ax = x + driveDir * 18;
       const tip = ax + driveDir * 10;
-      dirArrow = `<path d="M${ax.toFixed(1)},72 L${tip.toFixed(1)},80 L${ax.toFixed(1)},88 Z" fill="#F5F5F5" opacity="0.9"/>`;
+      dirArrow = `<path class="fp-dir-arrow" d="M${ax.toFixed(1)},72 L${tip.toFixed(1)},80 L${ax.toFixed(1)},88 Z" fill="#F5F5F5" opacity="0.9"/>`;
       // A small logo of whichever team actually has the ball, right above it —
       // the midfield logo is always the home team's turf logo, so on its own
       // it can't answer "who has the ball" once the away team is on offense.
       const posLogoUrl = espnTeamLogoUrl(sportKey, sit.possessionTeamId);
       if(posLogoUrl){
-        possessionMark = `<g>
+        possessionMark = `<g class="fp-possession">
           <circle cx="${x.toFixed(1)}" cy="58" r="13" fill="#F5F5F5" opacity="0.95"/>
           <image href="${posLogoUrl}" x="${(x-11).toFixed(1)}" y="47" width="22" height="22" preserveAspectRatio="xMidYMid meet"/>
         </g>`;
@@ -1446,8 +1461,8 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
     const w = Math.max(76, label.length * 8.2 + 24);
     const bx = Math.max(26 + w/2, Math.min(274 - w/2, badgeX));
     downBadge = `<g>
-      <rect x="${(bx - w/2).toFixed(1)}" y="67" width="${w.toFixed(1)}" height="26" rx="13" fill="#141414" opacity="0.72"/>
-      <text x="${bx.toFixed(1)}" y="84" text-anchor="middle" font-size="15" font-weight="800" fill="#F5F5F5" letter-spacing="0.4">${escapeHtml(label)}</text>
+      <rect class="fp-badge-rect" x="${(bx - w/2).toFixed(1)}" y="67" width="${w.toFixed(1)}" height="26" rx="13" fill="#141414" opacity="0.72"/>
+      <text class="fp-badge-text" x="${bx.toFixed(1)}" y="84" text-anchor="middle" font-size="15" font-weight="800" fill="#F5F5F5" letter-spacing="0.4">${escapeHtml(label)}</text>
     </g>`;
   }
   const clockBits = [];
@@ -1469,7 +1484,7 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
     const pips = (n) => n == null ? '' : '●'.repeat(Math.max(0, n)) + '○'.repeat(Math.max(0, 3 - n));
     const awayPips = pips(sit.awayTimeouts);
     const homePips = pips(sit.homeTimeouts);
-    clockBug = `<g>
+    clockBug = `<g class="fp-clockbug">
       <rect x="0" y="0" width="300" height="20" fill="#141414" opacity="0.82"/>
       ${awayPips ? `<text x="10" y="14" text-anchor="start" font-size="10" font-weight="700" fill="#F5F5F5" letter-spacing="1">${awayPips}</text>` : ''}
       ${clockText ? `<text x="150" y="14" text-anchor="middle" font-size="12" font-weight="800" fill="#F5F5F5" letter-spacing="0.3">${escapeHtml(clockText)}</text>` : ''}
@@ -1516,6 +1531,13 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
     : '';
   const awayEndZoneLabel = endZoneText(awayLabel, 12);
   const homeEndZoneLabel = endZoneText(homeLabel, 288);
+  // Real last-play text — already in the same scoreboard response this card
+  // polls every 30s for score/situation, so this is free. data-play-id lets
+  // the next poll tell whether a new play actually happened (vs. the same
+  // play still being the "last" one) without re-parsing the sentence itself.
+  const playTicker = (live && sit.lastPlayText)
+    ? `<div class="field-play-ticker" data-play-id="${escapeHtml(sit.lastPlayId || '')}">${escapeHtml(sit.lastPlayText)}</div>`
+    : '';
   return `<div class="nfl-field-wrap">
     ${scorebox}
     ${banner}
@@ -1531,16 +1553,93 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
       <line x1="150" y1="28" x2="150" y2="132" stroke="#F5F5F5" stroke-width="1" opacity="0.6"/>
       ${firstDownMark}
       ${losMark}
+      ${dotsMark}
       ${dirArrow}
       ${ballMark}
       ${possessionMark}
       ${downBadge}
       ${clockBug}
     </svg>
+    ${playTicker}
     ${kickoffNote}
   </div>`;
 }
 
+// Updates an already-on-screen field tracker in place from a freshly-built
+// one, instead of swapping the whole wrap — that's what lets the .fp-* CSS
+// transitions in styles.css actually animate (same DOM node, new attribute
+// value), instead of one frozen frame replacing another every 30s poll.
+// Returns false the moment anything structural doesn't line up (game just
+// went live, ticker just appeared, etc.) — the caller then falls back to a
+// full replaceWith for that one poll.
+function swapFieldTrackerPiece(oldRoot, freshRoot, selector){
+  const oldEl = oldRoot.querySelector(selector);
+  const freshEl = freshRoot.querySelector(selector);
+  if(!oldEl && !freshEl) return true;
+  if(!oldEl || !freshEl) return false;
+  oldEl.outerHTML = freshEl.outerHTML;
+  return true;
+}
+function moveFieldTrackerAttrs(oldSvg, freshSvg, selector, attrs){
+  const oldEl = oldSvg.querySelector(selector);
+  const freshEl = freshSvg.querySelector(selector);
+  if(!oldEl && !freshEl) return true;
+  if(!oldEl || !freshEl) return false;
+  attrs.forEach(a => oldEl.setAttribute(a, freshEl.getAttribute(a)));
+  return true;
+}
+function transplantFieldTracker(oldWrap, freshWrap){
+  const oldSvg = oldWrap.querySelector('svg.nfl-field');
+  const freshSvg = freshWrap.querySelector('svg.nfl-field');
+  if(!oldSvg || !freshSvg) return false;
+  const oldDots = oldSvg.querySelectorAll('.fp-dot');
+  const freshDots = freshSvg.querySelectorAll('.fp-dot');
+  if(oldDots.length !== freshDots.length) return false;
+  for(let i = 0; i < oldDots.length; i++){
+    oldDots[i].setAttribute('cx', freshDots[i].getAttribute('cx'));
+    oldDots[i].setAttribute('cy', freshDots[i].getAttribute('cy'));
+  }
+  if(!moveFieldTrackerAttrs(oldSvg, freshSvg, '.fp-los', ['x1','x2'])) return false;
+  if(!moveFieldTrackerAttrs(oldSvg, freshSvg, '.fp-ball', ['cx'])) return false;
+  if(!moveFieldTrackerAttrs(oldSvg, freshSvg, '.fp-firstdown', ['x1','x2'])) return false;
+  const oldBadgeRect = oldSvg.querySelector('.fp-badge-rect');
+  const freshBadgeRect = freshSvg.querySelector('.fp-badge-rect');
+  if(!oldBadgeRect !== !freshBadgeRect) return false;
+  if(oldBadgeRect && freshBadgeRect){
+    oldBadgeRect.setAttribute('x', freshBadgeRect.getAttribute('x'));
+    oldBadgeRect.setAttribute('width', freshBadgeRect.getAttribute('width'));
+    const oldBadgeText = oldSvg.querySelector('.fp-badge-text');
+    const freshBadgeText = freshSvg.querySelector('.fp-badge-text');
+    oldBadgeText.setAttribute('x', freshBadgeText.getAttribute('x'));
+    oldBadgeText.textContent = freshBadgeText.textContent;
+  }
+  if(!swapFieldTrackerPiece(oldSvg, freshSvg, '.fp-dir-arrow')) return false;
+  if(!swapFieldTrackerPiece(oldSvg, freshSvg, '.fp-possession')) return false;
+  if(!swapFieldTrackerPiece(oldSvg, freshSvg, '.fp-clockbug')) return false;
+  if(!swapFieldTrackerPiece(oldWrap, freshWrap, '.field-scorebox')) return false;
+  if(!swapFieldTrackerPiece(oldWrap, freshWrap, '.field-banner')) return false;
+
+  // Play ticker fades out/in only when the play actually changed — every
+  // other poll just leaves it alone instead of re-fading the same sentence.
+  const oldTicker = oldWrap.querySelector('.field-play-ticker');
+  const freshTicker = freshWrap.querySelector('.field-play-ticker');
+  if(!oldTicker && freshTicker) return false;
+  if(oldTicker && !freshTicker){
+    oldTicker.remove();
+  } else if(oldTicker && freshTicker){
+    if(oldTicker.dataset.playId !== freshTicker.dataset.playId){
+      const text = freshTicker.textContent;
+      const playId = freshTicker.dataset.playId;
+      oldTicker.style.opacity = '0';
+      setTimeout(() => {
+        oldTicker.textContent = text;
+        oldTicker.dataset.playId = playId;
+        oldTicker.style.opacity = '1';
+      }, 200);
+    }
+  }
+  return true;
+}
 
 // ---------- shared NFL position-bucket / injury-status helpers ----------
 // Same grouping the NFL Dashboard's Injury Center already uses — shared here

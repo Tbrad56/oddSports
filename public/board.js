@@ -238,7 +238,14 @@
         if(fieldHost){
           const fresh = document.createElement('div');
           fresh.innerHTML = footballFieldTrackerSvg(sportKey, game, scoreEntry);
-          fieldHost.replaceWith(fresh.firstElementChild);
+          const freshWrap = fresh.firstElementChild;
+          // Transplanting attrs onto the same DOM nodes (instead of always
+          // replacing the whole wrap) is what lets the formation dots/ball/
+          // LOS glide to the new spot via CSS transition — a straight
+          // replaceWith here would just be a new frozen frame every poll.
+          if(!transplantFieldTracker(fieldHost, freshWrap)){
+            fieldHost.replaceWith(freshWrap);
+          }
         }
       }
     });

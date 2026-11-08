@@ -752,6 +752,23 @@
 }
 .nfl-field{display:block; border-radius:6px;}
 .field-note{font-size:11px; color:var(--text-faint); margin-top:8px;}
+/* Formation dots, ball, LOS/first-down lines, and the down badge all glide
+   to their new position on each 30s poll instead of snapping — the illusion
+   of a play happening, not just a redraw. patchScores() in board.js updates
+   these in place (same DOM nodes) specifically so this transition fires. */
+.fp-dot, .fp-los, .fp-ball, .fp-firstdown, .fp-badge-rect, .fp-badge-text{
+  transition: cx 0.9s cubic-bezier(.3,.7,.3,1), cy 0.9s cubic-bezier(.3,.7,.3,1),
+    x1 0.9s cubic-bezier(.3,.7,.3,1), x2 0.9s cubic-bezier(.3,.7,.3,1), x 0.9s cubic-bezier(.3,.7,.3,1);
+}
+@media (prefers-reduced-motion: reduce){
+  .fp-dot, .fp-los, .fp-ball, .fp-firstdown, .fp-badge-rect, .fp-badge-text{ transition:none; }
+}
+.field-play-ticker{
+  margin-top:8px; padding:8px 11px; background:var(--bg-raised); border:1px solid var(--border-soft);
+  border-radius:7px; font-size:12px; color:var(--text-dim); font-style:italic;
+  transition:opacity 0.2s;
+}
+.field-play-ticker::before{content:"\25B8  "; color:var(--live); font-style:normal; font-weight:800;}
 .field-scorebox{
   display:flex; flex-direction:column; gap:6px;
   margin-bottom:10px; padding-bottom:10px; border-bottom:1px solid var(--border-soft);
