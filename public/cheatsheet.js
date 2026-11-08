@@ -307,7 +307,7 @@
         <div style="font-size:11.5px; color:var(--text-dim); margin-bottom:8px;">${escapeHtml(leg.matchup)}</div>`;
       leg.rows.forEach(r=>{
         const mine = r.bookKey === leg.selectedBookKey;
-        html += `<div class="parlay-line"${mine ? ' style="background:rgba(187,0,0,0.08); border-radius:6px; padding-left:6px; padding-right:6px;"' : ''}>
+        html += `<div class="parlay-line"${mine ? ' style="background:rgba(255,31,75,0.08); border-radius:6px; padding-left:6px; padding-right:6px;"' : ''}>
           <div style="display:flex; align-items:center; gap:8px;">
             ${linkedBadge(r.bookKey, r.bookTitle)}
             ${mine ? '<span style="font-size:10.5px; color:var(--accent); font-weight:700;">YOUR PICK</span>' : ''}
