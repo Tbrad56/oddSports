@@ -226,6 +226,21 @@
       const scoreEntry = findScoreFor(state.scores, game);
       const liveDetail = sportKey === 'baseball_mlb' ? findMlbLiveFor(state.mlbLive, game) : null;
       slot.innerHTML = buildScoreBadgeHtml(game, scoreEntry, liveDetail);
+
+      // The field tracker is a live, play-by-play view — if this card is
+      // only ever rebuilt when a game completes, the tracker freezes at
+      // whatever it looked like on first render (often pre-kickoff), which
+      // is exactly the bug reported directly: "field diagram shows, but
+      // looks pre-game." Patch it in place on every poll too, same spirit
+      // as the score badge just above.
+      if(sportKey === 'americanfootball_nfl' || sportKey === 'americanfootball_ncaaf'){
+        const fieldHost = card.querySelector('.nfl-field-wrap');
+        if(fieldHost){
+          const fresh = document.createElement('div');
+          fresh.innerHTML = footballFieldTrackerSvg(sportKey, game, scoreEntry);
+          fieldHost.replaceWith(fresh.firstElementChild);
+        }
+      }
     });
     if(missingCard) renderGames();
   }
