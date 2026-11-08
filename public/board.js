@@ -637,15 +637,22 @@
   //    with a plain-English reason line built from those same stats.
   //  - HR Leaders: top 3 by plain season HR count, regardless of tonight's
   //    matchup — the two lists can (and often do) disagree, which is the point.
-  function buildTopHittersHtml(game){
+  // Shared by HR Watch and Bets to Watch below — same pool, no second fetch
+  // or recomputation needed just because two different panels want it.
+  function hrWatchPoolFor(game){
     const data = state.hrCache[game.id];
-    if(!data || !data.matched) return '';
+    if(!data || !data.matched) return { all: [], pool: [] };
     const withTeam = (batters, team, pitcher) => (batters || []).map(b=>({...b, team, pitcher}));
     const all = [
       ...withTeam(data.away.batters, game.away_team, data.home.pitcher),
       ...withTeam(data.home.batters, game.home_team, data.away.pitcher)
     ];
     const pool = all.map(b => ({ b, rating: hrWatchRating(b, b.pitcher, game) })).filter(x => x.rating);
+    return { all, pool };
+  }
+
+  function buildTopHittersHtml(game){
+    const { all, pool } = hrWatchPoolFor(game);
     if(!pool.length) return '';
     const watchTop = pool.slice().sort((a,b)=>b.rating.score-a.rating.score).slice(0,3);
     const leaders = all.filter(b => b.seasonHr !== null && b.seasonHr !== undefined).sort((a,b)=>b.seasonHr-a.seasonHr).slice(0,3);
@@ -669,6 +676,36 @@
     </div>` : '';
 
     return `<div class="hr-panels-row">${watchHtml}${leadersHtml}</div>`;
+  }
+
+  // "Bets to Watch" — the same real Value Finder / HR Watch / Auto Game Read
+  // signals every other panel already computes, blended by bestBetsForGame()
+  // (common.js) into one ranked list instead of leaving them in separate
+  // panels. MLB gets the full pool for free — HR Watch is already
+  // auto-fetched for every card (fetchTopHitters), same scanGame Value
+  // Finder already runs for the whole board. NFL/NCAAF only add Auto Game
+  // Read or a player Watch pick once Full Breakdown or Player Form has
+  // actually been opened for that game — never fetched just to fill this
+  // list, same "no quota just to populate a slot" rule Get Props' MLB edges
+  // already follow.
+  function buildBestBetsHtml(game, sportKey){
+    const edgeCandidates = scanGame(game, sportKey);
+    let picks;
+    if(sportKey === 'baseball_mlb'){
+      const { pool } = hrWatchPoolFor(game);
+      const propsAnalysis = state.propsCache[game.id] && state.propsCache[game.id].data;
+      picks = mlbBestBetCandidates(edgeCandidates, pool, propsAnalysis);
+    } else if(sportKey === 'americanfootball_nfl' || sportKey === 'americanfootball_ncaaf'){
+      const breakdown = state.nflBreakdown[game.id];
+      const gameReadSignal = breakdown && breakdown.matchup ? nflReadSignal(breakdown.matchup) : null;
+      const watchPicks = (breakdown && breakdown.matchup && breakdown.rosters && breakdown.playerForm)
+        ? nflWatchBoard(breakdown.matchup, breakdown.rosters, breakdown.playerForm)
+        : [];
+      picks = teamSportBestBetCandidates(edgeCandidates, gameReadSignal, watchPicks);
+    } else {
+      picks = teamSportBestBetCandidates(edgeCandidates, null, []);
+    }
+    return bestBetsHtml(picks);
   }
 
   function buildStartingPitchersHtml(game){
@@ -1106,6 +1143,13 @@
       scoreSlot.className = 'live-score-slot';
       scoreSlot.innerHTML = buildScoreBadgeHtml(game, scoreEntry, liveDetail);
       card.appendChild(scoreSlot);
+
+      const bestBetsHtmlStr = buildBestBetsHtml(game, sportKey);
+      if(bestBetsHtmlStr){
+        const bb = document.createElement('div');
+        bb.innerHTML = bestBetsHtmlStr;
+        card.appendChild(bb.firstElementChild);
+      }
 
       // MLB: stadium weather strip, then both starting pitchers with photos
       if(sportKey === 'baseball_mlb'){

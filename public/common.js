@@ -1276,7 +1276,26 @@ function bestBetsForGame(candidates){
   return candidates
     .filter(Boolean)
     .sort((a, b) => SIGNAL_TIER[a.type] - SIGNAL_TIER[b.type])
-    .slice(0, 3);
+    .slice(0, 5);
+}
+
+// Shared renderer — same shape (type/summary) regardless of which sport or
+// which adapter produced the list, so one function renders both MLB's and
+// NFL's "bets to watch." Returns '' (nothing) rather than an empty-state
+// message when there's genuinely nothing — an empty section just doesn't
+// show, same as HR Watch before lineups post.
+const SIGNAL_TYPE_LABEL = { edge: 'Price edge', propEdge: 'Model edge', playerRating: 'Player watch', gameRead: 'Matchup read' };
+function bestBetsHtml(picks){
+  if(!picks.length) return '';
+  return `<div class="hr-panel" style="margin-top:0;">
+    <div class="hr-title">Bets to Watch</div>
+    ${picks.map(p => `<div class="hr-row">
+      <div class="hr-top">
+        <div class="hitter-name">${escapeHtml(SIGNAL_TYPE_LABEL[p.type] || p.type)}</div>
+      </div>
+      <div class="hr-why">${escapeHtml(p.summary)}</div>
+    </div>`).join('')}
+  </div>`;
 }
 
 // MLB candidate list: Value Finder edges (this game only), HR Watch's
