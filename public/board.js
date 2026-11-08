@@ -136,7 +136,7 @@
     area.querySelectorAll('.value-row').forEach((row, i)=>{
       row.querySelector('.value-add-btn').addEventListener('click', ()=>{
         const c = candidates[i];
-        addLegToSlip({ id: Date.now()+Math.random(), matchup: c.matchup, side: c.side, rows: c.rows,
+        addLegToSlip({ id: Date.now()+Math.random(), matchup: c.matchup, side: c.side, rows: c.rows, sport: c.sport,
           meta: { sport: c.sport, market: c.meta.market, selection: c.meta.selection, point: c.meta.point } });
         trackBet({ sport: c.sport, homeTeam: c.homeTeam, awayTeam: c.awayTeam, commenceTime: c.commenceTime,
           matchup: c.matchup, market: c.meta.market, selection: c.meta.selection, point: c.meta.point });
@@ -1020,7 +1020,7 @@
     if(slipBtn){
       const prop = state.propRegistry[slipBtn.dataset.propId];
       if(!prop) return;
-      addLegToSlip({ id: Date.now()+Math.random(), matchup: prop.matchup, side: prop.side, rows: prop.rows });
+      addLegToSlip({ id: Date.now()+Math.random(), matchup: prop.matchup, side: prop.side, rows: prop.rows, sport: prop.sport });
       trackProp({ sport: prop.sport, player: prop.player, market: prop.market, line: prop.line, side: prop.propSide,
         matchup: prop.matchup, homeTeam: prop.homeTeam, awayTeam: prop.awayTeam, commenceTime: prop.commenceTime });
       showToast('Added ✓');
@@ -1203,7 +1203,7 @@
           // No meta.sport on F5 legs — F5 markets aren't in the bulk odds
           // fetch (see the comment above), so there's no market key Slip
           // could use to refresh them later; they just stay a frozen price.
-          addLegToSlip({ id: Date.now()+Math.random(), matchup: `${awayTeam} @ ${homeTeam}`, side, rows,
+          addLegToSlip({ id: Date.now()+Math.random(), matchup: `${awayTeam} @ ${homeTeam}`, side, rows, sport: sportKey,
             meta: (meta && !suffix) ? { sport: sportKey, market: meta.market, selection: meta.selection, point: meta.point } : undefined });
           // F5 (first-5-innings) legs aren't tracked — grading needs the
           // through-5 score, which ESPN's scoreboard doesn't expose, only the
@@ -1307,6 +1307,7 @@
               matchup: `${game.away_team} @ ${game.home_team}`,
               side: sideLabel,
               rows: rows,
+              sport: sportKey,
               // F5 (marketKey !== 'h2h') isn't in the bulk odds fetch, so
               // there's nothing Slip could refresh it against later.
               meta: marketKey === 'h2h' ? { sport: sportKey, market: 'h2h', selection: team, point: null } : undefined

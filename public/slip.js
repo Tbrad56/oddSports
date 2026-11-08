@@ -514,12 +514,46 @@
     return changed;
   }
 
+  // Once a game has started, its pre-game line is gone — the leg can't
+  // honestly be bet anymore. Checked against the same free ESPN scores feed
+  // that already powers the live score badges and field tracker elsewhere
+  // (fetchScoresFor, common.js) — no API quota involved, unlike the odds
+  // refresh above. A leg only gets checked if it carries a `sport` (every
+  // "+ Slip" button sets this now); older legs saved before this existed
+  // just get left alone rather than silently dropped on a guess.
+  async function removeStaleLegs(){
+    const slip = getSlip();
+    const sports = [...new Set(slip.map(l => l.sport || (l.meta && l.meta.sport)).filter(Boolean))];
+    if(!sports.length) return [];
+    const scoresBySport = {};
+    await Promise.all(sports.map(async sport => {
+      try{ scoresBySport[sport] = await fetchScoresFor(sport); }
+      catch(e){ scoresBySport[sport] = []; }
+    }));
+    const removed = [];
+    const keep = slip.filter(leg => {
+      const sport = leg.sport || (leg.meta && leg.meta.sport);
+      if(!sport) return true;
+      const entry = (scoresBySport[sport] || []).find(s => leg.matchup === `${s.away_team} @ ${s.home_team}`);
+      if(entry && entry.scores !== null){ removed.push(leg); return false; }
+      return true;
+    });
+    if(removed.length) saveSlip(keep);
+    return removed;
+  }
+
   renderSlip();
   renderManual();
   renderSavedBets();
 
   // Re-renders only if a leg's price actually moved since it was added.
   refreshSlipOdds().then(changed => { if(changed) renderSlip(); }).catch(()=>{});
+
+  removeStaleLegs().then(removed => {
+    if(!removed.length) return;
+    renderSlip();
+    showToast(`Removed ${removed.length} leg${removed.length === 1 ? '' : 's'} — game already started`);
+  }).catch(()=>{});
 
   // fill the ticker quietly, cache-only — never spends a fresh credit just to decorate this page
   fetchOddsFor(getSport(), {cacheOnly:true}).then(r=>updateTicker(r.games)).catch(()=>{});

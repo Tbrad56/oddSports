@@ -1346,9 +1346,18 @@ function espnTeamLogoUrl(sportKey, teamId){
 // line of scrimmage, possession) instead of wind direction. Pre-kickoff (no
 // situation yet) it's just the bare field with a kickoff-time note — markers
 // only appear once the game is actually live.
-// `yardLine` (0=away goal → 100=home goal, left→right) and the down=-1/
-// distance=-1 "between plays" sentinel were both confirmed against real
-// live NCAAF games (Alabama@Kentucky, Arizona@BYU, 2026-09-12).
+// `yardLine` is 0=HOME goal → 100=AWAY goal — confirmed directly against
+// ESPN's own raw data (a drive's `start.yardLine: 70` carried the text
+// "CIN 30" for a game where Cincinnati was the away team, i.e. 30 yards
+// from the away goal = 70 on this scale). An earlier version of this had
+// the scale backwards (0=away→100=home), which silently mirrored every
+// ball position and drive direction left-right — caught when the on-field
+// direction stopped matching the real game. The away end zone sits at the
+// LEFT of the SVG (x≈0-24) and home at the RIGHT (x≈276-300), so a yardLine
+// of 100 (away goal) must map to the LEFT and 0 (home goal) to the RIGHT —
+// i.e. x decreases as yardLine increases. The down=-1/distance=-1 "between
+// plays" sentinel was confirmed separately against real live NCAAF games
+// (Alabama@Kentucky, Arizona@BYU, 2026-09-12) and is unaffected by this fix.
 function footballFieldTrackerSvg(sportKey, game, scoreEntry){
   const sit = scoreEntry && scoreEntry.situation;
   const started = !!sit;
@@ -1356,7 +1365,7 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
   let losMark = '', ballMark = '', firstDownMark = '', dirArrow = '', possessionMark = '';
   let badgeX = 150;
   if(live && sit.yardLine != null && sit.yardLine >= 0 && sit.yardLine <= 100){
-    const x = 24 + (sit.yardLine / 100) * 252;
+    const x = 276 - (sit.yardLine / 100) * 252;
     losMark = `<line x1="${x.toFixed(1)}" y1="28" x2="${x.toFixed(1)}" y2="132" stroke="#F5D400" stroke-width="2"/>`;
     ballMark = `<ellipse cx="${x.toFixed(1)}" cy="80" rx="5" ry="3.2" fill="#7B4A22" stroke="#241609" stroke-width="1"/>`;
     // Possession drives toward the OPPONENT's goal: home team → toward the
