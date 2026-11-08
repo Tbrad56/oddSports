@@ -583,6 +583,7 @@ test('scores: served free from ESPN scoreboard, normalized to the legacy shape',
   assert.deepEqual(res.body, [{
     id: 'e1', commence_time: '2026-07-19T23:00Z', completed: false,
     home_team: 'Pittsburgh Pirates', away_team: 'Milwaukee Brewers',
+    home_abbrev: null, away_abbrev: null,
     scores: [
       { name: 'Pittsburgh Pirates', score: '3' },
       { name: 'Milwaukee Brewers', score: '5' }

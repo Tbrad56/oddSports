@@ -1918,6 +1918,8 @@ function createApp({
         completed: !!(ev.status && ev.status.type && ev.status.type.completed),
         home_team: ((comp.competitors || []).find(c => c.homeAway === 'home') || {}).team?.displayName || '',
         away_team: ((comp.competitors || []).find(c => c.homeAway === 'away') || {}).team?.displayName || '',
+        home_abbrev: ((comp.competitors || []).find(c => c.homeAway === 'home') || {}).team?.abbreviation || null,
+        away_abbrev: ((comp.competitors || []).find(c => c.homeAway === 'away') || {}).team?.abbreviation || null,
         scores: started ? (comp.competitors || []).map(c => ({
           name: (c.team && c.team.displayName) || '',
           score: c.score != null ? String(c.score) : ''

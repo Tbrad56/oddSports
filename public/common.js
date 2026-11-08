@@ -1377,6 +1377,11 @@ function espnTeamLogoUrl(sportKey, teamId){
 // i.e. x decreases as yardLine increases. The down=-1/distance=-1 "between
 // plays" sentinel was confirmed separately against real live NCAAF games
 // (Alabama@Kentucky, Arizona@BYU, 2026-09-12) and is unaffected by this fix.
+function endZoneLabel(name, abbrev){
+  if(abbrev) return abbrev.toUpperCase();
+  if(!name) return '';
+  return name.trim().split(/\s+/).pop().slice(0, 4).toUpperCase();
+}
 function footballFieldTrackerSvg(sportKey, game, scoreEntry){
   const sit = scoreEntry && scoreEntry.situation;
   const started = !!sit;
@@ -1500,6 +1505,17 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
       </div>`;
     }
   }
+  // End zone labels: away sits at the LEFT (x 0-24), home at the RIGHT
+  // (x 276-300) — same side convention as the yardLine scale above. Rotated
+  // -90deg so the team name reads bottom-to-top along the zone, like real
+  // end zone lettering, instead of being squeezed sideways into 24px.
+  const awayLabel = endZoneLabel(game.away_team, scoreEntry && scoreEntry.away_abbrev);
+  const homeLabel = endZoneLabel(game.home_team, scoreEntry && scoreEntry.home_abbrev);
+  const endZoneText = (label, cx) => label
+    ? `<text x="${cx}" y="80" text-anchor="middle" dominant-baseline="middle" transform="rotate(-90 ${cx} 80)" font-size="13" font-weight="800" letter-spacing="1.5" fill="#E8F0EA" opacity="0.75">${escapeHtml(label)}</text>`
+    : '';
+  const awayEndZoneLabel = endZoneText(awayLabel, 12);
+  const homeEndZoneLabel = endZoneText(homeLabel, 288);
   return `<div class="nfl-field-wrap">
     ${scorebox}
     ${banner}
@@ -1507,6 +1523,8 @@ function footballFieldTrackerSvg(sportKey, game, scoreEntry){
       <rect x="0" y="28" width="24" height="104" fill="#265C33" stroke="#1C3F24" stroke-width="1.5"/>
       <rect x="276" y="28" width="24" height="104" fill="#265C33" stroke="#1C3F24" stroke-width="1.5"/>
       <rect x="24" y="28" width="252" height="104" fill="#2F6B3C" stroke="#1C3F24" stroke-width="2"/>
+      ${awayEndZoneLabel}
+      ${homeEndZoneLabel}
       ${yardTicks}
       ${yardNumbers}
       ${homeLogoMark}
