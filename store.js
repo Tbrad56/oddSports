@@ -69,6 +69,11 @@ function computeRecord(records){
   const scored = graded.filter(r => r.result === 'hit' || r.result === 'miss');
   const hits = scored.filter(r => r.result === 'hit').length;
   const avg = (rs, f) => rs.length ? rs.reduce((a, r) => a + f(r), 0) / rs.length : null;
+  // Only prop picks (Get Props' Poisson model) carry a modelP — plain slip
+  // bets (moneyline/spread/total) have no "model confidence" concept, so
+  // calibration/bucket stats are computed over the modelP-bearing subset only,
+  // never averaged in with bets (that would silently produce NaN).
+  const withModel = scored.filter(r => typeof r.modelP === 'number');
   const summary = {
     graded: graded.length,
     pending: records.length - graded.length,
@@ -77,24 +82,24 @@ function computeRecord(records){
     pushes: graded.filter(r => r.result === 'push').length,
     voids: graded.filter(r => r.result === 'void').length,
     hitRate: scored.length ? hits / scored.length : null,
-    avgModelP: avg(scored, r => r.modelP)
+    avgModelP: withModel.length ? avg(withModel, r => r.modelP) : null
   };
-  summary.calibrationGap = summary.hitRate === null ? null : summary.avgModelP - summary.hitRate;
+  summary.calibrationGap = summary.hitRate === null || summary.avgModelP === null ? null : summary.avgModelP - summary.hitRate;
 
   const bucketDefs = [['0-50', 0, 0.5], ['50-60', 0.5, 0.6], ['60-70', 0.6, 0.7], ['70+', 0.7, 1.01]];
   const buckets = bucketDefs.map(([range, lo, hi]) => {
-    const rs = scored.filter(r => r.modelP >= lo && r.modelP < hi);
+    const rs = withModel.filter(r => r.modelP >= lo && r.modelP < hi);
     const h = rs.filter(r => r.result === 'hit').length;
     return { range, n: rs.length, avgModelP: avg(rs, r => r.modelP), actualRate: rs.length ? h / rs.length : null };
   });
 
   const markets = {};
   scored.forEach(r => {
-    const m = markets[r.market] || (markets[r.market] = { market: r.market, n: 0, hits: 0, sumP: 0 });
-    m.n++; m.sumP += r.modelP; if (r.result === 'hit') m.hits++;
+    const m = markets[r.market] || (markets[r.market] = { market: r.market, n: 0, hits: 0, sumP: 0, withModel: 0 });
+    m.n++; if (typeof r.modelP === 'number') { m.sumP += r.modelP; m.withModel++; } if (r.result === 'hit') m.hits++;
   });
   const byMarket = Object.values(markets).map(m => ({
-    market: m.market, n: m.n, hitRate: m.hits / m.n, avgModelP: m.sumP / m.n
+    market: m.market, n: m.n, hitRate: m.hits / m.n, avgModelP: m.withModel ? m.sumP / m.withModel : null
   }));
 
   const recent = graded.slice()

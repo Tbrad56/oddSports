@@ -22,14 +22,86 @@
     return filterToMyBooks(leg.rows, r=>r.bookKey);
   }
   // Resolves (and persists, if unset) which book a leg is placed with.
-  function selectedRowFor(leg){
+  // First pick ever: default to whichever book best covers the WHOLE slip
+  // (the same ranking the "Parlay at" chips use), not this leg's own best
+  // price in isolation — that in-isolation default was exactly what
+  // fragmented multi-leg slips across different books before you ever got
+  // a say. Falls back to this leg's best price only when no book in common
+  // with the rest of the slip exists (or it's the only leg).
+  function selectedRowFor(leg, slip){
     const pickList = pickListFor(leg);
     let row = pickList.find(r=>r.bookKey===leg.selectedBookKey);
     if(!row){
-      row = pickList[0];
+      const coverage = slip ? computeBookCoverage(slip) : [];
+      const shared = coverage.find(c => pickList.some(r=>r.bookKey===c.bookKey));
+      row = (shared && pickList.find(r=>r.bookKey===shared.bookKey)) || pickList[0];
       updateLegBook(leg.id, row.bookKey);
     }
     return row;
+  }
+
+  // Every book that quotes at least one leg, ranked so books covering EVERY
+  // leg (a real single-book parlay) come first — but a book missing only a
+  // leg or two still shows, ranked by how much it covers, so there's a
+  // useful default even when nothing covers 100%. Checks every book that
+  // actually appears on the slip, not a hardcoded shortlist of two or three.
+  // Among books with equal coverage, FanDuel wins, then DraftKings, then
+  // best combined price — those two are the default/majority preference,
+  // not just whichever happens to price a hair better.
+  const BOOK_PRIORITY = { fanduel: 0, draftkings: 1 };
+  function computeBookCoverage(slip){
+    const bookKeys = new Set();
+    slip.forEach(leg => pickListFor(leg).forEach(r => bookKeys.add(r.bookKey)));
+    const coverage = [...bookKeys].map(bookKey=>{
+      let count = 0, decimal = 1;
+      slip.forEach(leg=>{
+        const row = pickListFor(leg).find(r=>r.bookKey===bookKey);
+        if(row){ count++; decimal *= americanToDecimal(row.odds); }
+      });
+      return { bookKey, count, decimal };
+    });
+    coverage.sort((a,b)=>{
+      if(b.count !== a.count) return b.count - a.count;
+      const pa = BOOK_PRIORITY[a.bookKey] ?? 99, pb = BOOK_PRIORITY[b.bookKey] ?? 99;
+      if(pa !== pb) return pa - pb;
+      return b.decimal - a.decimal;
+    });
+    return coverage;
+  }
+
+  // One-tap "combine everything at this book" instead of reopening each
+  // leg's dropdown by hand. Only shown for 2+ legs, since one leg is never
+  // a parlay in the first place.
+  function renderParlayPicker(slip){
+    const host = document.getElementById('parlayPicker');
+    if(!host) return;
+    if(slip.length < 2){ host.innerHTML = ''; return; }
+    const coverage = computeBookCoverage(slip);
+    if(!coverage.length){ host.innerHTML = ''; return; }
+    const currentBooks = new Set(slip.map(l=>l.selectedBookKey));
+    const allSameBook = currentBooks.size === 1 ? [...currentBooks][0] : null;
+    host.innerHTML = `<div class="parlay-picker-label">Parlay at</div>
+      <div class="parlay-picker">${coverage.map(c=>{
+        const style = bookStyleFor(c.bookKey);
+        const name = style ? style.name : c.bookKey;
+        const full = c.count === slip.length;
+        const active = allSameBook === c.bookKey;
+        const priceLabel = fmtAmerican(decimalToAmerican(c.decimal));
+        const title = full ? `Covers all ${slip.length} legs at ${priceLabel}` : `Covers ${c.count} of ${slip.length} legs (combined ${priceLabel} for those) — the rest stay on their own book`;
+        return `<button type="button" class="parlay-chip${active?' active':''}${full?'':' partial'}" data-book-key="${escapeHtml(c.bookKey)}" title="${escapeHtml(title)}">
+          <span class="parlay-chip-name">${escapeHtml(name)}${full?'':` <span class="parlay-chip-count">${c.count}/${slip.length}</span>`}</span>
+          <span class="parlay-chip-odds">${escapeHtml(priceLabel)}</span>
+        </button>`;
+      }).join('')}</div>`;
+    host.querySelectorAll('.parlay-chip').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const bookKey = btn.dataset.bookKey;
+        slip.forEach(leg=>{
+          if(pickListFor(leg).some(r=>r.bookKey===bookKey)) updateLegBook(leg.id, bookKey);
+        });
+        renderSlip();
+      });
+    });
   }
 
   function renderSlip(){
@@ -40,10 +112,12 @@
     countEl.textContent = slip.length + ' leg' + (slip.length===1?'':'s');
     legsEl.innerHTML = '';
     emptyEl.style.display = slip.length ? 'none' : 'block';
+    document.getElementById('saveBetBtn').disabled = !slip.length;
+    renderParlayPicker(slip);
 
     slip.forEach(leg=>{
       const pickList = pickListFor(leg);
-      const selected = selectedRowFor(leg);
+      const selected = selectedRowFor(leg, slip);
       const div = document.createElement('div');
       div.className = 'leg-item';
       div.innerHTML = `
@@ -54,15 +128,26 @@
           </div>
           <button class="remove-btn" title="Remove">×</button>
         </div>
-        <label class="leg-book-row">
-          <span class="leg-book-label">Book</span>
-          <select class="leg-book-select">
-            ${pickList.map(r=>{
-              const style = bookStyleFor(r.bookKey);
-              return `<option value="${escapeHtml(r.bookKey)}" ${r.bookKey===selected.bookKey?'selected':''}>${escapeHtml(style ? style.name : r.bookTitle)} · ${fmtAmerican(r.odds)}</option>`;
-            }).join('')}
-          </select>
-        </label>
+        <div class="leg-book-tabs" role="tablist" aria-label="Book">
+          ${pickList.map(r=>{
+            const style = bookStyleFor(r.bookKey);
+            const active = r.bookKey === selected.bookKey;
+            return `<button type="button" class="leg-book-tab${active?' active':''}" data-book-key="${escapeHtml(r.bookKey)}" role="tab" aria-selected="${active}">
+              <span>${escapeHtml(style ? style.name : r.bookTitle)}</span>
+              <span class="leg-book-tab-odds">${fmtAmerican(r.odds)}</span>
+            </button>`;
+          }).join('')}
+        </div>
+        ${(()=>{
+          if(!leg.pendingRows) return '';
+          const freshRow = leg.pendingRows.find(r=>r.bookKey===selected.bookKey);
+          if(!freshRow) return '';
+          const style = bookStyleFor(selected.bookKey);
+          return `<div class="leg-odds-moved">
+            <span>Price moved at ${escapeHtml(style ? style.name : selected.bookTitle)}: ${fmtAmerican(selected.odds)} → <b>${fmtAmerican(freshRow.odds)}</b></span>
+            <button type="button" class="ghost leg-update-btn">Update</button>
+          </div>`;
+        })()}
       `;
       div.querySelector('.remove-btn').addEventListener('click', ()=>{
         div.classList.add('removing');
@@ -71,10 +156,38 @@
           renderSlip();
         }, 200);
       });
-      div.querySelector('.leg-book-select').addEventListener('change', (e)=>{
-        updateLegBook(leg.id, e.target.value);
-        renderParlay();
+      div.querySelectorAll('.leg-book-tab').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          updateLegBook(leg.id, btn.dataset.bookKey);
+          div.querySelectorAll('.leg-book-tab').forEach(b=>{
+            const isActive = b === btn;
+            b.classList.toggle('active', isActive);
+            b.setAttribute('aria-selected', String(isActive));
+          });
+          // Switching tabs means whatever "price moved" notice was pinned to
+          // the old selection no longer applies to what's now showing —
+          // drop it without a full re-render, same lightweight update as
+          // the tab switch itself.
+          const s = getSlip();
+          const l = s.find(x=>x.id===leg.id);
+          if(l && l.pendingRows){
+            delete l.pendingRows;
+            saveSlip(s);
+            const notice = div.querySelector('.leg-odds-moved');
+            if(notice) notice.remove();
+          }
+          renderParlay();
+        });
       });
+      const updateBtn = div.querySelector('.leg-update-btn');
+      if(updateBtn){
+        updateBtn.addEventListener('click', ()=>{
+          const s = getSlip();
+          const l = s.find(x=>x.id===leg.id);
+          if(l && l.pendingRows){ l.rows = l.pendingRows; delete l.pendingRows; saveSlip(s); }
+          renderSlip();
+        });
+      }
       legsEl.appendChild(div);
     });
 
@@ -139,7 +252,7 @@
     const area = document.getElementById('parlayArea');
     if(slip.length < 1){ area.innerHTML=''; return; }
 
-    const selectedRows = slip.map(selectedRowFor);
+    const selectedRows = slip.map(leg => selectedRowFor(leg, slip));
 
     if(slip.length === 1){
       const row = selectedRows[0];
@@ -213,7 +326,7 @@
     const slip = getSlip();
     const lines = [`${bookName} parlay slip:`];
     slip.forEach(leg=>{
-      const row = leg.rows.find(r=>r.bookKey===bookKey) || selectedRowFor(leg);
+      const row = leg.rows.find(r=>r.bookKey===bookKey) || selectedRowFor(leg, slip);
       lines.push(`• ${leg.side} (${leg.matchup}) — ${fmtAmerican(row.odds)}`);
     });
     return lines;
@@ -271,9 +384,137 @@
     staggerIn(area, 30);
   }
 
+  // ---------- saved bets ----------
+  // A saved leg's rows/selectedBookKey are a frozen snapshot from when it was
+  // saved — no My-Books re-filtering, no writing back to the active slip.
+  // Purely for display until (if) it's loaded back into the active slip.
+  function bestRowForSavedLeg(leg){
+    return (leg.rows || []).find(r=>r.bookKey===leg.selectedBookKey) || leg.rows[0] || null;
+  }
+  function fmtSavedDate(ts){
+    const d = new Date(ts);
+    const sameYear = d.getFullYear() === new Date().getFullYear();
+    return d.toLocaleDateString(undefined, {month:'short', day:'numeric', year: sameYear ? undefined : 'numeric'})
+      + ' · ' + d.toLocaleTimeString(undefined, {hour:'numeric', minute:'2-digit'});
+  }
+  function renderSavedBets(){
+    const saved = getSavedBets();
+    const area = document.getElementById('savedBetsArea');
+    const countEl = document.getElementById('savedBetsCount');
+    countEl.textContent = saved.length ? saved.length + ' saved' : '';
+    if(!saved.length){
+      area.innerHTML = `<div style="color:var(--text-faint); font-size:12.5px;">Bets you save from the slip above show up here — come back anytime to review or load one back in.</div>`;
+      return;
+    }
+    area.innerHTML = '';
+    saved.forEach(bet=>{
+      const card = document.createElement('div');
+      card.className = 'leg-item';
+      card.style.marginBottom = '10px';
+      const legsHtml = bet.legs.map(leg=>{
+        const row = bestRowForSavedLeg(leg);
+        const style = row ? bookStyleFor(row.bookKey) : null;
+        return `<div class="parlay-line" style="padding:4px 0;">
+          <div style="min-width:0;">
+            <div class="leg-title" style="font-size:12.5px;">${escapeHtml(leg.side)}</div>
+            <div class="leg-sub">${escapeHtml(leg.matchup)}</div>
+          </div>
+          ${row ? `<span class="odds" style="margin-left:auto; display:flex; align-items:center; gap:6px;">${escapeHtml(style ? style.name : row.bookTitle)} ${fmtAmerican(row.odds)}</span>` : ''}
+        </div>`;
+      }).join('');
+      card.innerHTML = `
+        <div class="leg-top">
+          <div>
+            <div class="leg-title">${bet.legs.length} leg${bet.legs.length===1?'':'s'}</div>
+            <div class="leg-sub">Saved ${escapeHtml(fmtSavedDate(bet.savedAt))}</div>
+          </div>
+          <button class="remove-btn" title="Delete">×</button>
+        </div>
+        ${legsHtml}
+        <button type="button" class="ghost load-saved-btn" style="width:100%; margin-top:8px; font-size:11.5px; padding:6px 10px;">↩ Load into Slip</button>
+      `;
+      card.querySelector('.remove-btn').addEventListener('click', ()=>{
+        card.classList.add('removing');
+        setTimeout(()=>{
+          deleteSavedBet(bet.id);
+          renderSavedBets();
+        }, 200);
+      });
+      card.querySelector('.load-saved-btn').addEventListener('click', ()=>{
+        loadSavedBetIntoSlip(bet.id);
+        showToast('Loaded into Slip ✓');
+        renderSlip();
+        renderSavedBets();
+      });
+      area.appendChild(card);
+    });
+    staggerIn(area, 30);
+  }
+
+  document.getElementById('saveBetBtn').addEventListener('click', ()=>{
+    if(!saveCurrentSlipAsBet()) return;
+    showToast('Bet saved ✓');
+    renderSlip();
+    renderSavedBets();
+  });
+
+  // Board-added legs carry `meta` (sport/market/selection/point) — enough to
+  // look the same outcome back up in a fresh odds fetch instead of trusting
+  // whatever price was frozen in when "+ Slip" was clicked, which can be
+  // hours or days stale if the leg's just been sitting here. Cache-only,
+  // same reasoning as the ticker fetch below — this never spends a fresh
+  // credit, just picks up whatever's already warmed the cache (e.g. from
+  // using Board). Prop legs have no meta and are left as-is.
+  // Board-added legs (moneyline/spread/total, via `meta`) get checked against
+  // the cached feed on load. A price change on a book you're not even looking
+  // at gets folded in silently — nothing about that affects what you'd see or
+  // place. But if the book your leg's tab is actually sitting on moved, this
+  // doesn't just swap the number out from under you (that's what the parlay
+  // handoff bug in section 8 was, minus the crash) — it holds the new price
+  // as `leg.pendingRows` and renderSlip() surfaces it as an explicit "price
+  // moved, Update?" on that leg, same idea as FanDuel's own "odds have
+  // changed, accept?" prompt on a real bet slip.
+  async function refreshSlipOdds(){
+    const slip = getSlip();
+    const sports = [...new Set(slip.filter(l=>l.meta).map(l=>l.meta.sport))];
+    if(!sports.length) return false;
+    const gamesBySport = {};
+    await Promise.all(sports.map(async sport=>{
+      try{ gamesBySport[sport] = (await fetchOddsFor(sport, {cacheOnly:true})).games; }
+      catch(e){ gamesBySport[sport] = []; }
+    }));
+    let changed = false;
+    slip.forEach(leg=>{
+      if(!leg.meta) return;
+      const games = gamesBySport[leg.meta.sport] || [];
+      const game = games.find(g => leg.matchup === `${g.away_team} @ ${g.home_team}`);
+      if(!game) return;
+      const pool = poolFor(game.bookmakers);
+      const freshRows = leg.meta.market === 'h2h'
+        ? rowsFor(pool, leg.meta.market, leg.meta.selection)
+        : modalPointRows(pool, leg.meta.market, leg.meta.selection);
+      if(!freshRows.length) return;
+      const oldRow = leg.rows.find(r => r.bookKey === leg.selectedBookKey);
+      const freshRow = freshRows.find(r => r.bookKey === leg.selectedBookKey);
+      if(oldRow && freshRow && oldRow.odds !== freshRow.odds){
+        leg.pendingRows = freshRows;
+      } else {
+        leg.rows = freshRows;
+        delete leg.pendingRows;
+      }
+      changed = true;
+    });
+    if(changed) saveSlip(slip);
+    return changed;
+  }
+
   renderSlip();
   renderManual();
+  renderSavedBets();
 
-  // fill the ticker quietly (server cache makes this cheap); ignore failures
-  fetchOddsFor(getSport()).then(r=>updateTicker(r.games)).catch(()=>{});
+  // Re-renders only if a leg's price actually moved since it was added.
+  refreshSlipOdds().then(changed => { if(changed) renderSlip(); }).catch(()=>{});
+
+  // fill the ticker quietly, cache-only — never spends a fresh credit just to decorate this page
+  fetchOddsFor(getSport(), {cacheOnly:true}).then(r=>updateTicker(r.games)).catch(()=>{});
 })();

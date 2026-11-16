@@ -108,6 +108,26 @@
     area.innerHTML = html;
   }
 
+  // One dot per recent game, colored by that game's headline outcome — a
+  // quick "how has he actually been hitting" read that's independent of
+  // whichever specific prop line is on screen (unlike the bar-strip below,
+  // which is scoped to just this line).
+  const OUTCOME_LABEL = { HR:'HR', XBH:'XBH', '1B':'1B', BB:'BB', OUT:'—' };
+  function recentFormHtml(outcomes){
+    const ordered = outcomes.slice().reverse(); // oldest -> newest, matches bar-strip
+    const dots = ordered.map(code=>
+      `<div class="form-dot form-${code.toLowerCase()}" title="${OUTCOME_LABEL[code] || code}">${OUTCOME_LABEL[code] || ''}</div>`
+    ).join('');
+    return `<div class="form-strip">${dots}</div>
+      <div class="form-legend">
+        <span class="form-legend-dot form-hr"></span>HR
+        <span class="form-legend-dot form-xbh"></span>XBH
+        <span class="form-legend-dot form-1b"></span>1B
+        <span class="form-legend-dot form-bb"></span>BB
+        <span class="form-legend-dot form-out"></span>No contact
+      </div>`;
+  }
+
   function flagChips(flags){
     const labels = { thin_sample:['warn','Thin sample'], check_news:['warn','Check news'], one_sided:['info','One-sided line'], lineup_unconfirmed:['info','Lineup unconfirmed'] };
     return flags.map(f=>{
@@ -160,6 +180,7 @@
             recent ${a.recentRate.toFixed(2)} / season ${a.seasonRate.toFixed(2)}
             ${a.trend==='up' ? '▲ trending up' : a.trend==='down' ? '▼ trending down' : '— flat'}
           </div>
+          ${a.recentOutcomes ? recentFormHtml(a.recentOutcomes) : ''}
           <div class="bar-strip">${bars}</div>
           <div style="font-size:10.5px; color:var(--text-faint);">Last ${a.windowSize} games, oldest → newest. Green = cleared the line.</div>
         </td></tr>`;

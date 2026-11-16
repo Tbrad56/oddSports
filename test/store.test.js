@@ -9,10 +9,19 @@ function tmpDir(){ return fs.mkdtempSync(path.join(os.tmpdir(), 'lw-store-')); }
 function pick(over = {}){
   return {
     id: 'ev1|P One|batter_hits|0.5|Over', ts: '2026-07-11T18:00:00.000Z',
-    eventId: 'ev1', gameDate: '2026-07-11', matchup: 'A @ B',
+    kind: 'prop', eventId: 'ev1', gameDate: '2026-07-11', matchup: 'A @ B',
     player: 'P One', mlbId: 111, market: 'batter_hits', line: 0.5, side: 'Over',
     modelP: 0.65, impliedP: 0.5, edge: 0.15,
     bestBook: { bookKey: 'fanduel', odds: -110 }, flags: [],
+    ...over
+  };
+}
+function bet(over = {}){
+  return {
+    id: 'bet|americanfootball_ncaaf|Ohio State|Texas|h2h|Ohio State|', ts: '2026-09-12T18:00:00.000Z',
+    kind: 'bet', sport: 'americanfootball_ncaaf', homeTeam: 'Ohio State', awayTeam: 'Texas',
+    commenceTime: '2026-09-12T23:30:00.000Z', gameDate: '2026-09-12', matchup: 'Texas @ Ohio State',
+    market: 'h2h', selection: 'Ohio State', point: null,
     ...over
   };
 }
@@ -109,4 +118,31 @@ test('empty store: nulls not NaNs', () => {
   assert.equal(r.summary.hitRate, null);
   assert.equal(r.summary.avgModelP, null);
   assert.equal(r.summary.calibrationGap, null);
+});
+
+test('computeRecord: bet (no modelP) mixed with props does not NaN avgModelP/calibration/byMarket', () => {
+  const recs = [
+    pick({ id: 'p1', result: 'hit', gradedTs: '2026-09-12T00:00:00.000Z' }),
+    pick({ id: 'p2', market: 'batter_home_runs', modelP: 0.4, result: 'miss', gradedTs: '2026-09-12T01:00:00.000Z' }),
+    bet({ id: 'b1', market: 'h2h', result: 'hit', actual: 24, gradedTs: '2026-09-12T02:00:00.000Z' }),
+    bet({ id: 'b2', market: 'spreads', selection: 'Ohio State', point: -14, result: 'miss', actual: -3, gradedTs: '2026-09-12T03:00:00.000Z' })
+  ];
+  const r = computeRecord(recs);
+  assert.equal(r.summary.graded, 4);
+  assert.equal(r.summary.hits, 2);
+  assert.equal(r.summary.misses, 2);
+  // avgModelP/calibrationGap must be computed over the two props only (0.65, 0.4), not NaN from the bets
+  assert.ok(Math.abs(r.summary.avgModelP - 0.525) < 1e-9);
+  assert.equal(r.summary.calibrationGap, r.summary.avgModelP - r.summary.hitRate);
+  assert.ok(!Number.isNaN(r.summary.calibrationGap));
+
+  const h2h = r.byMarket.find(m => m.market === 'h2h');
+  const spreads = r.byMarket.find(m => m.market === 'spreads');
+  assert.equal(h2h.n, 1);
+  assert.equal(h2h.avgModelP, null); // no prop in this market -> null, not NaN
+  assert.equal(spreads.avgModelP, null);
+
+  // Buckets must not include the modelP-less bets
+  const totalBucketed = r.buckets.reduce((a, b) => a + b.n, 0);
+  assert.equal(totalBucketed, 2);
 });

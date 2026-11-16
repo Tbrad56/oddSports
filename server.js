@@ -1,14 +1,23 @@
 require('dotenv').config();
 const express = require('express');
 const path = require('path');
-const { analyzeProp, rankPicks } = require('./analysis');
+const crypto = require('crypto');
+const { analyzeProp, rankPicks, classifyBattingGame } = require('./analysis');
 const { createStore, computeRecord } = require('./store');
+const { createNotifyStore } = require('./notify');
+const { createAuthStore } = require('./auth');
+const webpush = require('web-push');
+const {
+  generateRegistrationOptions, verifyRegistrationResponse,
+  generateAuthenticationOptions, verifyAuthenticationResponse
+} = require('@simplewebauthn/server');
 
 const UPSTREAM = 'https://api.the-odds-api.com';
 
 const SPORTS = new Set([
   'americanfootball_nfl', 'basketball_nba', 'baseball_mlb', 'icehockey_nhl',
-  'americanfootball_ncaaf', 'basketball_ncaab', 'soccer_epl', 'mma_mixed_martial_arts'
+  'americanfootball_ncaaf', 'basketball_ncaab', 'soccer_epl', 'mma_mixed_martial_arts',
+  'basketball_wnba'
 ]);
 
 // Server-controlled prop markets per sport (quota protection: clients
@@ -25,10 +34,18 @@ const PROP_MARKETS = {
   },
   americanfootball_ncaaf: ['player_pass_yds', 'player_pass_tds', 'player_rush_yds', 'player_receptions', 'player_reception_yds', 'player_anytime_td'],
   basketball_nba: ['player_points', 'player_rebounds', 'player_assists', 'player_threes', 'player_points_rebounds_assists'],
-  basketball_ncaab: ['player_points', 'player_rebounds', 'player_assists', 'player_threes'],
+  basketball_wnba: ['player_points', 'player_rebounds', 'player_assists', 'player_threes', 'player_points_rebounds_assists'],
   baseball_mlb: ['batter_hits', 'batter_home_runs', 'batter_total_bases', 'batter_rbis', 'pitcher_strikeouts'],
   icehockey_nhl: ['player_points', 'player_assists', 'player_shots_on_goal', 'player_goal_scorer_anytime']
 };
+
+// Every numeric over/under prop market has a "give me every line, not just
+// the book's main one" alternate variant (verified live: e.g.
+// batter_hits_alternate, player_pass_yds_alternate, player_points_alternate
+// all return real data). The two binary anytime-scorer markets don't — The
+// Odds API rejects them with 422 INVALID_MARKET (also verified live) since
+// there's only one line to begin with (yes/no).
+const NO_ALT_MARKETS = new Set(['player_anytime_td', 'player_goal_scorer_anytime']);
 
 // MLB "first 5 innings" alternate-period markets. NOTE: the bulk /odds
 // endpoint used below only serves h2h/spreads/totals — asking it for these
@@ -66,10 +83,288 @@ const NFL_TEAM_ABBREV = {
 
 function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now = Date.now, dataDir = null, enableSweep = false } = {}) {
   const app = express();
+  app.set('trust proxy', 1); // Railway terminates TLS; this makes req.secure/req.protocol honor X-Forwarded-Proto
+  app.use(express.json({ limit: '64kb' }));
   const cache = new Map(); // upstreamPath -> {body, remaining, cachedAt, expires}
   const statsCache = new Map(); // statsapi path -> {body, expires}
   const analysisCache = new Map(); // eventId -> {body, expires}
   const store = createStore({ dataDir });
+  const notifyStore = createNotifyStore({ dataDir });
+  // Push is a bonus feature, not core to the app — missing OR malformed VAPID
+  // keys just mean subscribe/send quietly no-op instead of the whole server
+  // refusing to boot (mirrors how MLB weather/statcast overlays degrade
+  // gracefully). web-push validates key format synchronously and throws.
+  let pushEnabled = !!(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
+  if (pushEnabled) {
+    try {
+      webpush.setVapidDetails(
+        process.env.VAPID_SUBJECT || 'mailto:admin@example.com',
+        process.env.VAPID_PUBLIC_KEY,
+        process.env.VAPID_PRIVATE_KEY
+      );
+    } catch (e) {
+      console.error(`push: invalid VAPID keys, notifications disabled (${e.message})`);
+      pushEnabled = false;
+    }
+  }
+  async function sendPushToAll(payload){
+    if (!pushEnabled) return;
+    const body = JSON.stringify(payload);
+    for (const sub of notifyStore.subscriptions()) {
+      try {
+        await webpush.sendNotification(sub, body);
+      } catch (e) {
+        if (e && (e.statusCode === 404 || e.statusCode === 410)) notifyStore.removeSubscription(sub.endpoint);
+        else console.error(`push: send failed (${e && e.message})`);
+      }
+    }
+  }
+
+  // ---------- Auth gate: single-user password + optional WebAuthn (Face ID /
+  // Touch ID / Windows Hello) lock screen. Opt-in via enableAuth so every
+  // existing test and the local-dev default keep working with zero setup;
+  // the real production boot below turns it on. ----------
+  if (enableAuth) {
+    if (!sessionSecret) throw new Error('enableAuth requires a sessionSecret');
+    const authStore = createAuthStore({ dataDir });
+    const SESSION_COOKIE = 'lw_session';
+    const SESSION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+    function signSession(payload){
+      const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+      const sig = crypto.createHmac('sha256', sessionSecret).update(body).digest('base64url');
+      return `${body}.${sig}`;
+    }
+    function verifySessionToken(token){
+      if (!token || typeof token !== 'string' || !token.includes('.')) return null;
+      const [body, sig] = token.split('.');
+      const expected = crypto.createHmac('sha256', sessionSecret).update(body).digest('base64url');
+      const a = Buffer.from(sig), b = Buffer.from(expected);
+      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+      try {
+        const payload = JSON.parse(Buffer.from(body, 'base64url').toString());
+        if (!payload.exp || Date.now() > payload.exp) return null;
+        return payload;
+      } catch (e) { return null; }
+    }
+    function parseCookies(req){
+      const header = req.headers.cookie || '';
+      const out = {};
+      header.split(';').forEach(part => {
+        const i = part.indexOf('=');
+        if (i === -1) return;
+        out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+      });
+      return out;
+    }
+    function getSession(req){
+      return verifySessionToken(parseCookies(req)[SESSION_COOKIE]);
+    }
+    function setSessionCookie(req, res, username){
+      const token = signSession({ u: username, exp: Date.now() + SESSION_MS });
+      const attrs = [`${SESSION_COOKIE}=${token}`, 'HttpOnly', 'Path=/', 'SameSite=Lax', `Max-Age=${Math.floor(SESSION_MS/1000)}`];
+      if (req.secure) attrs.push('Secure');
+      res.set('Set-Cookie', attrs.join('; '));
+    }
+    function clearSessionCookie(req, res){
+      const attrs = [`${SESSION_COOKIE}=`, 'HttpOnly', 'Path=/', 'SameSite=Lax', 'Max-Age=0'];
+      if (req.secure) attrs.push('Secure');
+      res.set('Set-Cookie', attrs.join('; '));
+    }
+    function rpIdOf(req){ return req.hostname || 'localhost'; }
+    function originOf(req){ return `${req.protocol}://${req.get('host')}`; }
+
+    // Basic brute-force throttle on the password endpoint. In-memory, so it
+    // resets on restart and doesn't share state across instances — acceptable
+    // for a single-instance personal deployment, not a substitute for real
+    // rate limiting at scale.
+    const loginAttempts = new Map(); // ip -> {count, resetAt}
+    function tooManyAttempts(ip){
+      const hit = loginAttempts.get(ip);
+      if (!hit || Date.now() > hit.resetAt) return false;
+      return hit.count >= 10;
+    }
+    function recordAttempt(ip){
+      const hit = loginAttempts.get(ip);
+      if (!hit || Date.now() > hit.resetAt) {
+        loginAttempts.set(ip, { count: 1, resetAt: Date.now() + 15 * 60 * 1000 });
+      } else {
+        hit.count++;
+      }
+    }
+
+    // Single pending challenge slots — fine for a single-user app; a second
+    // in-flight attempt just invalidates the first rather than causing any
+    // security issue.
+    let pendingRegChallenge = null;
+    let pendingLoginChallenge = null;
+
+    app.get('/api/auth/status', (req, res) => {
+      res.json({
+        configured: authStore.hasCredentials(),
+        username: authStore.hasCredentials() ? authStore.username() : null,
+        webauthnEnabled: authStore.webauthnCredentials().length > 0,
+        authenticated: !!getSession(req)
+      });
+    });
+
+    app.post('/api/auth/setup', (req, res) => {
+      if (authStore.hasCredentials()) return res.status(409).json({ error: 'Already configured' });
+      const { username, password } = req.body || {};
+      if (typeof username !== 'string' || !username.trim() || username.length > 64) {
+        return res.status(400).json({ error: 'Choose a username (1-64 characters)' });
+      }
+      if (typeof password !== 'string' || password.length < 8) {
+        return res.status(400).json({ error: 'Password must be at least 8 characters' });
+      }
+      authStore.setPassword(username.trim(), password);
+      setSessionCookie(req, res, username.trim());
+      res.json({ ok: true });
+    });
+
+    app.post('/api/auth/login', (req, res) => {
+      const ip = req.ip || 'unknown';
+      if (tooManyAttempts(ip)) return res.status(429).json({ error: 'Too many attempts — try again in 15 minutes' });
+      const { username, password } = req.body || {};
+      if (typeof username !== 'string' || typeof password !== 'string' || !authStore.verifyPassword(username, password)) {
+        recordAttempt(ip);
+        return res.status(401).json({ error: 'Invalid username or password' });
+      }
+      setSessionCookie(req, res, username);
+      res.json({ ok: true });
+    });
+
+    app.post('/api/auth/logout', (req, res) => {
+      clearSessionCookie(req, res);
+      res.json({ ok: true });
+    });
+
+    // Register a new Face ID / Touch ID / Windows Hello credential — only
+    // once already logged in via password, so this can't be used to create
+    // a backdoor without first proving the password.
+    //
+    // residentKey/userVerification are both 'required' (not 'preferred') so
+    // this registers as a true discoverable passkey — synced via iCloud
+    // Keychain / Google Password Manager / Windows Hello, and eligible for
+    // autofill (conditional UI) on the login screen, not just a plain
+    // server-side public key. authenticatorAttachment is left unset (rather
+    // than pinned to 'platform') so a phone's Face ID can also be used
+    // cross-device via QR code from a desktop that has no biometric sensor
+    // of its own.
+    app.post('/api/auth/webauthn/register-options', async (req, res) => {
+      const session = getSession(req);
+      if (!session) return res.status(401).json({ error: 'Log in with your password first' });
+      try {
+        const options = await generateRegistrationOptions({
+          rpName: 'LineWatch',
+          rpID: rpIdOf(req),
+          userName: authStore.username(),
+          userDisplayName: authStore.username(),
+          userID: Buffer.from(authStore.username()),
+          attestationType: 'none',
+          excludeCredentials: authStore.webauthnCredentials().map(c => ({ id: c.credentialID, transports: c.transports })),
+          authenticatorSelection: { residentKey: 'required', userVerification: 'required' }
+        });
+        pendingRegChallenge = { challenge: options.challenge, expires: Date.now() + 5 * 60 * 1000 };
+        res.json(options);
+      } catch (e) {
+        console.error(`WebAuthn register-options failed: ${e.message}`);
+        res.status(500).json({ error: `Could not start passkey setup: ${e.message}` });
+      }
+    });
+
+    app.post('/api/auth/webauthn/register-verify', async (req, res) => {
+      const session = getSession(req);
+      if (!session) return res.status(401).json({ error: 'Log in with your password first' });
+      if (!pendingRegChallenge || Date.now() > pendingRegChallenge.expires) {
+        return res.status(400).json({ error: 'Registration expired — try again' });
+      }
+      try {
+        const verification = await verifyRegistrationResponse({
+          response: req.body,
+          expectedChallenge: pendingRegChallenge.challenge,
+          expectedOrigin: originOf(req),
+          expectedRPID: rpIdOf(req)
+        });
+        pendingRegChallenge = null;
+        if (!verification.verified || !verification.registrationInfo) {
+          return res.status(400).json({ error: 'Could not verify passkey registration (verification returned false)' });
+        }
+        const { credential } = verification.registrationInfo;
+        authStore.addWebauthnCredential({
+          credentialID: credential.id,
+          publicKey: Buffer.from(credential.publicKey).toString('base64'),
+          counter: credential.counter,
+          transports: (req.body.response && req.body.response.transports) || []
+        });
+        res.json({ ok: true });
+      } catch (e) {
+        console.error(`WebAuthn register-verify failed: ${e.message}`);
+        res.status(400).json({ error: `Could not verify passkey registration: ${e.message}` });
+      }
+    });
+
+    // Unauthenticated by design — this IS how you log in without a password.
+    // allowCredentials is included for the explicit "Unlock with Face ID"
+    // button; the separate conditional-mediation call the login screen fires
+    // on load omits it so the browser can autofill any matching passkey.
+    app.post('/api/auth/webauthn/login-options', async (req, res) => {
+      const creds = authStore.webauthnCredentials();
+      if (!creds.length) return res.status(400).json({ error: 'No passkey set up yet' });
+      try {
+        const options = await generateAuthenticationOptions({
+          rpID: rpIdOf(req),
+          allowCredentials: creds.map(c => ({ id: c.credentialID, transports: c.transports })),
+          userVerification: 'required'
+        });
+        pendingLoginChallenge = { challenge: options.challenge, expires: Date.now() + 5 * 60 * 1000 };
+        res.json(options);
+      } catch (e) {
+        console.error(`WebAuthn login-options failed: ${e.message}`);
+        res.status(500).json({ error: `Could not start passkey login: ${e.message}` });
+      }
+    });
+
+    app.post('/api/auth/webauthn/login-verify', async (req, res) => {
+      if (!pendingLoginChallenge || Date.now() > pendingLoginChallenge.expires) {
+        return res.status(400).json({ error: 'Login expired — try again' });
+      }
+      const stored = authStore.webauthnCredentials().find(c => c.credentialID === req.body.id);
+      if (!stored) return res.status(400).json({ error: 'Unrecognized passkey — it may be registered to a different LineWatch deployment' });
+      try {
+        const verification = await verifyAuthenticationResponse({
+          response: req.body,
+          expectedChallenge: pendingLoginChallenge.challenge,
+          expectedOrigin: originOf(req),
+          expectedRPID: rpIdOf(req),
+          credential: {
+            id: stored.credentialID,
+            publicKey: Buffer.from(stored.publicKey, 'base64'),
+            counter: stored.counter,
+            transports: stored.transports
+          }
+        });
+        pendingLoginChallenge = null;
+        if (!verification.verified) return res.status(400).json({ error: 'Could not verify passkey login (verification returned false)' });
+        authStore.updateWebauthnCounter(stored.credentialID, verification.authenticationInfo.newCounter);
+        setSessionCookie(req, res, authStore.username());
+        res.json({ ok: true });
+      } catch (e) {
+        console.error(`WebAuthn login-verify failed: ${e.message}`);
+        res.status(400).json({ error: `Could not verify passkey login: ${e.message}` });
+      }
+    });
+
+    // The actual gate. Registered before every other route below, so nothing
+    // — API or static file — is reachable without a valid session, except
+    // the /api/auth/* endpoints above and the self-contained lock screen.
+    app.use((req, res, next) => {
+      if (req.path.startsWith('/api/auth/') || req.path === '/lock.html') return next();
+      if (getSession(req)) return next();
+      if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Not authenticated' });
+      res.sendFile(path.join(__dirname, 'public', 'lock.html'));
+    });
+  }
 
   // Fetch (or serve from cache) an Odds API path. Returns {body, remaining, cacheAge}.
   // Throws {kind:'quota'} or {kind:'unavailable'}.
@@ -184,6 +479,29 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     return String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\./g, '').trim();
   }
 
+  // ESPN's box score returns each stat category as a `labels` array plus a
+  // parallel `stats` string array per athlete (not a keyed object) — this
+  // flattens that into { normalizedName -> { passing:{YDS,TD,...}, rushing:{...},
+  // receiving:{...} } } once per fetch. Shared by prop grading and (future)
+  // a live "progress toward the line" lookup — same read, different timing.
+  async function nflBoxScoreStats(eventId){
+    const data = await fetchExternal(`https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event=${eventId}`, LIVE_TTL_MS);
+    const teams = (data.boxscore && data.boxscore.players) || [];
+    const byPlayer = {};
+    teams.forEach(team => {
+      (team.statistics || []).forEach(cat => {
+        (cat.athletes || []).forEach(a => {
+          const name = normName((a.athlete && a.athlete.displayName) || '');
+          if (!name) return;
+          const stat = {};
+          (cat.labels || []).forEach((label, i) => { stat[label] = Number((a.stats || [])[i]); });
+          (byPlayer[name] = byPlayer[name] || {})[cat.name] = stat;
+        });
+      });
+    });
+    return byPlayer;
+  }
+
   async function mlbPlayerId(name, season){
     // full active-player list, cached for the life of the process
     const data = await fetchStats(`/api/v1/sports/1/players?season=${season}`, Number.MAX_SAFE_INTEGER);
@@ -199,9 +517,1179 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     return splits.slice().reverse().map(s => ({
       value: Number((s.stat || {})[statName] || 0),
       started: Number((s.stat || {}).gamesStarted || 0) > 0,
-      date: s.date
+      date: s.date,
+      // Full per-game hitting line (same gameLog call, no extra fetch) — lets
+      // the recent-form dot timeline classify HR/XBH/1B/BB/OUT regardless of
+      // which specific stat this prop's window is built around.
+      stat: s.stat || {}
     }));
   }
+
+  // ---------- NBA betting dashboard (all free ESPN endpoints) ----------
+  // stats.nba.com blocks datacenter traffic, so advanced metrics are computed
+  // here from ESPN box-score totals: possessions ≈ FGA - ORB + TOV + 0.44·FTA,
+  // Pace = possessions/game, ORtg = 100·Pts/poss, DRtg = 100·OppPts/poss.
+  const ESPN_NBA = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba';
+  const NBA_TTL_MS = 12 * 60 * 60 * 1000;
+
+  async function nbaTeams(){
+    const data = await fetchExternal(`${ESPN_NBA}/teams?limit=32`, 24 * 60 * 60 * 1000);
+    const teams = [];
+    (data.sports?.[0]?.leagues?.[0]?.teams || []).forEach(t => {
+      const team = t.team || {};
+      teams.push({ id: team.id, name: team.displayName, abbrev: team.abbreviation,
+        logo: (team.logos || [])[0]?.href || null });
+    });
+    return teams;
+  }
+
+  async function nbaStandingsMap(){
+    const data = await fetchExternal('https://site.api.espn.com/apis/v2/sports/basketball/nba/standings', NBA_TTL_MS);
+    const map = {};
+    (data.children || []).forEach(conf => {
+      (conf.standings?.entries || []).forEach(e => {
+        const stats = {};
+        (e.stats || []).forEach(s => { stats[s.name] = s.value ?? s.displayValue; });
+        map[e.team.id] = {
+          wins: stats.wins, losses: stats.losses,
+          ppg: stats.avgPointsFor, oppPpg: stats.avgPointsAgainst,
+          homeRecord: stats.Home ?? null, roadRecord: stats.Road ?? null
+        };
+      });
+    });
+    return map;
+  }
+
+  async function nbaTeamMetrics(teamId){
+    // seasontype=2 pins regular-season totals — the bare endpoint can serve a
+    // playoff-only sample, which would corrupt possessions/ratings.
+    const year = new Date(now()).getFullYear() + (new Date(now()).getMonth() >= 9 ? 1 : 0);
+    const data = await fetchExternal(`${ESPN_NBA}/teams/${teamId}/statistics?season=${year}&seasontype=2`, NBA_TTL_MS);
+    const vals = {};
+    (data.results?.stats?.categories || data.statistics?.splits?.categories || []).forEach(cat => {
+      (cat.stats || []).forEach(s => { if (s.name && s.value !== undefined) vals[s.name] = s.value; });
+    });
+    // Fall back over both response shapes ESPN serves for this endpoint
+    if (!Object.keys(vals).length) {
+      const walk = (o) => {
+        if (Array.isArray(o)) return o.forEach(walk);
+        if (o && typeof o === 'object') {
+          if (o.name && typeof o.value === 'number' && vals[o.name] === undefined) vals[o.name] = o.value;
+          Object.values(o).forEach(walk);
+        }
+      };
+      walk(data);
+    }
+    const g = vals.gamesPlayed || 1;
+    const fgm = vals.fieldGoalsMade || 0, fga = (vals.fieldGoalsAttempted || 0);
+    const ftm = vals.freeThrowsMade || 0, fta = (vals.freeThrowsAttempted || 0);
+    const tpm = vals.threePointFieldGoalsMade || 0;
+    const orb = (vals.offensiveRebounds || 0) / g;
+    const tov = (vals.turnovers ?? vals.totalTurnovers ?? 0);
+    const ast = vals.assists || 0;
+    const pts = vals.avgPoints || ((vals.points || 0) / g);
+    const poss = (fga/g) - orb + (tov/g) + 0.44 * (fta/g);
+    // eFG%/TS% are single-team formulas (no opponent needed). AST% here is
+    // the simplified team-level "share of made shots that were assisted" —
+    // not the player-level Basketball-Reference AST% (which needs team
+    // minutes-on-court data no free box score exposes). TOV% is the
+    // standard team formula. REB% needs the opponent's boards too, so it's
+    // computed one level up, in the matchup handler, where both sides meet.
+    return {
+      games: g, pts, poss: poss > 0 ? poss : null,
+      fgPct: vals.fieldGoalPct ?? null, threePct: vals.threePointFieldGoalPct ?? vals.threePointPct ?? null, ftPct: vals.freeThrowPct ?? null,
+      rebPg: vals.avgRebounds ?? null, astPg: vals.avgAssists ?? null, stlPg: vals.avgSteals ?? null,
+      blkPg: vals.avgBlocks ?? null, tovPg: vals.avgTurnovers ?? (tov/g),
+      efgPct: fga > 0 ? (fgm + 0.5*tpm) / fga * 100 : null,
+      tsPct: (fga + 0.44*fta) > 0 ? pts*g / (2*(fga + 0.44*fta)) * 100 : null,
+      astPct: fgm > 0 ? ast/fgm * 100 : null,
+      tovPct: (fga + 0.44*fta + tov) > 0 ? tov / (fga + 0.44*fta + tov) * 100 : null
+    };
+  }
+
+  // Rest & scheduling context from the team's completed-games dates.
+  async function nbaSchedule(teamId){
+    let data = await fetchExternal(`${ESPN_NBA}/teams/${teamId}/schedule?seasontype=2`, NBA_TTL_MS);
+    if (!(data.events || []).length) data = await fetchExternal(`${ESPN_NBA}/teams/${teamId}/schedule`, NBA_TTL_MS);
+    const events = (data.events || []).map(ev => {
+      const comp = (ev.competitions || [])[0] || {};
+      const mine = (comp.competitors || []).find(c => String(c.team?.id) === String(teamId)) || {};
+      return {
+        date: ev.date,
+        completed: !!comp.status?.type?.completed,
+        home: mine.homeAway === 'home',
+        pointsFor: mine.score ? Number(mine.score.value ?? mine.score.displayValue ?? mine.score) : null
+      };
+    }).filter(e => e.date);
+    const done = events.filter(e => e.completed).sort((a,b)=>new Date(a.date)-new Date(b.date));
+    const today = new Date(now());
+    const daysBetween = (a,b) => Math.round((b - a) / 86400000);
+    const last = done[done.length - 1];
+    const lastDates = done.slice(-8).map(e => new Date(e.date));
+    const inWindow = (days) => lastDates.filter(d => daysBetween(d, today) < days).length;
+    let streakType = null, streakLen = 0;
+    for (let i = done.length - 1; i >= 0; i--) {
+      const t = done[i].home ? 'home' : 'road';
+      if (streakType === null) streakType = t;
+      if (t !== streakType) break;
+      streakLen++;
+    }
+    const last10 = done.slice(-10);
+    return {
+      daysRest: last ? Math.max(0, daysBetween(new Date(last.date), today) - 1) : null,
+      backToBack: last ? daysBetween(new Date(last.date), today) <= 1 : false,
+      threeInFour: inWindow(4) >= 3,
+      fourInSix: inWindow(6) >= 4,
+      streakType, streakLen,
+      last10Ppg: last10.length ? last10.reduce((s,e)=>s+(e.pointsFor||0),0) / last10.length : null,
+      gamesPlayed: done.length
+    };
+  }
+
+  async function nbaInjuries(teamId){
+    try {
+      const data = await fetchExternal(`${ESPN_NBA}/teams/${teamId}/injuries`, 60 * 60 * 1000);
+      const list = [];
+      (data.injuries || []).forEach(group => {
+        (group.injuries || [group]).forEach(inj => {
+          const athlete = inj.athlete || {};
+          if (athlete.displayName) list.push({
+            id: athlete.id || null,
+            name: athlete.displayName,
+            status: inj.status || inj.type?.description || '',
+            detail: inj.details?.type || inj.shortComment || ''
+          });
+        });
+      });
+      return list;
+    } catch (e) { return []; }
+  }
+
+  app.get('/api/nba/teams', (req, res) => {
+    nbaTeams().then(t => res.json({ teams: t })).catch(err => sendUpstreamError(res, err));
+  });
+
+  app.get('/api/nba/matchup', (req, res) => {
+    (async () => {
+      const { home, away } = req.query;
+      if (!/^\d{1,4}$/.test(String(home||'')) || !/^\d{1,4}$/.test(String(away||''))) {
+        return res.status(400).json({ error: 'home and away team ids required' });
+      }
+      const [teams, standings] = await Promise.all([nbaTeams(), nbaStandingsMap()]);
+      const teamOf = id => teams.find(t => String(t.id) === String(id));
+      const hTeam = teamOf(home), aTeam = teamOf(away);
+      if (!hTeam || !aTeam) return res.status(400).json({ error: 'Unknown team id' });
+
+      // League-wide metrics for real ranks (30 cached calls, 12h TTL)
+      const metricRows = await Promise.all(teams.map(async t => {
+        try {
+          const m = await nbaTeamMetrics(t.id);
+          const st = standings[t.id] || {};
+          if (!m.poss || st.ppg === undefined) return null;
+          const ortg = 100 * st.ppg / m.poss;
+          const drtg = 100 * st.oppPpg / m.poss;
+          return { id: t.id, pace: m.poss, ortg, drtg, net: ortg - drtg, ppg: st.ppg, ...m };
+        } catch (e) { return null; }
+      }));
+      const rows = metricRows.filter(Boolean);
+      const rankOf = (id, key, desc = true) => {
+        const valid = rows.filter(r => r[key] !== null && r[key] !== undefined);
+        const sorted = valid.slice().sort((a,b)=> desc ? b[key]-a[key] : a[key]-b[key]);
+        const i = sorted.findIndex(r => String(r.id) === String(id));
+        return i === -1 ? null : i + 1;
+      };
+
+      async function sideFor(team, oppRebPg){
+        const st = standings[team.id] || {};
+        const row = rows.find(r => String(r.id) === String(team.id)) || {};
+        const [sched, injuries] = await Promise.all([nbaSchedule(team.id), nbaInjuries(team.id)]);
+        // Season-average approximation of REB% (true per-game opponent box
+        // scores aren't on any free feed): this team's rebounds per game vs.
+        // the specific opponent's season rebounds per game.
+        const rebPct = (row.rebPg && oppRebPg) ? row.rebPg / (row.rebPg + oppRebPg) * 100 : null;
+        return {
+          team,
+          record: st.wins !== undefined ? `${st.wins}-${st.losses}` : null,
+          homeRecord: st.homeRecord ?? null, roadRecord: st.roadRecord ?? null,
+          ppg: st.ppg ?? null, oppPpg: st.oppPpg ?? null,
+          pace: row.pace ?? null, ortg: row.ortg ?? null, drtg: row.drtg ?? null, net: row.net ?? null,
+          metrics: {
+            fgPct: row.fgPct ?? null, threePct: row.threePct ?? null, ftPct: row.ftPct ?? null,
+            rebPg: row.rebPg ?? null, astPg: row.astPg ?? null, stlPg: row.stlPg ?? null,
+            blkPg: row.blkPg ?? null, tovPg: row.tovPg ?? null,
+            efgPct: row.efgPct ?? null, tsPct: row.tsPct ?? null, astPct: row.astPct ?? null,
+            tovPct: row.tovPct ?? null, rebPct
+          },
+          ranks: {
+            pace: rankOf(team.id, 'pace'),
+            ortg: rankOf(team.id, 'ortg'),
+            drtg: rankOf(team.id, 'drtg', false),
+            net: rankOf(team.id, 'net'),
+            efgPct: rankOf(team.id, 'efgPct'), tsPct: rankOf(team.id, 'tsPct'),
+            tovPct: rankOf(team.id, 'tovPct', false)
+          },
+          schedule: sched,
+          injuries
+        };
+      }
+      const hRowPre = rows.find(r => String(r.id) === String(hTeam.id)) || {};
+      const aRowPre = rows.find(r => String(r.id) === String(aTeam.id)) || {};
+      const [h, a] = await Promise.all([
+        sideFor(hTeam, aRowPre.rebPg),
+        sideFor(aTeam, hRowPre.rebPg)
+      ]);
+
+      // ---- rule-based insight engine (deterministic, no LLM) ----
+      const insights = [];
+      const leans = [];
+      let confidence = 5;
+      if (h.ranks.pace && a.ranks.pace && h.ranks.pace <= 10 && a.ranks.pace <= 10) {
+        insights.push(`Both teams rank top-10 in pace (#${a.ranks.pace} and #${h.ranks.pace}) — a favorable environment for the Over.`);
+        leans.push('Lean Over on the total'); confidence += 0.8;
+      } else if (h.ranks.pace && a.ranks.pace && h.ranks.pace >= 21 && a.ranks.pace >= 21) {
+        insights.push(`Both teams play bottom-10 pace — points may come slow.`);
+        leans.push('Lean Under on the total'); confidence += 0.6;
+      }
+      if (h.net !== null && a.net !== null) {
+        const diff = h.net - a.net;
+        const better = diff > 0 ? h : a;
+        if (Math.abs(diff) >= 4) {
+          insights.push(`${better.team.name} hold a ${Math.abs(diff).toFixed(1)}-point Net Rating edge.`);
+          leans.push(`${better.team.name} spread`); confidence += Math.min(1.5, Math.abs(diff) * 0.15);
+        }
+      }
+      const restDiff = (h.schedule.daysRest ?? 0) - (a.schedule.daysRest ?? 0);
+      [[h, a], [a, h]].forEach(([x, y]) => {
+        if (x.schedule.backToBack && (y.schedule.daysRest ?? 0) >= 2) {
+          insights.push(`${x.team.name} are on a back-to-back while ${y.team.name} have ${y.schedule.daysRest} days of rest.`);
+          leans.push(`${y.team.name} rest edge`); confidence += 0.7;
+        } else if (x.schedule.threeInFour) {
+          insights.push(`${x.team.name} are playing their 3rd game in 4 nights.`);
+          confidence += 0.3;
+        }
+      });
+      [h, a].forEach(s => {
+        if (s.injuries.length >= 3) {
+          insights.push(`${s.team.name} list ${s.injuries.length} players on the injury report.`);
+          confidence += 0.3;
+        }
+      });
+      if (!insights.length) insights.push('No strong statistical edges detected — this projects as a fairly even matchup.');
+
+      res.json({
+        home: h, away: a,
+        summary: {
+          insights,
+          leans: [...new Set(leans)],
+          confidence: Math.round(Math.min(9.5, confidence) * 10) / 10,
+          note: 'Auto-generated from the numbers above — context, not picks. No referee or positional-defense data exists on a free feed, so those factors are not modeled.'
+        }
+      });
+    })().catch(err => sendUpstreamError(res, err));
+  });
+
+  async function nbaRosterPlayers(teamId){
+    const data = await fetchExternal(`${ESPN_NBA}/teams/${teamId}/roster`, NBA_TTL_MS);
+    return (data.athletes || []).map(a => ({ id: a.id, name: a.displayName, position: a.position?.abbreviation || '', headshot: a.headshot?.href || null }));
+  }
+
+  app.get('/api/nba/roster', (req, res) => {
+    (async () => {
+      const { team } = req.query;
+      if (!/^\d{1,4}$/.test(String(team||''))) return res.status(400).json({ error: 'team id required' });
+      res.json({ players: await nbaRosterPlayers(team) });
+    })().catch(err => sendUpstreamError(res, err));
+  });
+
+  // Parses one gamelog response into per-game rows tagged with opponent id.
+  function gamelogRows(data){
+    const games = [];
+    Object.values(data.seasonTypes || {}).forEach(stype => {
+      ((stype && stype.categories) || []).forEach(cat => {
+        (cat.events || []).forEach(ev => { if (ev.stats) games.push(ev); });
+      });
+    });
+    const evMeta = data.events || {};
+    return games.map(g => {
+      const meta = evMeta[g.eventId] || {};
+      return {
+        eventId: g.eventId, stats: g.stats,
+        home: meta.atVs === 'vs', date: meta.gameDate,
+        oppId: meta.opponent ? String(meta.opponent.id) : null,
+        oppAbbrev: meta.opponent ? meta.opponent.abbreviation : null
+      };
+    });
+  }
+
+  // Current gamelog plus up to two prior seasons (each a cached call) —
+  // enough history for a real "vs this opponent" sample without hammering ESPN.
+  async function gamelogMultiSeason(sportPath, id, endYear){
+    const base = await fetchExternal(
+      `https://site.web.api.espn.com/apis/common/v3/sports/${sportPath}/athletes/${id}/gamelog`,
+      STATS_TTL_MS
+    );
+    const labels = base.labels || base.names || [];
+    const seen = new Set();
+    const rows = [];
+    const add = data => gamelogRows(data).forEach(r => {
+      if (!seen.has(r.eventId)) { seen.add(r.eventId); rows.push(r); }
+    });
+    add(base);
+    for (const y of [endYear - 1, endYear - 2]) {
+      try {
+        add(await fetchExternal(
+          `https://site.web.api.espn.com/apis/common/v3/sports/${sportPath}/athletes/${id}/gamelog?season=${y}`,
+          STATS_TTL_MS
+        ));
+      } catch (e) { /* season may not exist for this player */ }
+    }
+    rows.sort((a,b)=> new Date(b.date||0) - new Date(a.date||0));
+    return { labels, rows };
+  }
+
+  // Player form: last-10 vs season, home/away split, and (when vsTeam is the
+  // opposing ESPN team id) a 3-season history against that specific opponent.
+  app.get('/api/nba/player-form', (req, res) => {
+    (async () => {
+      const { id, vsTeam } = req.query;
+      if (!/^\d{1,10}$/.test(String(id||''))) return res.status(400).json({ error: 'player id required' });
+      const wantVs = /^\d{1,4}$/.test(String(vsTeam||''));
+      const endYear = new Date(now()).getFullYear();
+
+      let labels, allRows;
+      if (wantVs) {
+        ({ labels, rows: allRows } = await gamelogMultiSeason('basketball/nba', id, endYear));
+      } else {
+        const data = await fetchExternal(
+          `https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/${id}/gamelog`,
+          STATS_TTL_MS
+        );
+        labels = data.labels || data.names || [];
+        allRows = gamelogRows(data).sort((a,b)=> new Date(b.date||0) - new Date(a.date||0));
+      }
+      const idx = k => labels.indexOf(k);
+      const num = (r, k) => { const i = idx(k); return i === -1 ? null : Number(r.stats[i]); };
+      const avg = (list, k) => {
+        const v = list.map(r => num(r, k)).filter(x => x !== null && !isNaN(x));
+        return v.length ? Math.round(v.reduce((s,x)=>s+x,0) / v.length * 10) / 10 : null;
+      };
+      const pack = list => ({ games: list.length, pts: avg(list,'PTS'), reb: avg(list,'REB'), ast: avg(list,'AST'), min: avg(list,'MIN'), fgPct: avg(list,'FG%') });
+
+      // Current-season rows = most recent gamelog's worth (first fetch covers it);
+      // season splits below intentionally use only the newest ~season of rows.
+      const seasonRows = wantVs ? allRows.slice(0, 82).filter(r => new Date(r.date) > new Date(now() - 370*86400000)) : allRows;
+      const out = {
+        last10: pack(seasonRows.slice(0, 10)),
+        season: pack(seasonRows),
+        home: pack(seasonRows.filter(r=>r.home)),
+        away: pack(seasonRows.filter(r=>!r.home))
+      };
+      if (wantVs) {
+        const vsRows = allRows.filter(r => r.oppId === String(vsTeam));
+        out.vsOpponent = {
+          ...pack(vsRows),
+          abbrev: vsRows[0] ? vsRows[0].oppAbbrev : null,
+          meetings: vsRows.slice(0, 5).map(r => ({
+            date: r.date ? String(r.date).slice(0, 10) : null,
+            home: r.home,
+            pts: num(r,'PTS'), reb: num(r,'REB'), ast: num(r,'AST')
+          }))
+        };
+      }
+      res.json(out);
+    })().catch(err => sendUpstreamError(res, err));
+  });
+
+  // ---------- NFL betting dashboard (all free ESPN + Open-Meteo) ----------
+  const ESPN_NFL = 'https://site.api.espn.com/apis/site/v2/sports/football/nfl';
+  const NFL_TTL_MS = 12 * 60 * 60 * 1000;
+
+  // Stadium coords + roof flags for the weather card (approximate venue lat/lon).
+  const NFL_STADIUMS = {
+    ARI:{lat:33.5276,lon:-112.2626,dome:true},  ATL:{lat:33.7554,lon:-84.4008,dome:true},
+    BAL:{lat:39.2780,lon:-76.6227},             BUF:{lat:42.7738,lon:-78.7870},
+    CAR:{lat:35.2258,lon:-80.8528},             CHI:{lat:41.8623,lon:-87.6167},
+    CIN:{lat:39.0955,lon:-84.5161},             CLE:{lat:41.5061,lon:-81.6995},
+    DAL:{lat:32.7473,lon:-97.0945,dome:true},   DEN:{lat:39.7439,lon:-105.0201},
+    DET:{lat:42.3400,lon:-83.0456,dome:true},   GB:{lat:44.5013,lon:-88.0622},
+    HOU:{lat:29.6847,lon:-95.4107,dome:true},   IND:{lat:39.7601,lon:-86.1639,dome:true},
+    JAX:{lat:30.3240,lon:-81.6373},             KC:{lat:39.0489,lon:-94.4839},
+    LAC:{lat:33.9535,lon:-118.3392,dome:true},  LAR:{lat:33.9535,lon:-118.3392,dome:true},
+    LV:{lat:36.0909,lon:-115.1833,dome:true},   MIA:{lat:25.9580,lon:-80.2389},
+    MIN:{lat:44.9736,lon:-93.2575,dome:true},   NE:{lat:42.0909,lon:-71.2643},
+    NO:{lat:29.9511,lon:-90.0812,dome:true},    NYG:{lat:40.8128,lon:-74.0742},
+    NYJ:{lat:40.8128,lon:-74.0742},             PHI:{lat:39.9008,lon:-75.1675},
+    PIT:{lat:40.4468,lon:-80.0158},             SEA:{lat:47.5952,lon:-122.3316},
+    SF:{lat:37.4030,lon:-121.9696},             TB:{lat:27.9759,lon:-82.5033},
+    TEN:{lat:36.1665,lon:-86.7713},             WSH:{lat:38.9076,lon:-76.8645}
+  };
+
+  async function nflTeams(){
+    const data = await fetchExternal(`${ESPN_NFL}/teams?limit=34`, 24 * 60 * 60 * 1000);
+    const teams = [];
+    (data.sports?.[0]?.leagues?.[0]?.teams || []).forEach(t => {
+      const team = t.team || {};
+      teams.push({ id: team.id, name: team.displayName, abbrev: team.abbreviation,
+        logo: (team.logos || [])[0]?.href || null });
+    });
+    return teams;
+  }
+
+  async function nflStandingsMap(){
+    const data = await fetchExternal('https://site.api.espn.com/apis/v2/sports/football/nfl/standings', NFL_TTL_MS);
+    const map = {};
+    (data.children || []).forEach(conf => {
+      (conf.standings?.entries || []).forEach(e => {
+        const stats = {};
+        (e.stats || []).forEach(s => { stats[s.name] = s.value ?? s.displayValue; });
+        // NFL standings expose season totals, not per-game averages
+        const g = (stats.wins || 0) + (stats.losses || 0) + (stats.ties || 0);
+        map[e.team.id] = { wins: stats.wins, losses: stats.losses, ties: stats.ties,
+          pf: g ? stats.pointsFor / g : null, pa: g ? stats.pointsAgainst / g : null,
+          homeRecord: stats.Home ?? null, roadRecord: stats.Road ?? null };
+      });
+    });
+    return map;
+  }
+
+  // Offense per-game numbers + defense activity from the team statistics feed.
+  // Yards-allowed splits are not on any free feed — defense is represented by
+  // points allowed (standings) plus sacks-made/INTs-caught from here.
+  //
+  // ESPN's statistics response has an "offensive stat" and a "defensive stat"
+  // both literally named `sacks` (times this team's own QB was sacked, vs.
+  // sacks this team's defense recorded) and both named `interceptions`
+  // (thrown vs. caught) — living in different `categories` entries. A naive
+  // flat walk that takes the first occurrence of each name silently picks up
+  // "sacks allowed" and mislabels it as pass-rush strength. Walk category-
+  // aware instead so offense and defense numbers never collide.
+  async function nflTeamMetrics(teamId){
+    const y = new Date(now()).getFullYear();
+    const year = new Date(now()).getMonth() >= 7 ? y : y - 1; // season year flips in August
+    const data = await fetchExternal(`${ESPN_NFL}/teams/${teamId}/statistics?season=${year}&seasontype=2`, NFL_TTL_MS);
+    const categories = {};
+    (data.results?.stats?.categories || data.splits?.categories || []).forEach(cat => {
+      const bucket = {};
+      (cat.stats || []).forEach(s => { if (s.name && typeof s.value === 'number') bucket[s.name] = s.value; });
+      categories[cat.name] = bucket;
+    });
+    const passing = categories.passing || {};
+    const rushing = categories.rushing || {};
+    const misc = categories.miscellaneous || {};
+    const general = categories.general || {};
+    const defense = categories.defensive || {};
+    const defInt = categories.defensiveInterceptions || {};
+
+    const g = general.gamesPlayed || passing.teamGamesPlayed || 1;
+    const totalYards = (rushing.rushingYards || 0) + (passing.netPassingYards || 0);
+    const sacksAllowed = passing.sacks || 0;
+    const sackYardsLost = passing.sackYardsLost || 0;
+    const passAttempts = passing.passingAttempts || 0;
+    const passYards = passing.passingYards ?? passing.netPassingYards ?? 0;
+    const passTDs = passing.passingTouchdowns || 0;
+    const intsThrown = passing.interceptions || 0;
+    // Adjusted Net Yards per Attempt — standard public formula, computable
+    // entirely from box totals we already have (no play-by-play needed).
+    const anyA = (passAttempts + sacksAllowed) > 0
+      ? (passYards + 20*passTDs - 45*intsThrown - sackYardsLost) / (passAttempts + sacksAllowed)
+      : null;
+
+    return {
+      games: g,
+      rushYpg: (rushing.rushingYards || 0) / g,
+      passYpg: passing.netPassingYardsPerGame ?? ((passing.netPassingYards || 0) / g),
+      ypg: totalYards / g,
+      ypp: rushing.totalOffensivePlays ? totalYards / rushing.totalOffensivePlays : null,
+      topSecPerGame: misc.possessionTimeSeconds ? misc.possessionTimeSeconds / g : null,
+      completionPct: passing.completionPct ?? null,
+      thirdDownPct: misc.thirdDownConvPct ?? null,
+      redZoneTdPct: misc.redzoneTouchdownPct ?? misc.redzoneScoringPct ?? null,
+      explosive: ((rushing.rushingBigPlays || 0) + (categories.receiving?.receivingBigPlays || 0)) / g,
+      explosiveRate: rushing.totalOffensivePlays ? ((rushing.rushingBigPlays || 0) + (categories.receiving?.receivingBigPlays || 0)) / rushing.totalOffensivePlays : null,
+      anyA,
+      sacksMadePerGame: (defense.sacks || 0) / g,          // defense's own pass rush
+      sacksAllowedPerGame: sacksAllowed / g,                 // this team's O-line/QB
+      sackPctAllowed: passAttempts > 0 ? sacksAllowed / (passAttempts + sacksAllowed) : null,
+      intsThrownPerGame: intsThrown / g,
+      intsCaughtPerGame: (defInt.interceptions || 0) / g,
+      tflPerGame: defense.tacklesForLoss !== undefined ? defense.tacklesForLoss / g : null,
+      turnoverMargin: (misc.totalTakeaways !== undefined && misc.totalGiveaways !== undefined)
+        ? (misc.totalTakeaways - misc.totalGiveaways) / g : null
+    };
+  }
+
+  async function nflSchedule(teamId){
+    let data = await fetchExternal(`${ESPN_NFL}/teams/${teamId}/schedule?seasontype=2`, NFL_TTL_MS);
+    if (!(data.events || []).length) data = await fetchExternal(`${ESPN_NFL}/teams/${teamId}/schedule`, NFL_TTL_MS);
+    const done = (data.events || []).map(ev => {
+      const comp = (ev.competitions || [])[0] || {};
+      const mine = (comp.competitors || []).find(c => String(c.team?.id) === String(teamId)) || {};
+      return {
+        date: ev.date,
+        completed: !!comp.status?.type?.completed,
+        won: mine.winner === true
+      };
+    }).filter(e => e.completed).sort((a,b)=>new Date(a.date)-new Date(b.date));
+    const last10 = done.slice(-10);
+    // A 12+ day gap between games during the season = coming off the bye
+    let offBye = false;
+    if (done.length >= 2) {
+      const a = new Date(done[done.length-2].date), b = new Date(done[done.length-1].date);
+      offBye = (b - a) / 86400000 >= 12;
+    }
+    let streak = 0, streakWin = null;
+    for (let i = done.length - 1; i >= 0; i--) {
+      if (streakWin === null) streakWin = done[i].won;
+      if (done[i].won !== streakWin) break;
+      streak++;
+    }
+    return {
+      last10: last10.length ? `${last10.filter(e=>e.won).length}-${last10.filter(e=>!e.won).length}` : null,
+      streak: streak > 1 ? `${streak}-game ${streakWin ? 'win' : 'loss'} streak` : null,
+      offBye,
+      gamesPlayed: done.length
+    };
+  }
+
+  // One depth-chart call powers both the Injury Center (grouped, statused) and
+  // Fantasy Impact (who steps in behind an injured player).
+  async function nflDepthAndInjuries(teamId){
+    const data = await fetchExternal(`${ESPN_NFL}/teams/${teamId}/depthcharts`, 60 * 60 * 1000);
+    const units = [];
+    (data.depthchart || data.items || []).forEach(unit => {
+      Object.entries(unit.positions || {}).forEach(([key, pos]) => {
+        const players = (pos.athletes || []).map(a => ({
+          id: a.id, name: a.displayName || '',
+          injuries: (a.injuries || []).map(i => i.status || i.type?.description || 'listed')
+        })).filter(p => p.name);
+        if (players.length) units.push({
+          unit: unit.name || '',
+          position: pos.position?.abbreviation || key.toUpperCase(),
+          players
+        });
+      });
+    });
+    const injuries = [];
+    const nextMen = [];
+    units.forEach(u => {
+      u.players.forEach((p, depth) => {
+        if (p.injuries.length) {
+          injuries.push({ id: p.id, name: p.name, position: u.position, status: p.injuries[0], starter: depth === 0 });
+          if (depth === 0 && u.players[1]) {
+            nextMen.push({ outId: p.id, out: p.name, position: u.position, inId: u.players[1].id, in: u.players[1].name, status: p.injuries[0] });
+          }
+        }
+      });
+    });
+    return { injuries, nextMen };
+  }
+
+  async function nflWeather(abbrev){
+    const st = NFL_STADIUMS[abbrev];
+    if (!st) return null;
+    if (st.dome) return { dome: true };
+    try {
+      const w = await fetchExternal(
+        `https://api.open-meteo.com/v1/forecast?latitude=${st.lat}&longitude=${st.lon}&current=temperature_2m,precipitation,rain,snowfall,wind_speed_10m&wind_speed_unit=mph&temperature_unit=fahrenheit`,
+        30 * 60 * 1000
+      );
+      const c = w.current || {};
+      return {
+        dome: false,
+        tempF: c.temperature_2m ?? null,
+        windMph: c.wind_speed_10m ?? null,
+        rain: (c.rain || 0) > 0 || (c.precipitation || 0) > 0.05,
+        snow: (c.snowfall || 0) > 0
+      };
+    } catch (e) { return null; }
+  }
+
+  app.get('/api/nfl/teams', (req, res) => {
+    nflTeams().then(t => res.json({ teams: t })).catch(err => sendUpstreamError(res, err));
+  });
+
+  app.get('/api/nfl/matchup', (req, res) => {
+    (async () => {
+      const { home, away } = req.query;
+      if (!/^\d{1,4}$/.test(String(home||'')) || !/^\d{1,4}$/.test(String(away||''))) {
+        return res.status(400).json({ error: 'home and away team ids required' });
+      }
+      const [teams, standings] = await Promise.all([nflTeams(), nflStandingsMap()]);
+      const teamOf = id => teams.find(t => String(t.id) === String(id));
+      const hTeam = teamOf(home), aTeam = teamOf(away);
+      if (!hTeam || !aTeam) return res.status(400).json({ error: 'Unknown team id' });
+
+      // League-wide metric rows for true 1-32 ranks (cached 12h)
+      const metricRows = (await Promise.all(teams.map(async t => {
+        try { return { id: t.id, pa: (standings[t.id] || {}).pa, ...(await nflTeamMetrics(t.id)) }; }
+        catch (e) { return null; }
+      }))).filter(Boolean);
+      const rankOf = (id, key, desc = true) => {
+        const rows = metricRows.filter(r => r[key] !== null && r[key] !== undefined);
+        const sorted = rows.slice().sort((a,b)=> desc ? b[key]-a[key] : a[key]-b[key]);
+        const i = sorted.findIndex(r => String(r.id) === String(id));
+        return i === -1 ? null : i + 1;
+      };
+
+      async function sideFor(team){
+        const st = standings[team.id] || {};
+        const m = metricRows.find(r => String(r.id) === String(team.id)) || {};
+        const [sched, depth] = await Promise.all([nflSchedule(team.id), nflDepthAndInjuries(team.id)]);
+        return {
+          team,
+          record: st.wins !== undefined ? `${st.wins}-${st.losses}${st.ties ? '-' + st.ties : ''}` : null,
+          pf: st.pf ?? null, pa: st.pa ?? null,
+          metrics: {
+            rushYpg: m.rushYpg ?? null, passYpg: m.passYpg ?? null, ypg: m.ypg ?? null, ypp: m.ypp ?? null,
+            topSecPerGame: m.topSecPerGame ?? null, completionPct: m.completionPct ?? null,
+            thirdDownPct: m.thirdDownPct ?? null, redZoneTdPct: m.redZoneTdPct ?? null,
+            explosive: m.explosive ?? null, explosiveRate: m.explosiveRate ?? null, anyA: m.anyA ?? null,
+            sacksMadePerGame: m.sacksMadePerGame ?? null, sacksAllowedPerGame: m.sacksAllowedPerGame ?? null,
+            sackPctAllowed: m.sackPctAllowed ?? null,
+            intsThrownPerGame: m.intsThrownPerGame ?? null, intsCaughtPerGame: m.intsCaughtPerGame ?? null,
+            turnoverMargin: m.turnoverMargin ?? null
+          },
+          ranks: {
+            rushYpg: rankOf(team.id, 'rushYpg'), passYpg: rankOf(team.id, 'passYpg'), ypg: rankOf(team.id, 'ypg'),
+            thirdDownPct: rankOf(team.id, 'thirdDownPct'), redZoneTdPct: rankOf(team.id, 'redZoneTdPct'),
+            explosive: rankOf(team.id, 'explosive'), anyA: rankOf(team.id, 'anyA'),
+            sacksMadePerGame: rankOf(team.id, 'sacksMadePerGame'), sacksAllowedPerGame: rankOf(team.id, 'sacksAllowedPerGame', false),
+            intsCaughtPerGame: rankOf(team.id, 'intsCaughtPerGame'), turnoverMargin: rankOf(team.id, 'turnoverMargin'),
+            pa: rankOf(team.id, 'pa', false)
+          },
+          schedule: sched,
+          injuries: depth.injuries,
+          nextMen: depth.nextMen
+        };
+      }
+      const [h, a] = await Promise.all([sideFor(hTeam), sideFor(aTeam)]);
+      const weather = await nflWeather(hTeam.abbrev);
+
+      // ---- rule-based insight engine ----
+      const insights = [];
+      const leans = [];
+      let confidence = 5;
+      // Cross-matchup: A's rush attack vs B's run-stop proxy, pass rush vs protection
+      [[a, h, 'away'], [h, a, 'home']].forEach(([off, def]) => {
+        if (off.ranks.rushYpg && off.ranks.rushYpg <= 8 && def.ranks.pa && def.ranks.pa >= 22) {
+          insights.push(`${off.team.name}'s #${off.ranks.rushYpg} rush offense meets a defense allowing bottom-10 points.`);
+          confidence += 0.5;
+        }
+        if (def.ranks.sacksMadePerGame && def.ranks.sacksMadePerGame <= 6) {
+          insights.push(`${def.team.name} bring a top-6 pass rush (${def.metrics.sacksMadePerGame.toFixed(1)} sacks/game) at ${off.team.name}'s protection.`);
+          confidence += 0.4;
+        }
+        if (off.ranks.sacksAllowedPerGame && off.ranks.sacksAllowedPerGame >= 27) {
+          insights.push(`${off.team.name} allow the most sacks in the league (${off.metrics.sacksAllowedPerGame.toFixed(1)}/game) — protection is a real liability here.`);
+          confidence += 0.4;
+        }
+      });
+      if (h.pf !== null && a.pf !== null) {
+        const diff = (h.pf - h.pa) - (a.pf - a.pa);
+        const better = diff > 0 ? h : a;
+        if (Math.abs(diff) >= 5) {
+          insights.push(`${better.team.name} hold a ${Math.abs(diff).toFixed(1)}-point average scoring-margin edge.`);
+          leans.push(`${better.team.name} side`); confidence += Math.min(1.5, Math.abs(diff) * 0.12);
+        }
+      }
+      [h, a].forEach(s => {
+        if (s.schedule.offBye) { insights.push(`${s.team.name} are coming off their bye week.`); confidence += 0.4; }
+        const startersOut = s.injuries.filter(i => i.starter).length;
+        if (startersOut) {
+          insights.push(`${s.team.name} have ${startersOut} starter${startersOut===1?'':'s'} on the injury report.`);
+          confidence += 0.3;
+        }
+        if (s.metrics.turnoverMargin !== null && Math.abs(s.metrics.turnoverMargin) >= 0.5) {
+          const dir = s.metrics.turnoverMargin > 0 ? 'positive' : 'negative';
+          insights.push(`${s.team.name} run a ${dir} turnover margin (${s.metrics.turnoverMargin > 0 ? '+' : ''}${s.metrics.turnoverMargin.toFixed(1)}/game).`);
+          confidence += 0.3;
+        }
+      });
+      if (weather && !weather.dome) {
+        if ((weather.windMph ?? 0) >= 15) {
+          insights.push(`${Math.round(weather.windMph)} mph wind at ${hTeam.abbrev} — passing and kicking downgrade, running upgrade.`);
+          leans.push('Weather leans Under'); confidence += 0.6;
+        }
+        if (weather.rain || weather.snow) {
+          insights.push(`${weather.snow ? 'Snow' : 'Rain'} in the forecast — ball-security and ground games matter more.`);
+          leans.push('Running-game upgrade'); confidence += 0.4;
+        }
+      }
+      if (!insights.length) insights.push('No strong statistical edges detected — this projects close to even.');
+
+      res.json({
+        home: h, away: a, weather,
+        summary: {
+          insights,
+          leans: [...new Set(leans)],
+          confidence: Math.round(Math.min(9.5, confidence) * 10) / 10,
+          note: 'Auto-generated from the numbers above — context, not picks. ATS/over-under trend history and yards-allowed splits are not on any free feed, so they are not modeled; win-loss form here is straight-up.'
+        }
+      });
+    })().catch(err => sendUpstreamError(res, err));
+  });
+
+  async function nflRosterPlayers(teamId){
+    const data = await fetchExternal(`${ESPN_NFL}/teams/${teamId}/roster`, NFL_TTL_MS);
+    const players = [];
+    (data.athletes || []).forEach(group => {
+      (group.items || []).forEach(a => {
+        players.push({ id: a.id, name: a.displayName, position: a.position?.abbreviation || '', headshot: a.headshot?.href || null });
+      });
+    });
+    return players;
+  }
+
+  app.get('/api/nfl/roster', (req, res) => {
+    (async () => {
+      const { team } = req.query;
+      if (!/^\d{1,4}$/.test(String(team||''))) return res.status(400).json({ error: 'team id required' });
+      res.json({ players: await nflRosterPlayers(team) });
+    })().catch(err => sendUpstreamError(res, err));
+  });
+
+  // Both teams' injury reports for one matchup, keyed off the exact team-name
+  // strings The Odds API returns (same match-by-name convention headshot
+  // resolution already uses) — lets Board show a per-game injury summary
+  // without the user ever visiting the NFL Dashboard's team pickers.
+  // Reuses nflDepthAndInjuries(), the same call the Dashboard's Injury
+  // Center already makes, just for both sides of one game at once.
+  app.get('/api/nfl/game-injuries', (req, res) => {
+    (async () => {
+      const { home, away } = req.query;
+      if (typeof home !== 'string' || !home || typeof away !== 'string' || !away) {
+        return res.status(400).json({ error: 'home and away team names required' });
+      }
+      const [teams, standings] = await Promise.all([nflTeams(), nflStandingsMap().catch(() => ({}))]);
+      const homeTeam = teams.find(t => t.name === home);
+      const awayTeam = teams.find(t => t.name === away);
+      if (!homeTeam || !awayTeam) return res.status(400).json({ error: 'Unknown team' });
+      const [homeInj, awayInj] = await Promise.all([
+        nflDepthAndInjuries(homeTeam.id).catch(() => ({ injuries: [], nextMen: [] })),
+        nflDepthAndInjuries(awayTeam.id).catch(() => ({ injuries: [], nextMen: [] }))
+      ]);
+      const recordFor = id => {
+        const s = standings[id];
+        if (!s || s.wins == null || s.losses == null) return null;
+        return s.ties ? `${s.wins}-${s.losses}-${s.ties}` : `${s.wins}-${s.losses}`;
+      };
+      res.json({
+        home: { name: home, logo: homeTeam.logo, record: recordFor(homeTeam.id), injuries: homeInj.injuries, nextMen: homeInj.nextMen },
+        away: { name: away, logo: awayTeam.logo, record: recordFor(awayTeam.id), injuries: awayInj.injuries, nextMen: awayInj.nextMen }
+      });
+    })().catch(err => sendUpstreamError(res, err));
+  });
+
+  // Position-aware game-log form. NFL gamelogs repeat labels across stat
+  // groups (passing YDS then rushing YDS), so values are picked by scanning
+  // label positions in order.
+  app.get('/api/nfl/player-form', (req, res) => {
+    (async () => {
+      const { id, vsTeam } = req.query;
+      if (!/^\d{1,10}$/.test(String(id||''))) return res.status(400).json({ error: 'player id required' });
+      const wantVs = /^\d{1,4}$/.test(String(vsTeam||''));
+      const endYear = new Date(now()).getFullYear();
+
+      let labels, allRows;
+      if (wantVs) {
+        ({ labels, rows: allRows } = await gamelogMultiSeason('football/nfl', id, endYear));
+      } else {
+        const data = await fetchExternal(
+          `https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/${id}/gamelog`,
+          STATS_TTL_MS
+        );
+        labels = data.labels || data.names || [];
+        allRows = gamelogRows(data).sort((a,b)=> new Date(b.date||0) - new Date(a.date||0));
+      }
+      const idxAll = key => labels.map((l,i)=> l === key ? i : -1).filter(i=>i!==-1);
+      const avgAt = (list, i) => {
+        if (i === undefined) return null;
+        const v = list.map(r => Number(r.stats[i])).filter(x => !isNaN(x));
+        return v.length ? Math.round(v.reduce((s,x)=>s+x,0) / v.length * 10) / 10 : null;
+      };
+      const yds = idxAll('YDS'), td = idxAll('TD'), rec = idxAll('REC');
+      const pack = list => ({
+        games: list.length,
+        yds1: avgAt(list, yds[0]), yds2: avgAt(list, yds[1]),
+        td1: avgAt(list, td[0]), td2: avgAt(list, td[1]),
+        rec: avgAt(list, rec[0])
+      });
+      const seasonRows = wantVs ? allRows.filter(r => new Date(r.date) > new Date(now() - 370*86400000)) : allRows;
+      const out = { labels, last5: pack(seasonRows.slice(0, 5)), season: pack(seasonRows) };
+      if (wantVs) {
+        const vsRows = allRows.filter(r => r.oppId === String(vsTeam));
+        const at = (r, i) => i === undefined ? null : (isNaN(Number(r.stats[i])) ? null : Number(r.stats[i]));
+        out.vsOpponent = {
+          ...pack(vsRows),
+          abbrev: vsRows[0] ? vsRows[0].oppAbbrev : null,
+          meetings: vsRows.slice(0, 5).map(r => ({
+            date: r.date ? String(r.date).slice(0, 10) : null,
+            home: r.home,
+            yds1: at(r, yds[0]), yds2: at(r, yds[1]), td1: at(r, td[0]), rec: at(r, rec[0])
+          }))
+        };
+      }
+      res.json(out);
+    })().catch(err => sendUpstreamError(res, err));
+  });
+
+  // ---------- Cross-sport Team Cheat Sheet (search + one glossary-shaped card) ----------
+  // Every stat we can put a real number behind, sport by sport, plus an
+  // honest "not available free" row for anything that needs paid /
+  // proprietary data (DVOA, EPA models built on full play-by-play, SIERA,
+  // wOBA weights aren't public-formula-computable to FanGraphs' precision,
+  // umpire tendencies, ATS/O-U history). fmt() renders null as an em dash so
+  // the frontend never has to special-case a missing number.
+  const MLB_TTL_MS = 12 * 60 * 60 * 1000;
+  let mlbTeamsCache = null;
+  async function mlbTeamsList(){
+    if (mlbTeamsCache) return mlbTeamsCache;
+    const data = await fetchStats('/api/v1/teams?sportId=1&activeStatus=Y', 24 * 60 * 60 * 1000);
+    mlbTeamsCache = (data.teams || []).map(t => ({ id: t.id, name: t.name, abbrev: t.abbreviation, logo: `https://www.mlbstatic.com/team-logos/${t.id}.svg`, venueId: t.venue && t.venue.id }));
+    return mlbTeamsCache;
+  }
+
+  // Real, official fence distances for every park — straight from MLB's own
+  // venues endpoint (`fieldInfo`), one batched call covering all 30 venue ids
+  // at once. Dimensions essentially never change mid-season, so this is
+  // cached hard (24h) same as the team list it depends on.
+  // "Compact/Average/Spacious" is computed purely from the average of the 5
+  // real fence distances, ranked against the other 29 real parks — it does
+  // NOT capture altitude, wind, or roof effects. Coors Field is the one
+  // well-documented exception in MLB: it actually ranks LAST (roomiest
+  // average distance of all 30, verified) despite being famous for
+  // inflating offense, because Denver's mile-high altitude and thin air let
+  // the ball carry farther than its dimensions alone suggest — so it gets
+  // an explicit note instead of just a misleading "Spacious" tag.
+  let mlbParkDimsCache = null;
+  async function mlbParkDimensions(){
+    if (mlbParkDimsCache) return mlbParkDimsCache;
+    const teams = await mlbTeamsList();
+    const venueIds = [...new Set(teams.map(t => t.venueId).filter(Boolean))];
+    if (!venueIds.length) return {};
+    const data = await fetchStats(`/api/v1/venues?venueIds=${venueIds.join(',')}&hydrate=fieldInfo`, 24 * 60 * 60 * 1000);
+    const byVenueId = {};
+    (data.venues || []).forEach(v => {
+      const f = v.fieldInfo || {};
+      if (f.leftLine == null || f.center == null || f.rightLine == null) return;
+      byVenueId[v.id] = {
+        venue: v.name,
+        leftLine: f.leftLine, leftCenter: f.leftCenter ?? null, center: f.center,
+        rightCenter: f.rightCenter ?? null, rightLine: f.rightLine,
+        roofType: f.roofType || null, capacity: f.capacity ?? null
+      };
+    });
+    const rows = teams
+      .map(t => ({ team: t.name, d: byVenueId[t.venueId] }))
+      .filter(r => r.d);
+    rows.forEach(r => {
+      const pts = [r.d.leftLine, r.d.leftCenter, r.d.center, r.d.rightCenter, r.d.rightLine].filter(v => v != null);
+      r.avgDistance = Math.round((pts.reduce((a, b) => a + b, 0) / pts.length) * 10) / 10;
+    });
+    rows.sort((a, b) => a.avgDistance - b.avgDistance);
+    const n = rows.length;
+    rows.forEach((r, i) => {
+      r.rank = i + 1;
+      const pct = i / (n - 1); // 0 = most compact, 1 = roomiest
+      r.tier = pct < 1 / 3 ? 'Compact' : pct < 2 / 3 ? 'Average' : 'Spacious';
+    });
+    const map = {};
+    rows.forEach(r => {
+      map[r.team] = {
+        venue: r.d.venue, leftLine: r.d.leftLine, leftCenter: r.d.leftCenter, center: r.d.center,
+        rightCenter: r.d.rightCenter, rightLine: r.d.rightLine, roofType: r.d.roofType, capacity: r.d.capacity,
+        avgDistance: r.avgDistance, rank: r.rank, outOf: n, tier: r.tier,
+        altitudeNote: r.team === 'Colorado Rockies'
+          ? "Coors Field's roomy dimensions understate it — Denver's mile-high altitude is well documented to add real carry, making it MLB's most HR-friendly park despite ranking last here by distance alone."
+          : null
+      };
+    });
+    mlbParkDimsCache = map;
+    return map;
+  }
+
+  // Note: MLB StatsAPI's `stats=sabermetrics` at team scope returns one row
+  // PER PLAYER on the roster, not a team aggregate — there's no team-level
+  // wRC+/FIP endpoint. `seasonAdvanced` is genuinely team-aggregated though,
+  // and exposes real team GB%/FB%/K-BB%, so we derive FIP/xFIP/wOBA/LOB%
+  // from raw counting stats using standard public sabermetric formulas
+  // instead (see the /api/teams/stats MLB branch below).
+  async function mlbTeamStats(teamId){
+    const season = new Date(now()).getFullYear();
+    const [basic, advanced] = await Promise.all([
+      fetchStats(`/api/v1/teams/${teamId}/stats?stats=season&group=hitting,pitching&season=${season}`, MLB_TTL_MS),
+      fetchStats(`/api/v1/teams/${teamId}/stats?stats=seasonAdvanced&group=hitting,pitching&season=${season}`, MLB_TTL_MS).catch(() => null)
+    ]);
+    const pick = (data, group) => {
+      const g = (data?.stats || []).find(s => s.group?.displayName === group);
+      return g?.splits?.[0]?.stat || {};
+    };
+    return {
+      hitting: pick(basic, 'hitting'), pitching: pick(basic, 'pitching'),
+      hittingAdv: advanced ? pick(advanced, 'hitting') : {}, pitchingAdv: advanced ? pick(advanced, 'pitching') : {}
+    };
+  }
+
+  function fmt(v, digits){
+    if (v === null || v === undefined || v === '' || (typeof v === 'number' && isNaN(v))) return null;
+    if (typeof v === 'number' && digits !== undefined) return v.toFixed(digits);
+    return String(v);
+  }
+  function row(label, value, digits, suffix){
+    const v = fmt(value, digits);
+    return { label, value: v === null ? null : v + (suffix || ''), available: v !== null };
+  }
+  function naRow(label, why){ return { label, value: null, available: false, why }; }
+
+  app.get('/api/teams/search', (req, res) => {
+    (async () => {
+      const q = String(req.query.q || '').trim().toLowerCase();
+      if (q.length < 2) return res.json({ results: [] });
+      const [nbaT, nflT, mlbT] = await Promise.all([nbaTeams(), nflTeams(), mlbTeamsList()]);
+      const pool = [
+        ...nbaT.map(t => ({ ...t, sport: 'nba', sportLabel: 'NBA' })),
+        ...nflT.map(t => ({ ...t, sport: 'nfl', sportLabel: 'NFL' })),
+        ...mlbT.map(t => ({ ...t, sport: 'mlb', sportLabel: 'MLB' }))
+      ];
+      const results = pool.filter(t => t.name.toLowerCase().includes(q) || (t.abbrev || '').toLowerCase().includes(q));
+      res.json({ results: results.slice(0, 20) });
+    })().catch(err => sendUpstreamError(res, err));
+  });
+
+  app.get('/api/teams/stats', (req, res) => {
+    (async () => {
+      const { sport, id } = req.query;
+      if (!['nba', 'nfl', 'mlb'].includes(sport) || !/^\d{1,5}$/.test(String(id || ''))) {
+        return res.status(400).json({ error: 'sport (nba/nfl/mlb) and id required' });
+      }
+
+      if (sport === 'nba') {
+        const teams = await nbaTeams();
+        const team = teams.find(t => String(t.id) === String(id));
+        if (!team) return res.status(400).json({ error: 'Unknown team id' });
+        const [m, standings] = await Promise.all([nbaTeamMetrics(id), nbaStandingsMap()]);
+        const st = standings[id] || {};
+        const ortg = (m.poss && st.ppg !== undefined) ? 100 * st.ppg / m.poss : null;
+        const drtg = (m.poss && st.oppPpg !== undefined) ? 100 * st.oppPpg / m.poss : null;
+        return res.json({
+          team, sport, record: st.wins !== undefined ? `${st.wins}-${st.losses}` : null,
+          homeRecord: st.homeRecord ?? null, roadRecord: st.roadRecord ?? null,
+          groups: [
+            { title: 'Basic Stats', rows: [
+              row('PPG', st.ppg, 1), row('OPPG', st.oppPpg, 1),
+              row('FG%', m.fgPct, 1), row('3P%', m.threePct, 1), row('FT%', m.ftPct, 1),
+              row('REB', m.rebPg, 1), row('AST', m.astPg, 1), row('STL', m.stlPg, 1),
+              row('BLK', m.blkPg, 1), row('TOV', m.tovPg, 1)
+            ]},
+            { title: 'Advanced Team Stats', rows: [
+              row('Pace', m.poss, 1), row('ORtg', ortg, 1), row('DRtg', drtg, 1),
+              row('NetRtg', ortg !== null && drtg !== null ? ortg - drtg : null, 1),
+              row('eFG%', m.efgPct, 1), row('TS%', m.tsPct, 1), row('AST%', m.astPct, 1), row('TOV%', m.tovPct, 1),
+              naRow('REB%', 'Needs a specific opponent — open the NBA Dashboard and pick a matchup for this one.')
+            ]},
+            { title: 'Betting Stats', rows: [
+              row('SU Record', st.wins !== undefined ? `${st.wins}-${st.losses}` : null),
+              row('Home Record', st.homeRecord), row('Road Record', st.roadRecord),
+              naRow('ATS', 'Needs paid historical closing-line data — no free source exists.'),
+              naRow('O/U Record', 'Same — needs paid closing-line history.'),
+              naRow('Rest Advantage / B2B / 3-in-4', 'Matchup-specific — see the NBA Dashboard for a chosen opponent.')
+            ]}
+          ]
+        });
+      }
+
+      if (sport === 'nfl') {
+        const teams = await nflTeams();
+        const team = teams.find(t => String(t.id) === String(id));
+        if (!team) return res.status(400).json({ error: 'Unknown team id' });
+        const [m, standings] = await Promise.all([nflTeamMetrics(id), nflStandingsMap()]);
+        const st = standings[id] || {};
+        return res.json({
+          team, sport, record: st.wins !== undefined ? `${st.wins}-${st.losses}${st.ties ? '-' + st.ties : ''}` : null,
+          groups: [
+            { title: 'Offensive Stats', rows: [
+              row('YPG', m.ypg, 1), row('PPG', st.pf, 1), row('Pass Yds/g', m.passYpg, 1), row('Rush Yds/g', m.rushYpg, 1),
+              row('YPP', m.ypp, 2), row('TOP', m.topSecPerGame ? `${Math.floor(m.topSecPerGame/60)}:${String(Math.round(m.topSecPerGame%60)).padStart(2,'0')}` : null),
+              row('3D%', m.thirdDownPct, 1), row('RZ%', m.redZoneTdPct, 1)
+            ]},
+            { title: 'Defensive Stats', rows: [
+              row('Sacks Made', m.sacksMadePerGame, 2, '/g'), row('INT (caught)', m.intsCaughtPerGame, 2, '/g'),
+              naRow('QB Hits', 'Not in ESPN’s free team statistics feed.'),
+              naRow('Pressure%', 'Needs play-by-play tracking data — proprietary (PFF/NFL NextGen).'),
+              row('TFL', m.tflPerGame, 2, '/g')
+            ]},
+            { title: 'Advanced Stats', rows: [
+              row('ANY/A', m.anyA, 2),
+              naRow('EPA/play', 'Requires a full play-by-play expected-points model — no free equivalent to nflfastR’s dataset+model.'),
+              naRow('Success Rate', 'Same — needs the play-by-play EPA model above.'),
+              naRow('DVOA', 'Proprietary to Football Outsiders/FTN — no free source.'),
+              naRow('CPOE', 'Needs a proprietary completion-probability model.'),
+              row('Explosive Play Rate', m.explosiveRate !== null ? m.explosiveRate * 100 : null, 1),
+              naRow('Neutral Pace', 'Needs game-state-aware play-by-play — not on any free feed.')
+            ]},
+            { title: 'Betting Stats', rows: [
+              naRow('ATS', 'Needs paid historical closing-line data.'), naRow('O/U Record', 'Same.'),
+              row('Turnover Margin', m.turnoverMargin, 2, '/g'),
+              row('Red Zone Efficiency', m.redZoneTdPct, 1),
+              naRow('Weather', 'Matchup-specific — see the NFL Dashboard for a chosen opponent.'),
+              row('Home Record', st.homeRecord), naRow('Rest Advantage', 'Matchup-specific — see the NFL Dashboard.')
+            ]}
+          ]
+        });
+      }
+
+      // MLB
+      const teams = await mlbTeamsList();
+      const team = teams.find(t => String(t.id) === String(id));
+      if (!team) return res.status(400).json({ error: 'Unknown team id' });
+      const s = await mlbTeamStats(id);
+      const h = s.hitting, p = s.pitching, ha = s.hittingAdv, pa = s.pitchingAdv;
+
+      // "892.1" -> 892.333 (the ".1"/".2" suffix means thirds of an inning, not decimal)
+      const ipToDecimal = ipStr => {
+        if (ipStr === undefined || ipStr === null) return null;
+        const [w, f] = String(ipStr).split('.');
+        return Number(w) + (f === '1' ? 1/3 : f === '2' ? 2/3 : 0);
+      };
+      const ip = ipToDecimal(p.inningsPitched);
+
+      // FIP: standard formula, using a fixed ~league-average constant (the
+      // real constant is recalculated each year to center FIP on league ERA;
+      // free MLB StatsAPI doesn't expose that year-specific value, so this
+      // is a close, standard estimate rather than the exact FanGraphs figure).
+      const FIP_CONST = 3.10;
+      const fip = (ip && p.homeRuns !== undefined && p.baseOnBalls !== undefined && p.hitBatsmen !== undefined && p.strikeOuts !== undefined)
+        ? ((13*p.homeRuns + 3*(p.baseOnBalls + p.hitBatsmen) - 2*p.strikeOuts) / ip) + FIP_CONST : null;
+
+      // xFIP: same as FIP but replaces actual HR allowed with (team fly balls
+      // × league-average HR/FB rate) — smooths out HR-luck. The league rate
+      // is a fixed standard estimate (~11.5%), not recomputed from live
+      // league-wide data every season.
+      const flyBalls = (pa.flyOuts !== undefined && pa.flyHits !== undefined) ? pa.flyOuts + pa.flyHits : null;
+      const LG_HR_FB = 0.115;
+      const xfip = (ip && flyBalls !== null && p.baseOnBalls !== undefined && p.hitBatsmen !== undefined && p.strikeOuts !== undefined)
+        ? ((13*(flyBalls*LG_HR_FB) + 3*(p.baseOnBalls + p.hitBatsmen) - 2*p.strikeOuts) / ip) + FIP_CONST : null;
+
+      const groundBalls = (pa.groundOuts !== undefined && pa.groundHits !== undefined) ? pa.groundOuts + pa.groundHits : null;
+      const gbPct = (groundBalls !== null && pa.ballsInPlay) ? groundBalls / pa.ballsInPlay * 100 : null;
+      const fbPct = pa.flyBallPercentage !== undefined ? Number(pa.flyBallPercentage) * 100 : null;
+      const kbbPct = pa.strikeoutsMinusWalksPercentage !== undefined ? Number(pa.strikeoutsMinusWalksPercentage) * 100 : null;
+
+      // LOB% (runners stranded): standard formula from raw pitching totals.
+      const lobPct = (p.hits !== undefined && p.baseOnBalls !== undefined && p.hitBatsmen !== undefined && p.runs !== undefined && p.homeRuns !== undefined)
+        ? ((p.hits + p.baseOnBalls + p.hitBatsmen - p.runs) / (p.hits + p.baseOnBalls + p.hitBatsmen - 1.4*p.homeRuns)) * 100 : null;
+
+      // wOBA: standard fixed run-value weights (FanGraphs recalibrates these
+      // slightly every year off full league data we don't have access to —
+      // this is the same widely-used approximation, not the exact yearly figure).
+      const singles = (h.hits !== undefined && h.doubles !== undefined && h.triples !== undefined && h.homeRuns !== undefined)
+        ? h.hits - h.doubles - h.triples - h.homeRuns : null;
+      const uBB = (h.baseOnBalls !== undefined && h.intentionalWalks !== undefined) ? h.baseOnBalls - h.intentionalWalks : null;
+      const woba = (singles !== null && uBB !== null && h.hitByPitch !== undefined && h.doubles !== undefined && h.triples !== undefined && h.homeRuns !== undefined && h.atBats !== undefined && h.sacFlies !== undefined)
+        ? (0.69*uBB + 0.722*h.hitByPitch + 0.888*singles + 1.271*h.doubles + 1.616*h.triples + 2.101*h.homeRuns) / (h.atBats + uBB + h.sacFlies + h.hitByPitch)
+        : null;
+
+      const iso = ha.iso !== undefined ? Number(ha.iso) : ((h.slg !== undefined && h.avg !== undefined) ? Number(h.slg) - Number(h.avg) : null);
+
+      res.json({
+        team, sport,
+        record: p.wins !== undefined ? `${p.wins}-${p.losses}` : null,
+        groups: [
+          { title: 'Hitting Stats', rows: [
+            row('AVG', h.avg), row('OBP', h.obp), row('SLG', h.slg), row('OPS', h.ops),
+            row('HR', h.homeRuns), row('RBI', h.rbi), row('SB', h.stolenBases), row('BB', h.baseOnBalls), row('K', h.strikeOuts)
+          ]},
+          { title: 'Advanced Hitting', rows: [
+            naRow('OPS+', 'Needs park-factor and league-average adjustment data not exposed by the free API.'),
+            row('wOBA', woba, 3), naRow('wRC+', 'Needs full league-wide averaging plus park factors — not available from the free API.'),
+            row('ISO', iso, 3), row('BABIP', h.babip),
+            naRow('Hard Hit %', 'On the Get Props page (Statcast) for individual batters — not aggregated to a team total here.'),
+            naRow('Barrel %', 'Same as Hard Hit% — batter-level on Get Props, not a team aggregate.')
+          ]},
+          { title: 'Pitching Stats', rows: [
+            row('ERA', p.era), row('WHIP', p.whip), row('IP', p.inningsPitched),
+            row('K/9', p.strikeoutsPer9Inn, 2), row('BB/9', p.walksPer9Inn, 2), row('HR/9', p.homeRunsPer9, 2)
+          ]},
+          { title: 'Advanced Pitching', rows: [
+            row('FIP', fip, 2), row('xFIP', xfip, 2),
+            naRow('xERA', 'Statcast’s expected-ERA model isn’t exposed via the free API.'),
+            naRow('SIERA', 'Proprietary to FanGraphs — no free source.'),
+            row('K-BB%', kbbPct, 1),
+            row('GB%', gbPct, 1), row('FB%', fbPct, 1),
+            row('LOB%', lobPct, 1)
+          ]},
+          { title: 'Betting Stats', rows: [
+            naRow('Bullpen ERA/WHIP', 'MLB’s stats API doesn’t split bullpen-only from the team total.'),
+            naRow('Starter Home/Away Splits', 'Player-level — check a specific pitcher on the Stats page.'),
+            naRow('Lefty vs Righty Splits', 'Matchup-specific — see HR Matchups on the Board for a chosen game.'),
+            naRow('Last 10 Games', 'See the MLB Board for recent form.'),
+            naRow('Wind Direction', 'Matchup-specific — see the weather strip on a loaded MLB game.'),
+            naRow('Umpire Tendencies', 'MLB doesn’t publish umpire assignments or tendencies via any free feed.')
+          ]}
+        ]
+      });
+    })().catch(err => sendUpstreamError(res, err));
+  });
+
+  // Team roster for the "View Roster" button on a Cheatsheet glossary card.
+  // NBA/NFL already have per-sport roster routes (used by their dashboards)
+  // reusing ESPN athlete ids, so a roster player's `id` here plugs straight
+  // into /api/stats/player. MLB has no such route yet, and its team ids
+  // (MLB StatsAPI) aren't in the same numbering space as ESPN's — so its
+  // players carry an `mlbId` instead, resolved via /api/teams/roster-player.
+  app.get('/api/mlb/roster', (req, res) => {
+    (async () => {
+      const { team } = req.query;
+      const teams = await mlbTeamsList();
+      if (!teams.some(t => String(t.id) === String(team))) return res.status(400).json({ error: 'Unknown team id' });
+      const data = await fetchStats(`/api/v1/teams/${team}/roster?rosterType=active`, MLB_TTL_MS);
+      const players = (data.roster || []).map(r => ({
+        id: r.person.id, mlbId: r.person.id, name: r.person.fullName,
+        position: r.position?.abbreviation || '',
+        headshot: `https://img.mlbstatic.com/mlb-photos/image/upload/w_180,q_100/v1/people/${r.person.id}/headshot/67/current.png`
+      }));
+      res.json({ players });
+    })().catch(err => sendUpstreamError(res, err));
+  });
+
+  // Real fence distances for every park, keyed by home team name — see
+  // mlbParkDimensions() above for the "Compact/Average/Spacious" methodology
+  // and why Coors Field carries an explicit note instead of just a tier tag.
+  app.get('/api/mlb/park-dimensions', (req, res) => {
+    mlbParkDimensions().then(map => res.json(map)).catch(err => sendUpstreamError(res, err));
+  });
+
+  // Direct MLB player lookup by StatsAPI person id — for roster-driven clicks,
+  // where we already have the exact id and don't need the ESPN-athlete-id +
+  // name-matching dance that /api/stats/player's MLB branch does for the
+  // global player search (which only starts from a name, not a known id).
+  app.get('/api/teams/roster-player', (req, res) => {
+    (async () => {
+      const { mlbId } = req.query;
+      if (!/^\d{1,10}$/.test(String(mlbId || ''))) return res.status(400).json({ error: 'Bad player id' });
+      const season = new Date(now()).getFullYear();
+      const data = await fetchStats(
+        `/api/v1/people/${mlbId}?hydrate=stats(group=[hitting,pitching],type=[season],season=${season}),currentTeam`,
+        STATS_TTL_MS
+      );
+      const person = (data.people || [])[0];
+      if (!person) return res.status(404).json({ error: 'Player not found' });
+      const groups = {};
+      (person.stats || []).forEach(sg => {
+        const grp = sg.group && sg.group.displayName;
+        const split = (sg.splits || [])[0];
+        if (grp && split && split.stat) groups[grp] = split.stat;
+      });
+      res.json({
+        mlb: {
+          mlbId: Number(mlbId), name: person.fullName,
+          team: person.currentTeam ? person.currentTeam.name : null,
+          position: person.primaryPosition ? person.primaryPosition.abbreviation : null,
+          season, hitting: groups.hitting || null, pitching: groups.pitching || null
+        }
+      });
+    })().catch(err => sendUpstreamError(res, err));
+  });
 
   // ---------- Player stat search (all free, keyless public APIs) ----------
   // ESPN's search covers every league we track and returns headshots;
@@ -326,6 +1814,7 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
   const ESPN_SCOREBOARDS = {
     baseball_mlb: 'baseball/mlb',
     basketball_nba: 'basketball/nba',
+    basketball_wnba: 'basketball/wnba',
     americanfootball_nfl: 'football/nfl',
     icehockey_nhl: 'hockey/nhl',
     americanfootball_ncaaf: 'football/college-football',
@@ -333,13 +1822,24 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     soccer_epl: 'soccer/eng.1',
     mma_mixed_martial_arts: 'mma/ufc'
   };
+  // ESPN's scoreboard defaults to a trimmed, "nationally relevant" slate for
+  // college sports (verified: NCAAF returned only 24 of ~86 real FBS games
+  // for the day without this) — group 80 is FBS, and a high limit keeps every
+  // game in that group instead of truncating. Harmless no-op for the pro
+  // leagues, which already return their full (much smaller) daily slate.
+  const ESPN_SCOREBOARD_PARAMS = {
+    americanfootball_ncaaf: '?groups=80&limit=300',
+    basketball_ncaab: '?limit=400'
+  };
   async function getScores(sport){
     const path = ESPN_SCOREBOARDS[sport];
-    const data = await fetchExternal(`https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard`, SCORES_TTL_MS);
+    const params = ESPN_SCOREBOARD_PARAMS[sport] || '';
+    const data = await fetchExternal(`https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard${params}`, SCORES_TTL_MS);
     return (data.events || []).map(ev => {
       const comp = (ev.competitions || [])[0] || {};
-      const started = (ev.status && ev.status.type && ev.status.type.state) !== 'pre';
-      return {
+      const state = ev.status && ev.status.type && ev.status.type.state;
+      const started = state !== 'pre';
+      const out = {
         id: ev.id,
         commence_time: ev.date,
         completed: !!(ev.status && ev.status.type && ev.status.type.completed),
@@ -350,6 +1850,34 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
           score: c.score != null ? String(c.score) : ''
         })) : null
       };
+      // Football only (NFL + college): live down/distance/possession state for
+      // the interactive field tracker. ESPN only populates `situation` while
+      // the game is actually in progress (state === 'in') — pre/post games
+      // get none of this, by design.
+      if((sport === 'americanfootball_nfl' || sport === 'americanfootball_ncaaf') && state === 'in'){
+        const sit = comp.situation || {};
+        const home = (comp.competitors || []).find(c => c.homeAway === 'home') || {};
+        const away = (comp.competitors || []).find(c => c.homeAway === 'away') || {};
+        const statusType = (ev.status && ev.status.type) || {};
+        const isHalftime = statusType.name === 'STATUS_HALFTIME' || /half/i.test(statusType.shortDetail || statusType.description || '');
+        out.situation = {
+          period: ev.status && ev.status.period != null ? ev.status.period : null,
+          displayClock: (ev.status && ev.status.displayClock) || null,
+          isHalftime,
+          down: sit.down != null ? sit.down : null,
+          distance: sit.distance != null ? sit.distance : null,
+          yardLine: sit.yardLine != null ? sit.yardLine : null,
+          downDistanceText: sit.shortDownDistanceText || sit.downDistanceText || null,
+          possessionText: sit.possessionText || null,
+          isRedZone: !!sit.isRedZone,
+          possessionTeamId: sit.possession || null,
+          homeTeamId: (home.team && home.team.id) || null,
+          awayTeamId: (away.team && away.team.id) || null,
+          homeTimeouts: sit.homeTimeouts != null ? sit.homeTimeouts : null,
+          awayTimeouts: sit.awayTimeouts != null ? sit.awayTimeouts : null
+        };
+      }
+      return out;
     });
   }
   app.get('/api/scores/:sport', (req, res) => {
@@ -359,6 +1887,37 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
       res.set('x-cache-age-seconds', '0');
       res.json(body);
     }).catch(err => sendUpstreamError(res, err));
+  });
+
+  // Season windows for every tracked sport (college + pro) — free from the
+  // same ESPN scoreboard each sport already uses for scores, which stamps
+  // its response with the active season's own name/type/date range whether
+  // or not any games are on today. One cached call per sport, long TTL.
+  const SEASON_STATUS_TTL_MS = 12 * 60 * 60 * 1000;
+  async function getSeasonStatus(sport){
+    const path = ESPN_SCOREBOARDS[sport];
+    if (!path || path.startsWith('mma')) return null; // UFC is event-based, no season window
+    const data = await fetchExternal(`https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard`, SEASON_STATUS_TTL_MS);
+    const season = (data.leagues || [])[0]?.season;
+    if (!season || !season.startDate || !season.endDate) return null;
+    const start = new Date(season.startDate), end = new Date(season.endDate), n = new Date(now());
+    return {
+      name: season.displayName || null,
+      phase: season.type?.name || null,
+      startDate: season.startDate,
+      endDate: season.endDate,
+      inSeason: n >= start && n <= end,
+      daysUntilStart: n < start ? Math.ceil((start - n) / 86400000) : null
+    };
+  }
+  app.get('/api/season-status', (req, res) => {
+    (async () => {
+      const entries = await Promise.all(Object.keys(ESPN_SCOREBOARDS).map(async sport => {
+        try { return [sport, await getSeasonStatus(sport)]; }
+        catch (e) { return [sport, null]; }
+      }));
+      res.json(Object.fromEntries(entries));
+    })().catch(err => sendUpstreamError(res, err));
   });
 
   // MLB live in-game detail (inning, outs, balls/strikes) — MLB StatsAPI only
@@ -409,6 +1968,27 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     });
   });
 
+  // Opt-in: every alternate line for one market on one game, fetched only
+  // when the client asks (switching a prop category's tab to "Alt Lines")
+  // — not bundled into the main props call, so browsing props at the
+  // default one-line-per-player view costs exactly what it always did.
+  app.get('/api/props-alt/:sport/:eventId/:market', (req, res) => {
+    handlePropsAltRequest(req, res).catch(err => {
+      console.error(`Alt props fetch failed: ${err && err.message || err}`);
+      if (!res.headersSent) sendUpstreamError(res, err);
+    });
+  });
+
+  async function handlePropsAltRequest(req, res){
+    const { sport, eventId, market } = req.params;
+    const markets = PROP_MARKETS[sport];
+    if (!markets) return res.status(400).json({ error: 'Props not supported for this sport' });
+    if (!markets.includes(market)) return res.status(400).json({ error: 'Unknown market for this sport' });
+    if (NO_ALT_MARKETS.has(market)) return res.status(400).json({ error: 'This market has only one line — no alternates exist' });
+    if (!/^[a-z0-9]{1,64}$/i.test(eventId)) return res.status(400).json({ error: 'Bad event id' });
+    await proxy(`/v4/sports/${sport}/events/${eventId}/odds/?regions=us&markets=${market}_alternate&oddsFormat=american&includeLinks=true&includeSids=true`, res);
+  }
+
   async function handlePropsRequest(req, res){
     const { sport, eventId } = req.params;
     const sportMarkets = PROP_MARKETS[sport];
@@ -450,21 +2030,29 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     // MLB only: resolve each player name to a StatsAPI personId (cached lookup,
     // same helper /api/analyze uses) so the frontend can show a real headshot.
     if (sport === 'baseball_mlb') {
-      const names = new Set();
-      (body.bookmakers || []).forEach(bm => (bm.markets || []).forEach(m => (m.outcomes || []).forEach(o => {
-        const nm = o.description || o.name;
-        if (nm) names.add(nm);
-      })));
       const season = new Date(now()).getFullYear();
-      const mlbIds = {};
       for (const nm of names) {
         try {
           const id = await mlbPlayerId(nm, season);
-          if (id) mlbIds[nm.toLowerCase()] = id;
-        } catch (e) { /* best-effort — a missed id just means no photo for that player */ }
+          if (id) headshots[nm.toLowerCase()] = `https://img.mlbstatic.com/mlb-photos/image/upload/w_180,q_100/v1/people/${id}/headshot/67/current.png`;
+        } catch (e) { /* a missed id just means no photo for that player */ }
       }
-      body = { ...body, mlbIds };
+    } else if (names.size && (sport === 'basketball_nba' || sport === 'americanfootball_nfl')) {
+      try {
+        const teams = sport === 'basketball_nba' ? await nbaTeams() : await nflTeams();
+        const rosterFn = sport === 'basketball_nba' ? nbaRosterPlayers : nflRosterPlayers;
+        const sides = [body.home_team, body.away_team]
+          .map(teamName => teams.find(t => t.name === teamName))
+          .filter(Boolean);
+        const rosters = (await Promise.all(sides.map(t => rosterFn(t.id).catch(() => [])))).flat();
+        names.forEach(nm => {
+          const target = normName(nm);
+          const player = rosters.find(p => normName(p.name) === target);
+          if (player && player.headshot) headshots[nm.toLowerCase()] = player.headshot;
+        });
+      } catch (e) { /* couldn't resolve either team/roster — props still work, just no photos */ }
     }
+    if (Object.keys(headshots).length) body = { ...body, headshots };
 
     if (r.remaining) res.set('x-requests-remaining', r.remaining);
     res.set('x-cache-age-seconds', String(r.cacheAge));
@@ -600,9 +2188,17 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
         const ba = st.avg !== undefined ? Number(st.avg) : null;
         const obp = st.obp !== undefined ? Number(st.obp) : null;
         const slg = st.slg !== undefined ? Number(st.slg) : null;
+        // hr here is the hand-SPLIT total (e.g. HR vs LHP only) — deliberately
+        // matched to ba/obp/slg/iso above for "how does he hit lefties"
+        // matchup context. seasonHr is the real, full-season, unsplit total —
+        // used for "how many has he hit this year" displays (HR Leaders, the
+        // plain HR badge), which is a different question and was previously
+        // being answered with the split number by mistake.
         const hr = st.homeRuns !== undefined ? Number(st.homeRuns) : null;
+        const seasonSt = b.splits.season || {};
+        const seasonHr = seasonSt.homeRuns !== undefined ? Number(seasonSt.homeRuns) : null;
         const iso = (slg !== null && ba !== null) ? Math.round((slg - ba) * 1000) / 1000 : null;
-        return { id, name: b.name, hand: b.hand, hr, ba, obp, slg, iso, bvp: (bvpMap && bvpMap[id]) || null };
+        return { id, name: b.name, hand: b.hand, hr, seasonHr, ba, obp, slg, iso, bvp: (bvpMap && bvpMap[id]) || null };
       }).filter(Boolean);
     }
 
@@ -864,7 +2460,10 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
         if (cfg.startsOnly) games = games.filter(g => g.started);
         const values = games.map(g => g.value);
         if (!values.length) { skipped.add(prop.player); continue; }
-        const pick = analyzeProp(prop, { recentValues: values.slice(0, cfg.window), seasonValues: values });
+        const recentOutcomes = cfg.group === 'hitting'
+          ? games.slice(0, cfg.window).map(g => classifyBattingGame(g.stat))
+          : null;
+        const pick = analyzeProp(prop, { recentValues: values.slice(0, cfg.window), seasonValues: values, recentOutcomes });
         if (pick) {
           if (cfg.group === 'hitting' && lineupStatus === 'pending') {
             pick.analysis.flags.push('lineup_unconfirmed');
@@ -889,6 +2488,7 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
       for (const p of body.picks) {
         store.logPick({
           id: `${eventId}|${p.player}|${p.market}|${p.line}|${p.side}`,
+          kind: 'prop',
           ts: new Date(now()).toISOString(),
           eventId,
           gameDate: etDate,
@@ -905,6 +2505,82 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     }
     analysisCache.set(eventId, { body, expires: now() + cacheTtlMs });
     res.json(body);
+  }
+
+  const MARKET_NAME = { h2h: 'Moneyline', spreads: 'Spread', totals: 'Total' };
+  function notifyBetGraded(pick, actual, result){
+    if (!notifyStore.prefs().betGraded) return;
+    const RESULT_LABEL = { hit: 'WON', miss: 'LOST', push: 'PUSH', void: 'VOID' };
+    const desc = pick.kind === 'bet'
+      ? `${pick.selection}${pick.point != null ? ' ' + (pick.point > 0 ? '+' : '') + pick.point : ''} — ${MARKET_NAME[pick.market] || pick.market}`
+      : `${pick.player} — ${pick.side}${pick.line != null ? ' ' + pick.line : ''}`;
+    const body = actual == null
+      ? `${desc}: ${RESULT_LABEL[result] || result} (no stat found)`
+      : `${desc}: ${RESULT_LABEL[result] || result} (actual ${actual})`;
+    sendPushToAll({ title: 'Bet graded', body, tag: 'bet-graded-' + pick.id, url: '/record.html' })
+      .catch(e => console.error(`push: bet-graded notify failed (${e && e.message})`));
+  }
+
+  // Team watchlist poller — independent of any bet: alerts when a watched
+  // team's own score increases (not just "the game state changed"), and once
+  // per game for a kickoff-soon reminder. Reuses the same free ESPN getScores()
+  // the Board page's live-score poll already relies on — no extra API cost.
+  async function pollWatchlist(){
+    const watchlist = notifyStore.watchlist();
+    if (!watchlist.length) return;
+    const bySport = {};
+    watchlist.forEach(w => (bySport[w.sport] = bySport[w.sport] || []).push(w.team));
+    for (const sport of Object.keys(bySport)) {
+      let games;
+      try { games = await getScores(sport); } catch (e) { continue; }
+      const teams = bySport[sport];
+      for (const game of games) {
+        const watchedHome = teams.find(t => game.home_team.toLowerCase().includes(t.toLowerCase()));
+        const watchedAway = teams.find(t => game.away_team.toLowerCase().includes(t.toLowerCase()));
+        if (!watchedHome && !watchedAway) continue;
+
+        if (notifyStore.prefs().gameStart && !notifyStore.startAlreadyNotified(game.id)) {
+          const kickoff = Date.parse(game.commence_time);
+          const minsAway = (kickoff - now()) / 60000;
+          if (minsAway > 0 && minsAway <= 15) {
+            notifyStore.markStartNotified(game.id);
+            sendPushToAll({
+              title: 'Kickoff soon',
+              body: `${game.away_team} @ ${game.home_team} starts in ${Math.round(minsAway)} min`,
+              tag: 'kickoff-' + game.id, url: '/board.html?sport=' + sport
+            }).catch(e => console.error(`push: kickoff notify failed (${e && e.message})`));
+          }
+        }
+
+        if (!game.scores) continue;
+        const homeScore = Number((game.scores.find(s => s.name === game.home_team) || {}).score);
+        const awayScore = Number((game.scores.find(s => s.name === game.away_team) || {}).score);
+        if (watchedHome && Number.isFinite(homeScore)) {
+          const key = game.id + '|home';
+          const prev = notifyStore.seenScore(key);
+          if (prev !== undefined && homeScore > prev) {
+            sendPushToAll({
+              title: `${game.home_team} scored!`,
+              body: `Now ${homeScore}-${Number.isFinite(awayScore) ? awayScore : '?'} vs ${game.away_team}`,
+              tag: key, url: '/board.html?sport=' + sport
+            }).catch(e => console.error(`push: score notify failed (${e && e.message})`));
+          }
+          notifyStore.setSeenScore(key, homeScore);
+        }
+        if (watchedAway && Number.isFinite(awayScore)) {
+          const key = game.id + '|away';
+          const prev = notifyStore.seenScore(key);
+          if (prev !== undefined && awayScore > prev) {
+            sendPushToAll({
+              title: `${game.away_team} scored!`,
+              body: `Now ${awayScore}-${Number.isFinite(homeScore) ? homeScore : '?'} vs ${game.home_team}`,
+              tag: key, url: '/board.html?sport=' + sport
+            }).catch(e => console.error(`push: score notify failed (${e && e.message})`));
+          }
+          notifyStore.setSeenScore(key, awayScore);
+        }
+      }
+    }
   }
 
   async function gradePendingPicks(){
@@ -924,7 +2600,7 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
       const split = games.find(g => g.date === p.gameDate);
       const gradedTs = new Date(now()).toISOString();
       if (!split) {
-        if (daysPast >= 2) store.grade(p.id, null, 'void', gradedTs);
+        if (daysPast >= 2 && store.grade(p.id, null, 'void', gradedTs)) notifyBetGraded(p, null, 'void');
         continue;
       }
       const actual = split.value;
@@ -932,7 +2608,100 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
       if (actual === p.line) result = 'push';
       else if (p.side === 'Over') result = actual > p.line ? 'hit' : 'miss';
       else result = actual < p.line ? 'hit' : 'miss';
-      store.grade(p.id, actual, result, gradedTs);
+      if (store.grade(p.id, actual, result, gradedTs)) notifyBetGraded(p, actual, result);
+    }
+  }
+
+  // Grades moneyline/spread/total slip picks — the bet types Record couldn't
+  // see at all before, since the Slip is client-only localStorage. Simpler
+  // than MLB prop grading: getScores() already tells us `completed` and the
+  // final score directly, no date/StatsAPI juggling needed. Matches by team
+  // name (not gameId — The Odds API and ESPN use different id spaces
+  // entirely, same reason common.js's findScoreFor matches on names).
+  function teamNameMatch(a, b){
+    return (a || '').trim().toLowerCase() === (b || '').trim().toLowerCase();
+  }
+  async function gradePendingBets(){
+    const pendingBets = store.pending().filter(p => p.kind === 'bet');
+    if (!pendingBets.length) return;
+    const bySport = {};
+    pendingBets.forEach(p => (bySport[p.sport] = bySport[p.sport] || []).push(p));
+    for (const sport of Object.keys(bySport)) {
+      let games;
+      try { games = await getScores(sport); } catch (e) { continue; }
+      for (const p of bySport[sport]) {
+        const game = games.find(g => teamNameMatch(g.home_team, p.homeTeam) && teamNameMatch(g.away_team, p.awayTeam));
+        if (!game || !game.completed || !game.scores) continue;
+        const homeEntry = game.scores.find(s => teamNameMatch(s.name, game.home_team));
+        const awayEntry = game.scores.find(s => teamNameMatch(s.name, game.away_team));
+        const homeScore = Number(homeEntry && homeEntry.score);
+        const awayScore = Number(awayEntry && awayEntry.score);
+        if (!Number.isFinite(homeScore) || !Number.isFinite(awayScore)) continue;
+
+        const isHome = teamNameMatch(p.selection, p.homeTeam);
+        const mine = isHome ? homeScore : awayScore;
+        const theirs = isHome ? awayScore : homeScore;
+        let result, actual;
+        if (p.market === 'h2h') {
+          actual = mine - theirs;
+          result = actual === 0 ? 'push' : actual > 0 ? 'hit' : 'miss';
+        } else if (p.market === 'spreads') {
+          actual = (mine - theirs) + p.point;
+          result = actual === 0 ? 'push' : actual > 0 ? 'hit' : 'miss';
+        } else if (p.market === 'totals') {
+          actual = homeScore + awayScore;
+          if (p.selection === 'Over') result = actual === p.point ? 'push' : actual > p.point ? 'hit' : 'miss';
+          else result = actual === p.point ? 'push' : actual < p.point ? 'hit' : 'miss';
+        } else continue;
+
+        const gradedTs = new Date(now()).toISOString();
+        if (store.grade(p.id, actual, result, gradedTs)) notifyBetGraded(p, actual, result);
+      }
+    }
+  }
+
+  // Grades NFL player props added from Board (not the MLB-only Get Props
+  // "Analyze" flow). Unlike MLB's next-day StatsAPI gamelog dependency, an
+  // NFL box score is final the moment ESPN marks the game completed, so this
+  // grades same-day, on the same 60s cadence as bet grading.
+  async function gradePendingNflProps(){
+    const pending = store.pending().filter(p => p.kind === 'prop' && p.sport === 'americanfootball_nfl');
+    if (!pending.length) return;
+    let games;
+    try { games = await getScores('americanfootball_nfl'); } catch (e) { return; }
+    const boxCache = new Map(); // ESPN event id -> Promise<byPlayer>
+    for (const p of pending) {
+      const game = games.find(g => teamNameMatch(g.home_team, p.homeTeam) && teamNameMatch(g.away_team, p.awayTeam));
+      if (!game || !game.completed) continue;
+      let byPlayer;
+      try {
+        if (!boxCache.has(game.id)) boxCache.set(game.id, nflBoxScoreStats(game.id));
+        byPlayer = await boxCache.get(game.id);
+      } catch (e) { continue; }
+      const gradedTs = new Date(now()).toISOString();
+      const stat = byPlayer[normName(p.player)];
+      if (!stat) {
+        // Game's final and this player never shows up in the box score at
+        // all — inactive/DNP. Void rather than grade a false "miss", same
+        // as a real sportsbook would for a player who didn't play.
+        if (store.grade(p.id, null, 'void', gradedTs)) notifyBetGraded(p, null, 'void');
+        continue;
+      }
+      let actual, result;
+      if (p.market === 'player_anytime_td'){
+        const scored = ((stat.rushing && stat.rushing.TD) || 0) > 0 || ((stat.receiving && stat.receiving.TD) || 0) > 0;
+        actual = scored ? 1 : 0;
+        result = scored ? 'hit' : 'miss';
+      } else {
+        const cfg = NFL_MARKET_STATS[p.market];
+        if (!cfg) continue;
+        const catStat = stat[cfg.category];
+        actual = catStat ? (catStat[cfg.label] || 0) : 0;
+        if (actual === p.line) result = 'push';
+        else if (p.side === 'Over') result = actual > p.line ? 'hit' : 'miss';
+        else result = actual < p.line ? 'hit' : 'miss';
+      }
+      if (store.grade(p.id, actual, result, gradedTs)) notifyBetGraded(p, actual, result);
     }
   }
 
@@ -941,14 +2710,153 @@ function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now =
     boot.unref();
     const interval = setInterval(() => gradePendingPicks().catch(e => console.error(`sweep failed: ${e.message}`)), 6 * 60 * 60 * 1000);
     interval.unref();
+
+    const watchBoot = setTimeout(() => pollWatchlist().catch(e => console.error(`watchlist poll failed: ${e.message}`)), 15 * 1000);
+    watchBoot.unref();
+    const watchInterval = setInterval(() => pollWatchlist().catch(e => console.error(`watchlist poll failed: ${e.message}`)), 60 * 1000);
+    watchInterval.unref();
+
+    // Bet grading can happen same-day (just needs `completed` + final score,
+    // unlike MLB props' next-day StatsAPI dependency), so it runs on the same
+    // 60s cadence as the watchlist poll instead of the 6h prop sweep.
+    const betBoot = setTimeout(() => gradePendingBets().catch(e => console.error(`bet grading failed: ${e.message}`)), 20 * 1000);
+    betBoot.unref();
+    const betInterval = setInterval(() => gradePendingBets().catch(e => console.error(`bet grading failed: ${e.message}`)), 60 * 1000);
+    betInterval.unref();
+
+    const nflPropBoot = setTimeout(() => gradePendingNflProps().catch(e => console.error(`NFL prop grading failed: ${e.message}`)), 25 * 1000);
+    nflPropBoot.unref();
+    const nflPropInterval = setInterval(() => gradePendingNflProps().catch(e => console.error(`NFL prop grading failed: ${e.message}`)), 60 * 1000);
+    nflPropInterval.unref();
   }
 
   app.get('/api/record', (req, res) => {
     res.json(computeRecord(store.all()));
   });
 
+  // Logs a moneyline/spread/total leg the moment it's added to the Slip, so
+  // Record (and the "Bet graded" push) can see it — previously the Slip was
+  // pure client localStorage and the server never knew these existed at all.
+  app.post('/api/track-bet', (req, res) => {
+    const { sport, homeTeam, awayTeam, commenceTime, matchup, market, selection, point } = req.body || {};
+    if (!SPORTS.has(sport)) return res.status(400).json({ error: 'Unknown sport' });
+    if (typeof homeTeam !== 'string' || !homeTeam || typeof awayTeam !== 'string' || !awayTeam) {
+      return res.status(400).json({ error: 'homeTeam and awayTeam are required' });
+    }
+    if (!['h2h', 'spreads', 'totals'].includes(market)) return res.status(400).json({ error: 'Unsupported market' });
+    if (typeof selection !== 'string' || !selection) return res.status(400).json({ error: 'selection is required' });
+    if (market !== 'h2h' && typeof point !== 'number') return res.status(400).json({ error: 'point is required for spreads/totals' });
+    const pointKey = market === 'h2h' ? '' : point;
+    const id = `bet|${sport}|${homeTeam}|${awayTeam}|${market}|${selection}|${pointKey}`;
+    const gameDate = commenceTime ? new Date(commenceTime).toISOString().slice(0, 10) : null;
+    const logged = store.logPick({
+      id, kind: 'bet',
+      ts: new Date(now()).toISOString(),
+      sport, homeTeam, awayTeam, commenceTime: commenceTime || null, gameDate,
+      matchup: matchup || `${awayTeam} @ ${homeTeam}`,
+      market, selection, point: market === 'h2h' ? null : point
+    });
+    res.json({ ok: true, logged });
+  });
+
+  // Logs a player prop the moment it's added to the Slip from Board (not
+  // through Get Props' MLB-only "Analyze" flow), so it can be graded and
+  // notified on too. MLB reuses the exact stat-lookup path Get Props already
+  // has (same MLB_MARKET_STATS, same gradePendingPicks sweep) — NFL is graded
+  // separately via gradePendingNflProps() against ESPN's box score. Other
+  // sports aren't gradable yet (no stat-lookup infra built for them).
+  app.post('/api/track-prop', async (req, res) => {
+    const { sport, player, market, line, side, matchup, homeTeam, awayTeam, commenceTime } = req.body || {};
+    if (typeof player !== 'string' || !player) return res.status(400).json({ error: 'player is required' });
+    if (typeof side !== 'string' || !side) return res.status(400).json({ error: 'side is required' });
+    if (typeof commenceTime !== 'string' || !commenceTime) return res.status(400).json({ error: 'commenceTime is required' });
+
+    if (sport === 'baseball_mlb') {
+      if (!MLB_MARKET_STATS[market]) return res.status(400).json({ error: 'Unsupported market for MLB' });
+      if (typeof line !== 'number') return res.status(400).json({ error: 'line is required' });
+      const gameDate = new Date(commenceTime).toISOString().slice(0, 10);
+      const season = new Date(commenceTime).getFullYear();
+      let mlbId;
+      try { mlbId = await mlbPlayerId(player, season); } catch (e) { return sendUpstreamError(res, e); }
+      if (!mlbId) return res.status(404).json({ error: 'Player not found' });
+      const id = `prop|mlb|${player}|${market}|${line}|${side}|${gameDate}`;
+      const logged = store.logPick({
+        id, kind: 'prop', sport, ts: new Date(now()).toISOString(),
+        gameDate, matchup: matchup || '', player, mlbId,
+        market, line, side, bestBook: null, flags: []
+      });
+      return res.json({ ok: true, logged });
+    }
+
+    if (sport === 'americanfootball_nfl') {
+      const isAnytimeTd = market === 'player_anytime_td';
+      if (!isAnytimeTd && !NFL_MARKET_STATS[market]) return res.status(400).json({ error: 'Unsupported market for NFL' });
+      if (!isAnytimeTd && typeof line !== 'number') return res.status(400).json({ error: 'line is required' });
+      if (typeof homeTeam !== 'string' || !homeTeam || typeof awayTeam !== 'string' || !awayTeam) {
+        return res.status(400).json({ error: 'homeTeam and awayTeam are required' });
+      }
+      const lineKey = isAnytimeTd ? '' : line;
+      const id = `prop|nfl|${homeTeam}|${awayTeam}|${player}|${market}|${lineKey}|${side}`;
+      const logged = store.logPick({
+        id, kind: 'prop', sport, ts: new Date(now()).toISOString(),
+        homeTeam, awayTeam, commenceTime, matchup: matchup || `${awayTeam} @ ${homeTeam}`,
+        player, market, line: isAnytimeTd ? null : line, side
+      });
+      return res.json({ ok: true, logged });
+    }
+
+    return res.status(400).json({ error: 'Prop tracking is only available for MLB and NFL right now' });
+  });
+
+  // ---------- Push notifications: subscribe/unsubscribe, watchlist, prefs ----------
+  app.get('/api/push/vapid-public-key', (req, res) => {
+    if (!pushEnabled) return res.status(503).json({ error: 'Push not configured' });
+    res.json({ key: process.env.VAPID_PUBLIC_KEY });
+  });
+  app.post('/api/push/subscribe', (req, res) => {
+    const sub = req.body;
+    if (!sub || typeof sub.endpoint !== 'string') return res.status(400).json({ error: 'Bad subscription' });
+    notifyStore.addSubscription(sub);
+    res.json({ ok: true });
+  });
+  app.post('/api/push/unsubscribe', (req, res) => {
+    const { endpoint } = req.body || {};
+    if (typeof endpoint !== 'string') return res.status(400).json({ error: 'Bad endpoint' });
+    notifyStore.removeSubscription(endpoint);
+    res.json({ ok: true });
+  });
+
+  app.get('/api/watchlist', (req, res) => {
+    res.json({ watchlist: notifyStore.watchlist(), prefs: notifyStore.prefs() });
+  });
+  app.post('/api/watchlist', (req, res) => {
+    const { sport, team } = req.body || {};
+    if (typeof sport !== 'string' || typeof team !== 'string' || !team.trim()) {
+      return res.status(400).json({ error: 'sport and team are required' });
+    }
+    if (!SPORTS.has(sport)) return res.status(400).json({ error: 'Unknown sport' });
+    notifyStore.addWatch(sport, team.trim());
+    res.json({ ok: true, watchlist: notifyStore.watchlist() });
+  });
+  app.delete('/api/watchlist', (req, res) => {
+    const { sport, team } = req.body || {};
+    if (typeof sport !== 'string' || typeof team !== 'string') return res.status(400).json({ error: 'sport and team are required' });
+    notifyStore.removeWatch(sport, team);
+    res.json({ ok: true, watchlist: notifyStore.watchlist() });
+  });
+  app.post('/api/notify/prefs', (req, res) => {
+    const { gameStart, betGraded } = req.body || {};
+    const next = {};
+    if (typeof gameStart === 'boolean') next.gameStart = gameStart;
+    if (typeof betGraded === 'boolean') next.betGraded = betGraded;
+    notifyStore.setPrefs(next);
+    res.json({ ok: true, prefs: notifyStore.prefs() });
+  });
+
   app.locals.store = store;
   app.locals.gradePendingPicks = gradePendingPicks;
+  app.locals.gradePendingBets = gradePendingBets;
+  app.locals.gradePendingNflProps = gradePendingNflProps;
 
   app.use(express.static(path.join(__dirname, 'public')));
   return app;
@@ -968,11 +2876,17 @@ if (require.main === module) {
   // ODDS_CACHE_MINUTES stretches how long odds/props responses are reused
   // before spending fresh credits. Default 10; raise to 30–60 to sip quota.
   const cacheMinutes = Math.max(1, Number(process.env.ODDS_CACHE_MINUTES) || 10);
+  // Lock screen turned off for now (single-user password gate isn't what's
+  // needed yet — real multi-user accounts are the eventual plan). The whole
+  // feature (auth.js, lock.html, WebAuthn routes) is untouched and still
+  // covered by test/auth.test.js — flip this back to true + pass a
+  // sessionSecret to re-enable it.
   createApp({
     apiKey: process.env.ODDS_API_KEY,
     cacheTtlMs: cacheMinutes * 60 * 1000,
     dataDir: process.env.RAILWAY_VOLUME_MOUNT_PATH || process.env.DATA_DIR || './data',
-    enableSweep: true
+    enableSweep: true,
+    enableAuth: false
   }).listen(port, () => {
     console.log(`LineWatch listening on :${port} (odds cached ${cacheMinutes} min)`);
   });

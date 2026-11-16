@@ -5,12 +5,30 @@ const SPORTS = [
   ["americanfootball_nfl","NFL"],
   ["basketball_nba","NBA"],
   ["baseball_mlb","MLB"],
+  ["basketball_wnba","WNBA"],
   ["icehockey_nhl","NHL"],
   ["americanfootball_ncaaf","NCAA Football"],
   ["basketball_ncaab","NCAA Basketball"],
   ["soccer_epl","EPL Soccer"],
   ["mma_mixed_martial_arts","MMA"]
 ];
+
+// ESPN's public logo CDN, one real per-league mark per sport (verified live
+// against ESPN's own API responses, not guessed URLs). NCAA football/
+// basketball don't have a distinct per-sport crest on ESPN's side — their
+// own scoreboard API returns the same generic sport-icon ESPN itself uses,
+// so that's what's used here too.
+const SPORT_LOGOS = {
+  americanfootball_nfl: "https://a.espncdn.com/i/teamlogos/leagues/500/nfl.png",
+  basketball_nba: "https://a.espncdn.com/i/teamlogos/leagues/500/nba.png",
+  basketball_wnba: "https://a.espncdn.com/i/teamlogos/leagues/500/wnba.png",
+  baseball_mlb: "https://a.espncdn.com/i/teamlogos/leagues/500/mlb.png",
+  icehockey_nhl: "https://a.espncdn.com/i/teamlogos/leagues/500/nhl.png",
+  americanfootball_ncaaf: "https://a.espncdn.com/redesign/assets/img/icons/ESPN-icon-football-college.png",
+  basketball_ncaab: "https://a.espncdn.com/redesign/assets/img/icons/ESPN-icon-basketball.png",
+  soccer_epl: "https://a.espncdn.com/i/leaguelogos/soccer/500/23.png",
+  mma_mixed_martial_arts: "https://a.espncdn.com/i/teamlogos/leagues/500/ufc.png"
+};
 
 const BOOK_STYLES = {
   fanduel:      {name:"FanDuel",   color:"#1493FF"},
@@ -45,6 +63,10 @@ const BOOK_LINKS = {
 // Player prop markets to try per sport when the user opts in on a game.
 // These are real market keys from The Odds API. Note: quota cost per props
 // load = number of markets × number of regions, so this list is deliberately capped.
+// College sports (NCAAF, NCAAB) intentionally have no entry here — many
+// states, including Ohio, prohibit betting on individual college athletes'
+// performance, so the "Load player props" UI never appears for those sports
+// (every call site below already guards on PROP_MARKETS[sportKey] existing).
 const PROP_MARKETS = {
   // NFL is grouped into server-side fetch bundles (see NFL_PROP_TABS); the
   // other sports are flat lists fetched in one go.
@@ -57,7 +79,7 @@ const PROP_MARKETS = {
   },
   americanfootball_ncaaf:["player_pass_yds","player_pass_tds","player_rush_yds","player_receptions","player_reception_yds","player_anytime_td"],
   basketball_nba:["player_points","player_rebounds","player_assists","player_threes","player_points_rebounds_assists"],
-  basketball_ncaab:["player_points","player_rebounds","player_assists","player_threes"],
+  basketball_wnba:["player_points","player_rebounds","player_assists","player_threes","player_points_rebounds_assists"],
   baseball_mlb:["batter_hits","batter_home_runs","batter_total_bases","batter_rbis","pitcher_strikeouts"],
   icehockey_nhl:["player_points","player_assists","player_shots_on_goal","player_goal_scorer_anytime"]
 };
@@ -113,8 +135,50 @@ function computeFairDecimal(sideARows, sideBRows){
   return 1/avg; // fair decimal odds for side A
 }
 
+// ---------- shared odds-scanning helpers (Board's Game Lines grid + Value Finder) ----------
+// Pool of books to scan/show: My Books if set, else every tracked book. Never
+// surfaces a book you can't actually see prices from elsewhere in the app.
+function poolFor(bookmakers){
+  const tracked = bookmakers.filter(b => TRACKED_KEYS.includes(b.key.toLowerCase()));
+  const bookmakersToUse = tracked.length ? tracked : bookmakers;
+  const myBooks = getMyBooks();
+  const scoped = myBooks.length ? bookmakersToUse.filter(b => myBooks.includes(b.key.toLowerCase())) : [];
+  return scoped.length ? scoped : bookmakersToUse;
+}
+function rowsFor(pool, marketKey, outcomeName){
+  const rows = [];
+  pool.forEach(bm=>{
+    const market = bm.markets.find(m=>m.key===marketKey);
+    if(!market) return;
+    const outcome = market.outcomes.find(o=>o.name===outcomeName);
+    if(!outcome) return;
+    rows.push({bookKey:bm.key, bookTitle:bm.title, odds:outcome.price, point:outcome.point, link:outcome.link||bm.link||null, sid:outcome.sid||null, marketSid:market.sid||null});
+  });
+  rows.sort((a,b)=>americanToDecimal(b.odds)-americanToDecimal(a.odds));
+  return rows;
+}
+// Books can quote slightly different lines (mostly spreads/totals) — group by
+// point, keep whichever point the most books share so the comparison stays
+// apples-to-apples, best price within it.
+function modalPointRows(pool, marketKey, outcomeName){
+  const all = rowsFor(pool, marketKey, outcomeName);
+  if(!all.length) return [];
+  const byPoint = {};
+  all.forEach(r=>{ const k=String(r.point); (byPoint[k]=byPoint[k]||[]).push(r); });
+  const bestKey = Object.keys(byPoint).sort((a,b)=>byPoint[b].length-byPoint[a].length)[0];
+  return byPoint[bestKey];
+}
+
 function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// Avatar bubble for a ready-made URL (the server already resolved a
+// headshot). Shared across pages — Board's props table and the NFL
+// breakdown's Player Form panel both use it.
+function avatarUrlHtml(url, size){
+  if(!url) return '';
+  return `<img class="player-avatar" src="${escapeHtml(url)}" width="${size}" height="${size}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
 }
 
 // ---------- book styling & labels ----------
@@ -149,7 +213,8 @@ function marketLabel(key){
     player_threes:"Threes Made", player_points_rebounds_assists:"Pts + Reb + Ast",
     batter_hits:"Batter Hits", batter_home_runs:"Home Runs", batter_total_bases:"Total Bases",
     batter_rbis:"RBIs", pitcher_strikeouts:"Pitcher Strikeouts",
-    player_shots_on_goal:"Shots on Goal", player_goal_scorer_anytime:"Anytime Goalscorer"
+    player_shots_on_goal:"Shots on Goal", player_goal_scorer_anytime:"Anytime Goalscorer",
+    h2h:"Moneyline", spreads:"Spread", totals:"Total"
   };
   return labels[key] || key;
 }
@@ -256,6 +321,28 @@ function addLegToSlip(leg){
   saveSlip(s);
   updateSlipBadge();
 }
+// Slip lives only in this browser's localStorage — the server has no idea
+// what you've bet unless something tells it. This is that something: a
+// fire-and-forget sync so a moneyline/spread/total leg can actually get
+// graded later and show up in Record, instead of just vanishing once it's
+// off the Slip. Never blocks the UI or surfaces an error — losing a grading
+// opportunity is fine, breaking "add to slip" over it is not.
+function trackBet({sport, homeTeam, awayTeam, commenceTime, matchup, market, selection, point}){
+  fetch('/api/track-bet', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({sport, homeTeam, awayTeam, commenceTime, matchup, market, selection, point})
+  }).catch(()=>{});
+}
+// Same idea as trackBet, for a player prop leg — only MLB and NFL are
+// gradable server-side right now (no stat-lookup infra for other sports yet).
+const PROP_TRACKABLE_SPORTS = new Set(['baseball_mlb', 'americanfootball_nfl']);
+function trackProp({sport, player, market, line, side, matchup, homeTeam, awayTeam, commenceTime}){
+  if(!PROP_TRACKABLE_SPORTS.has(sport)) return;
+  fetch('/api/track-prop', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({sport, player, market, line, side, matchup, homeTeam, awayTeam, commenceTime})
+  }).catch(()=>{});
+}
 function removeLegFromSlip(id){
   saveSlip(getSlip().filter(l=>l.id!==id));
   updateSlipBadge();
@@ -267,6 +354,49 @@ function updateLegBook(id, bookKey){
   const leg = s.find(l=>l.id===id);
   if(leg) leg.selectedBookKey = bookKey;
   saveSlip(s);
+}
+
+// ---------- saved bets (localStorage) ----------
+// Distinct from the active slip: "Save Bet" archives the current slip's legs
+// as a dated snapshot here, then clears the active slip so a new one can be
+// built. Saved bets can be reloaded back into the active slip later, or just
+// kept around for reference.
+const SAVED_BETS_KEY = 'lw_saved_bets';
+function getSavedBets(){
+  try{
+    const v = JSON.parse(localStorage.getItem(SAVED_BETS_KEY));
+    return Array.isArray(v) ? v : [];
+  }catch(e){ return []; }
+}
+function saveSavedBets(list){
+  try{ localStorage.setItem(SAVED_BETS_KEY, JSON.stringify(list)); }catch(e){}
+}
+function saveCurrentSlipAsBet(){
+  const legs = getSlip();
+  if(!legs.length) return null;
+  const bet = { id: Date.now()+Math.random(), savedAt: Date.now(), legs };
+  const all = getSavedBets();
+  all.unshift(bet);
+  saveSavedBets(all);
+  saveSlip([]);
+  updateSlipBadge();
+  return bet;
+}
+function deleteSavedBet(id){
+  saveSavedBets(getSavedBets().filter(b=>b.id!==id));
+}
+// Loads a saved bet back into the active slip, adding to whatever's already
+// there rather than overwriting it (so you can combine a saved bet with legs
+// you're currently building) — removes it from Saved Bets in the same step.
+function loadSavedBetIntoSlip(id){
+  const all = getSavedBets();
+  const bet = all.find(b=>b.id===id);
+  if(!bet) return;
+  const s = getSlip();
+  bet.legs.forEach(leg=>s.push({...leg, id: Date.now()+Math.random()}));
+  saveSlip(s);
+  saveSavedBets(all.filter(b=>b.id!==id));
+  updateSlipBadge();
 }
 
 // ---------- sport persistence ----------
@@ -281,22 +411,87 @@ function setSport(key){
 }
 
 // ---------- nav rail ----------
+// Grouped by sport so the rail reads as "MLB / NBA / NFL / More / Tools"
+// instead of nine flat, same-weight links. Each sport-group's Board link
+// deep-links straight to that sport (?sport=...), which board.js honors on
+// load — so picking "NBA" from the nav actually lands on the NBA board,
+// not just the Board page in general.
+const NAV_GROUPS = [
+  { key:'home', href:'/', icon:'🏠', label:'Home' },
+  { key:'mlb', href:'/board.html?sport=baseball_mlb', icon:'⚾', label:'MLB' },
+  { key:'nba', href:'/board.html?sport=basketball_nba', icon:'🏀', label:'NBA' },
+  { key:'nfl', href:'/board.html?sport=americanfootball_nfl', icon:'🏈', label:'NFL' },
+  { key:'more', icon:'🏆', label:'More', children:[
+    ['board','/board.html?sport=basketball_wnba','🏀','WNBA'],
+    ['board','/board.html?sport=icehockey_nhl','🏒','NHL'],
+    ['board','/board.html?sport=americanfootball_ncaaf','🎓','NCAA Football'],
+    ['board','/board.html?sport=basketball_ncaab','🎓','NCAA Basketball'],
+    ['board','/board.html?sport=soccer_epl','⚽','EPL Soccer'],
+    ['board','/board.html?sport=mma_mixed_martial_arts','🥊','MMA']
+  ]},
+  { key:'tools', icon:'🧰', label:'Tools', children:[
+    ['stats','/stats.html','🔎','Stats'],
+    ['cheatsheet','/cheatsheet.html','📋','Cheatsheet'],
+    ['notifications','/notifications.html','🔔','Notifications']
+  ]},
+  { key:'slip', href:'/slip.html', icon:'🎟️', label:'Slip', badge:true }
+];
+// Which group lights up for a page not itself in the group list.
+const PAGE_TO_GROUP = { getprops:'mlb', record:'mlb', nba:'nba', stats:'tools', cheatsheet:'tools', notifications:'tools' };
+const SPORT_TO_GROUP = { baseball_mlb:'mlb', basketball_nba:'nba', americanfootball_nfl:'nfl' };
+
 function renderNav(activePage){
   const rail = document.getElementById('navRail');
   if(!rail) return;
-  const items = [
-    ['home','/','🏠','Home'],
-    ['board','/board.html','📊','Board'],
-    ['getprops','/getprops.html','🎯','Get Props'],
-    ['stats','/stats.html','🔎','Stats'],
-    ['cheatsheet','/cheatsheet.html','📋','Cheatsheet'],
-    ['record','/record.html','📈','Record'],
-    ['slip','/slip.html','🎟️','Slip']
-  ];
-  rail.innerHTML = '<a class="rail-logo" href="/">LW</a>' + items.map(([key,href,icon,label])=>
-    `<a class="rail-btn${key===activePage?' active':''}" href="${href}">
-      <span aria-hidden="true">${icon}</span><span class="rail-label">${label}${key==='slip'?'<span class="slip-badge" id="slipBadge"></span>':''}</span>
-    </a>`).join('');
+
+  // On the Board page itself, highlight whichever sport group matches the
+  // currently-selected sport chip rather than guessing.
+  let activeGroup = PAGE_TO_GROUP[activePage] || activePage;
+  if(activePage === 'board') activeGroup = SPORT_TO_GROUP[getSport()] || 'more';
+
+  const groupHtml = NAV_GROUPS.map(g=>{
+    if(!g.children){
+      // Flat sport links (MLB/NBA/NFL) light up off activeGroup, same as the
+      // flyout groups below, so landing on Board with that sport selected
+      // highlights the right one — not just an exact page-key match.
+      const flatActive = g.key===activePage || g.key===activeGroup;
+      return `<a class="rail-btn${flatActive?' active':''}" href="${g.href}">
+        <span aria-hidden="true">${g.icon}</span><span class="rail-label">${escapeHtml(g.label)}${g.badge?'<span class="slip-badge" id="slipBadge"></span>':''}</span>
+      </a>`;
+    }
+    const isActive = g.key === activeGroup;
+    return `<div class="rail-group${isActive?' active':''}">
+      <button type="button" class="rail-btn rail-group-btn" data-group="${g.key}" aria-expanded="false">
+        <span aria-hidden="true">${g.icon}</span><span class="rail-label">${escapeHtml(g.label)}<span class="rail-caret" aria-hidden="true">▾</span></span>
+      </button>
+      <div class="rail-flyout" data-group-menu="${g.key}">
+        ${g.children.map(([key,href,icon,label])=>
+          `<a class="rail-flyout-item" href="${href}">
+            <span aria-hidden="true">${icon}</span>${escapeHtml(label)}
+          </a>`).join('')}
+      </div>
+    </div>`;
+  }).join('');
+
+  rail.innerHTML = '<a class="rail-logo" href="/">LW</a>' + groupHtml;
+
+  // Click-to-toggle (not hover — behaves the same on touch and desktop).
+  // Exactly one flyout open at a time; outside click or Escape closes it.
+  function closeAllGroups(){
+    rail.querySelectorAll('.rail-group.open').forEach(g=>g.classList.remove('open'));
+    rail.querySelectorAll('.rail-group-btn[aria-expanded="true"]').forEach(b=>b.setAttribute('aria-expanded','false'));
+  }
+  rail.querySelectorAll('.rail-group-btn').forEach(btn=>{
+    btn.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      const groupEl = btn.closest('.rail-group');
+      const willOpen = !groupEl.classList.contains('open');
+      closeAllGroups();
+      if(willOpen){ groupEl.classList.add('open'); btn.setAttribute('aria-expanded','true'); }
+    });
+  });
+  document.addEventListener('click', closeAllGroups);
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeAllGroups(); });
   updateSlipBadge();
 }
 // Seed from the persisted slip so a non-empty slip doesn't fake-trigger the
@@ -375,18 +570,32 @@ function renderSkeletonCards(container, count){
 }
 
 // ---------- sport chips ----------
+// Faint full-size league logo behind the page content, if that page has a
+// #sportWatermark element — a no-op everywhere else. Kept in one place so
+// every page that uses renderSportChips gets it automatically instead of
+// each page having to wire it up itself.
+function updateSportWatermark(sportKey){
+  const el = document.getElementById('sportWatermark');
+  if(!el) return;
+  const logo = SPORT_LOGOS[sportKey];
+  el.style.backgroundImage = logo ? `url("${logo}")` : 'none';
+}
+
 function renderSportChips(containerEl, onSelect){
   containerEl.innerHTML = '';
   const current = getSport();
+  updateSportWatermark(current);
   SPORTS.forEach(([key,label])=>{
     const chip = document.createElement('button');
     chip.type = 'button';
     chip.className = 'chip' + (key===current ? ' active' : '');
-    chip.textContent = label;
+    const logo = SPORT_LOGOS[key];
+    chip.innerHTML = (logo ? `<img class="chip-logo" src="${logo}" width="16" height="16" alt="" loading="lazy" onerror="this.style.display='none'">` : '') + escapeHtml(label);
     chip.addEventListener('click', ()=>{
       setSport(key);
       [...containerEl.children].forEach(c=>c.classList.remove('active'));
       chip.classList.add('active');
+      updateSportWatermark(key);
       onSelect(key);
     });
     containerEl.appendChild(chip);
@@ -394,8 +603,15 @@ function renderSportChips(containerEl, onSelect){
 }
 
 // ---------- odds fetch ----------
-async function fetchOddsFor(sport){
-  const res = await fetch(`/api/odds/${sport}`);
+// cacheOnly: for pages where odds are just decoration (the ticker banner on
+// Cheatsheet/Slip/Record/Stats) — never spends a fresh credit. Serves
+// whatever's already cached server-side (e.g. from Board being used
+// recently) and otherwise comes back empty, no upstream call at all.
+async function fetchOddsFor(sport, { cacheOnly = false } = {}){
+  const res = await fetch(`/api/odds/${sport}${cacheOnly ? '?cacheOnly=1' : ''}`);
+  if(res.status === 204){
+    return { games: [], remaining: null, cacheAge: 0 };
+  }
   if(!res.ok){
     let msg = `Error ${res.status}`;
     try{ const j = await res.json(); if(j.error) msg = j.error; }catch(_){}
@@ -613,34 +829,53 @@ function scoreClass(score){
   return {cls:'w-mod', label:'Neutral', dot:'●'};
 }
 
-// Mini baseball field with a wind arrow, drawn relative to the park:
-// center field always points up, so an up arrow = wind blowing straight out.
-function windFieldSvg(windFromDeg, windMph, bearing){
+// Compact baseball-field-with-wind-arrow icon, one per hourly weather slot —
+// center field always points up, so an up arrow = wind blowing straight out
+// for THAT hour specifically, which is why it's built fresh per slot rather
+// than once for the whole card: as the hourly forecast changes, so does the
+// arrow. No fence-distance labels here (removed — see park dims history).
+function miniWindFieldSvg(windFromDeg, windMph, bearing){
   const rel = windRelativeToPark(windFromDeg, windMph, bearing);
   const rotation = ((windFromDeg + 180) - bearing + 360) % 360; // 0 = out to CF
   const arrowColor = rel.label === 'out' ? 'var(--good)' : rel.label === 'in' ? 'var(--bad)' : 'var(--warn)';
-  return `<span class="wind-field-wrap" title="Wind ${Math.round(windMph)} mph, blowing ${rel.label === 'cross' ? 'across the field' : rel.label + (rel.label==='out' ? ' toward CF' : ' from CF')} (field shown with CF up; park orientation approx.)">
-    <svg class="wind-field" viewBox="0 0 100 100" width="46" height="46" aria-hidden="true">
-      <path d="M50,92 L13,55 A 52 52 0 0 1 87,55 Z" fill="none" stroke="var(--border)" stroke-width="3"/>
-      <path d="M50,92 L36,78 L50,64 L64,78 Z" fill="none" stroke="var(--border-soft)" stroke-width="2.5"/>
-      <g transform="rotate(${rotation.toFixed(0)} 50 54)">
-        <circle cx="50" cy="54" r="15" fill="${arrowColor}" opacity="0.92"/>
-        <path d="M50,62 L50,47 M50,47 l-5.5,5.5 M50,47 l5.5,5.5" stroke="#1B1B1B" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+  return `<svg class="ws-field" viewBox="0 0 100 100" width="46" height="46" aria-hidden="true">
+      <path d="M50,88 L4,44 A65,65 0 0 1 96,44 Z" fill="#2F6B3C" stroke="#1C3F24" stroke-width="2"/>
+      <path d="M50,88 L74,64 L50,40 L26,64 Z" fill="#A5713F" stroke="#7A4F28" stroke-width="1.5"/>
+      <path d="M50,76 L63,64 L50,52 L37,64 Z" fill="#3D8A4F" stroke="#276334" stroke-width="1"/>
+      <circle cx="50" cy="64" r="4" fill="#8A5A34" stroke="#6B4527" stroke-width="1"/>
+      <path d="M46,88 L54,88 L54,84 L50,80 L46,84 Z" fill="#F5F5F5" stroke="#999" stroke-width="0.6"/>
+      <g transform="rotate(${rotation.toFixed(0)} 50 38)">
+        <circle cx="50" cy="38" r="14" fill="${arrowColor}" opacity="0.94" stroke="#1B1B1B" stroke-width="1"/>
+        <path d="M50,48 L50,28 M50,28 l-7,7 M50,28 l7,7" stroke="#1B1B1B" stroke-width="4" fill="none" stroke-linecap="round"/>
       </g>
-    </svg>
-    <span class="wind-mph">${Math.round(windMph)}<br>mph</span>
-  </span>`;
+    </svg>`;
 }
 
-// Builds the hourly weather strip for an MLB game card (first pitch through +4 hours)
-function buildWeatherStrip(game){
+// Builds the hourly weather strip for an MLB game card (first pitch through +4 hours).
+// extraHtml (e.g. a top-HR-hitters box) renders alongside the slots, filling
+// the leftover horizontal space to the right of them on wider cards.
+// First-pitch carry-conditions rating for a game, shared by the weather strip
+// and the HR Watch star rating below — a single source of truth so both
+// agree on what "good hitting weather" means for this game.
+function firstPitchWeatherRating(game){
+  const stadium = MLB_STADIUMS[game.home_team];
+  if(!stadium || stadium.roof === 'dome') return null;
+  const w = weatherCache[game.home_team];
+  if(!w) return null;
+  const gameHourUtc = game.commence_time.slice(0,13) + ':00';
+  const startIdx = w.time.indexOf(gameHourUtc);
+  if(startIdx === -1) return null;
+  const {score} = hittingScore(w.temp[startIdx], w.windDir[startIdx], w.wind[startIdx], w.precip[startIdx], stadium.bearing);
+  return scoreClass(score);
+}
+
+function buildWeatherStrip(game, extraHtml){
   const stadium = MLB_STADIUMS[game.home_team];
   if(!stadium) return '';
   const w = weatherCache[game.home_team];
 
   let slotsHtml = '';
   let firstPitchRating = null;
-  let firstPitchWind = null;
   if(w){
     const gameHourUtc = game.commence_time.slice(0,13) + ':00'; // floor to the hour, matches Open-Meteo's UTC time format
     const startIdx = w.time.indexOf(gameHourUtc);
@@ -652,16 +887,18 @@ function buildWeatherStrip(game){
         const rating = scoreClass(score);
         if(i === startIdx){
           firstPitchRating = rating;
-          firstPitchWind = {dir: w.windDir[i], mph: w.wind[i]};
         }
         const windTxt = rel.label === 'cross'
           ? `${Math.round(w.wind[i])} mph cross`
           : `${Math.round(w.wind[i])} mph ${rel.label}`;
         slotsHtml += `<div class="weather-slot ${rating.cls}" title="${rating.label} conditions · wind ${windCompass(w.windDir[i])} ${Math.round(w.wind[i])} mph, ${rel.label === 'out' ? 'blowing out toward CF' : rel.label === 'in' ? 'blowing in from CF' : 'crosswind'} (park orientation approx.)">
-          <div class="w-time">${local.toLocaleTimeString([], {hour:'numeric'})}${i===startIdx ? ' · 1st pitch' : ''}</div>
-          <div class="w-temp">${Math.round(w.temp[i])}°F</div>
-          <div class="w-wind">${windTxt}</div>
-          <div class="w-rain${precip >= 30 ? ' wet' : ''}">${precip}% rain</div>
+          ${miniWindFieldSvg(w.windDir[i], w.wind[i], stadium.bearing)}
+          <div class="ws-info">
+            <div class="w-time">${local.toLocaleTimeString([], {hour:'numeric'})}${i===startIdx ? ' · 1st pitch' : ''}</div>
+            <div class="w-temp">${Math.round(w.temp[i])}°F</div>
+            <div class="w-wind">${windTxt}</div>
+            <div class="w-rain${precip >= 30 ? ' wet' : ''}">${precip}% rain</div>
+          </div>
         </div>`;
       }
     }
@@ -675,10 +912,6 @@ function buildWeatherStrip(game){
   const ratingTag = (firstPitchRating && stadium.roof !== 'dome')
     ? `<span class="rating-tag ${firstPitchRating.cls}" title="Carry-conditions heuristic (temp + park-relative wind + rain risk) at first pitch. Rates weather only — not a betting signal.">${firstPitchRating.dot} ${firstPitchRating.label}</span>`
     : '';
-  const fieldSvg = (firstPitchWind && stadium.roof !== 'dome')
-    ? windFieldSvg(firstPitchWind.dir, firstPitchWind.mph, stadium.bearing)
-    : '';
-
   let body;
   if(stadium.roof === 'dome'){
     body = '<div class="weather-note">Indoor stadium — conditions don\'t affect play.</div>';
@@ -691,8 +924,691 @@ function buildWeatherStrip(game){
   }
 
   return `<div class="weather-strip">
-    <div class="weather-head">☁ ${escapeHtml(stadium.park)} ${roofTag} ${ratingTag} ${fieldSvg}</div>
-    ${body}
+    <div class="weather-head">☁ ${escapeHtml(stadium.park)} ${roofTag} ${ratingTag}</div>
+    <div class="weather-body-row">${body}</div>
+    ${extraHtml || ''}
+  </div>`;
+}
+
+// ---------- park dimensions (which fields are more HR-friendly) ----------
+// Real fence distances from MLB's own venues API (see server.js's
+// mlbParkDimensions for sourcing/methodology) — fetched once per session,
+// since dimensions essentially never change mid-season.
+let mlbParkDimsCache = null;
+async function fetchMlbParkDimensions(){
+  if(mlbParkDimsCache) return mlbParkDimsCache;
+  try{
+    const res = await fetch('/api/mlb/park-dimensions');
+    if(!res.ok) return null;
+    mlbParkDimsCache = await res.json();
+  }catch(e){ return null; }
+  return mlbParkDimsCache;
+}
+// Park dimensions no longer render on the card (the field diagram/fence
+// numbers were removed) — mlbParkDimsCache is still fetched and used purely
+// as a scoring input to hrWatchRating below (park tier + Coors altitude note).
+
+// ---------- HR Watch: composite star rating per batter ----------
+// Combines three things we already fetch for other cards — no extra API
+// calls: (a) hand-split power vs today's specific opposing pitcher (from
+// hr-matchups), (b) that park's fence-distance tier (park dimensions), and
+// (c) first-pitch carry conditions (weather). Stars are a transparent sum of
+// bounded pieces, not a black box — every piece shows up in the tooltip.
+//
+// MLB StatsAPI sitCodes are symmetric: 'vl' always means "vs lefties," so the
+// same code that picks a batter's split vs a given pitcher hand also picks a
+// pitcher's split vs a given batter hand.
+function hrSitCodeForBatterHand(batterHand, pitcherHand){
+  if(batterHand === 'S') return pitcherHand === 'L' ? 'vr' : 'vl'; // switch-hitters take the platoon side
+  return batterHand === 'L' ? 'vl' : 'vr';
+}
+
+// Power always leads the sentence (it's the batter's own skill, the natural
+// subject) — everything else is a ranked list of supporting factors, built
+// in hrWatchRating below and passed in already sorted by actual weight, so
+// the sentence always surfaces whichever 1-2 things actually moved the score
+// the most instead of a fixed pitcher-then-park-then-weather checklist that
+// could bury a bigger factor behind a smaller one.
+function hrWatchSummary(batter, pitcher, powerBand, rankedFactors){
+  const first = batter.name.split(' ')[0];
+  const hand = pitcher && pitcher.hand ? `${pitcher.hand}HP` : 'this pitcher';
+  const powerWord = powerBand === 'elite' ? 'plus power' : powerBand === 'good' ? 'solid pop' : 'modest power';
+  let lead = `${first} brings ${powerWord} vs ${hand} (${batter.iso.toFixed(3)} ISO`;
+  lead += batter.seasonHr != null ? `, ${batter.seasonHr} HR this year)` : ')';
+
+  const supporting = rankedFactors.slice(0, 2).map(f => f.text);
+  return lead + (supporting.length ? ' — ' + supporting.join(', ') : '') + '.';
+}
+
+function hrWatchRating(batter, pitcher, game){
+  if(batter.iso == null) return null;
+  const clamp = (v,lo,hi) => Math.max(lo, Math.min(hi, v));
+  const factors = []; // {weight, text} — ranked and trimmed to the top few for the summary
+
+  // Power at the plate, already hand-split vs today's opposing pitcher throwing hand.
+  const isoPart = clamp(batter.iso / 0.200, 0, 1.5) * 2;
+  const powerBand = batter.iso >= 0.200 ? 'elite' : batter.iso >= 0.150 ? 'good' : 'modest';
+
+  // How many HRs this pitcher gives up to same-handed batters.
+  let pitcherPart = 0;
+  if(pitcher && pitcher.rows){
+    const code = hrSitCodeForBatterHand(batter.hand, pitcher.hand);
+    const st = pitcher.rows[code] || pitcher.rows.season;
+    if(st && st.hr9 != null){
+      pitcherPart = clamp(st.hr9 / 1.3, 0, 1.6) * 1;
+      const text = st.hr9 >= 1.3
+        ? `${pitcher.name} has been homer-prone this year (${st.hr9.toFixed(2)} HR/9)`
+        : st.hr9 <= 0.8
+          ? `${pitcher.name} has kept the ball in the yard (${st.hr9.toFixed(2)} HR/9)`
+          : `${pitcher.name} is about league-average for homers allowed (${st.hr9.toFixed(2)} HR/9)`;
+      factors.push({ weight: pitcherPart, text });
+    }
+  }
+
+  // Ballpark: real fence-distance tier, with the Coors altitude caveat overriding
+  // a "Spacious"-by-distance park that's actually MLB's most HR-friendly.
+  const park = mlbParkDimsCache && mlbParkDimsCache[game.home_team];
+  let parkPart = 0;
+  if(park){
+    parkPart = park.tier === 'Compact' ? 0.7 : park.tier === 'Spacious' ? -0.7 : 0;
+    if(park.altitudeNote) parkPart = 0.7;
+    if(parkPart > 0) factors.push({ weight: parkPart, text: park.altitudeNote ? 'the altitude here carries further than the fences suggest' : 'the park favors hitters' });
+    else if(parkPart < 0) factors.push({ weight: Math.abs(parkPart), text: 'the park favors pitchers' });
+  }
+
+  // First-pitch carry conditions (temp + park-relative wind + rain risk).
+  const weather = firstPitchWeatherRating(game);
+  let weatherPart = 0;
+  if(weather){
+    weatherPart = weather.label === 'HR-friendly' ? 0.5 : weather.label === 'Carry-killing' ? -0.5 : 0;
+    if(weatherPart > 0) factors.push({ weight: weatherPart, text: 'the wind is helping carry it out' });
+    else if(weatherPart < 0) factors.push({ weight: Math.abs(weatherPart), text: 'the wind is working against carry tonight' });
+  }
+
+  // Real career history vs this exact pitcher — tiny samples, small nudge only.
+  let bvpPart = 0;
+  if(batter.bvp && batter.bvp.ab >= 8 && batter.bvp.hr > 0){
+    bvpPart = 0.3;
+    factors.push({ weight: bvpPart, text: `he's gone deep off him before (${batter.bvp.hr} HR in ${batter.bvp.ab} career AB)` });
+  }
+
+  const score = isoPart + pitcherPart + parkPart + weatherPart + bvpPart;
+  const stars = score >= 4 ? 5 : score >= 3 ? 4 : score >= 2 ? 3 : score >= 1 ? 2 : 1;
+  factors.sort((a,b) => b.weight - a.weight);
+  const summary = hrWatchSummary(batter, pitcher, powerBand, factors);
+  return { score, stars, summary };
+}
+
+// Combines this game's Value Finder scan (real edge math, no threshold —
+// caller decides what counts as "real") with whatever sport-specific signal
+// the caller has for it into one sentence instead of two separate panels.
+// Sport-agnostic on purpose: MLB's HR Watch and NFL's Auto Game Read look
+// nothing alike internally, so each gets its own adapter (hrWatchSignal,
+// nflReadSignal below) that boils down to the same {summary, strong, kind}
+// shape — this function only ever narrates that shape, never the sport's
+// own rating math. Same deterministic math every panel already shows, just
+// narrated together — no model call, no new data.
+function bestBetSummary(topEdge, signal){
+  if(!topEdge && !signal) return null;
+
+  const edgeClause = topEdge
+    ? `${topEdge.side} is a real price edge here — +${(topEdge.edge*100).toFixed(2)}% vs consensus at ${topEdge.bookTitle}`
+    : null;
+
+  if(topEdge && signal){
+    // A real edge (2%+) always leads; a strong signal still gets its own
+    // clause rather than getting buried under it. What counts as "strong"
+    // is the adapter's call (HR Watch's 4-5★, Auto Game Read's 7+/9.5).
+    return signal.strong
+      ? `${edgeClause}. Worth pairing with the ${signal.kind} too — ${signal.summary}`
+      : `${edgeClause}.`;
+  }
+  if(topEdge) return `${edgeClause}.`;
+  if(signal) return `No real price edge in this game tonight — books are bunched too close together to call. The ${signal.kind}'s the better angle: ${signal.summary}`;
+  return null;
+}
+
+// MLB adapter: HR Watch's top pick -> bestBetSummary's generic signal shape.
+function hrWatchSignal(topHrPick){
+  if(!topHrPick) return null;
+  return { summary: topHrPick.rating.summary, strong: topHrPick.rating.stars >= 4, kind: 'HR prop' };
+}
+
+// NFL adapter: Auto Game Read's server-computed {insights, leans, confidence}
+// -> the same shape. Leads with the single strongest insight rather than the
+// whole list — bestBetSummary is one sentence, not a bullet dump — and folds
+// in the lean when there is one. Confidence starts at a flat 5 and only rises
+// per real factor found (see server.js), so 7+ is a genuinely stacked matchup,
+// the same "worth its own clause" bar HR Watch's 4-5★ sets.
+function nflReadSignal(m){
+  if(!m || !m.summary || !m.summary.insights || !m.summary.insights.length) return null;
+  const s = m.summary;
+  if(/^No strong statistical edges detected/.test(s.insights[0])) return null;
+  const leanText = s.leans.length ? ` Leans: ${s.leans.join(', ')}.` : '';
+  return { summary: `${s.insights[0]}${leanText}`, strong: s.confidence >= 7, kind: 'matchup read' };
+}
+
+// ---------- Best Bets: up to 3 real signals per game, never padded ----------
+// "No real price edge" only means Value Finder's specific book-vs-book price
+// check came up empty — it says nothing about HR Watch, Get Props' model
+// edges, or Auto Game Read, which measure completely different things. This
+// pools whatever of those actually exist for a game and ranks them so the
+// most objective signal always leads: a real price edge (pure math, no
+// prediction involved) outranks a model-based edge, which outranks a
+// single-metric standout. Never invents a 2nd or 3rd pick just to fill a
+// slot — a game with one real signal returns one item, zero real signals
+// returns [].
+const SIGNAL_TIER = { edge: 0, propEdge: 1, hrWatch: 2, gameRead: 3 };
+function bestBetsForGame(candidates){
+  return candidates
+    .filter(Boolean)
+    .sort((a, b) => SIGNAL_TIER[a.type] - SIGNAL_TIER[b.type])
+    .slice(0, 3);
+}
+
+// MLB candidate list: Value Finder edges (this game only), HR Watch's
+// strong (4-5★) picks, and Get Props' model edges. That last one only shows
+// up if the caller already has it — Get Props hits a per-game props
+// endpoint that costs real API quota, so this never fetches it just to fill
+// a slot in a free sentence. If you haven't clicked "Load Props" for this
+// game, that source is simply absent, same as HR Watch is absent before
+// lineups post.
+function mlbBestBetCandidates(edgeCandidates, hrPool, propsAnalysis){
+  const candidates = [];
+  (edgeCandidates || []).forEach(c => {
+    candidates.push({ type: 'edge', summary: `${c.side} — +${(c.edge * 100).toFixed(2)}% vs consensus at ${c.best.bookTitle}` });
+  });
+  (hrPool || []).filter(x => x.rating.stars >= 4).forEach(x => {
+    candidates.push({ type: 'hrWatch', summary: `${x.b.name.split(' ')[0]} HR prop — ${x.rating.summary}` });
+  });
+  // 5%+ model-vs-implied gap, same bar Get Props' own table treats as a real edge.
+  ((propsAnalysis && propsAnalysis.picks) || []).filter(p => p.edge >= 0.05).forEach(p => {
+    candidates.push({ type: 'propEdge', summary: `${p.player} ${p.side} ${p.line} ${marketLabel(p.market)} — model ${(p.modelP * 100).toFixed(0)}% vs book-implied ${(p.impliedP * 100).toFixed(0)}%` });
+  });
+  return bestBetsForGame(candidates);
+}
+
+// NFL/NBA candidate list: Value Finder edges plus Auto Game Read, which is
+// inherently one whole-game read (not per-player), so it contributes at
+// most a single slot alongside however many real price edges exist.
+function teamSportBestBetCandidates(edgeCandidates, gameReadSignal){
+  const candidates = (edgeCandidates || []).map(c =>
+    ({ type: 'edge', summary: `${c.side} — +${(c.edge * 100).toFixed(2)}% vs consensus at ${c.best.bookTitle}` }));
+  if(gameReadSignal) candidates.push({ type: 'gameRead', summary: gameReadSignal.summary });
+  return bestBetsForGame(candidates);
+}
+
+// Stars are color-coded by tier so the rating reads at a glance without
+// counting: 4-5★ green (strong play), 3★ amber (worth a look), 1-2★ faint
+// (long shot) — the same good/warn/faint vocabulary the rest of the app
+// already uses for weather and injury-status tags.
+function starsHtml(n){
+  const tierCls = n >= 4 ? 'tier-strong' : n === 3 ? 'tier-live' : 'tier-modest';
+  return `<span class="hr-stars" aria-hidden="true"><span class="hr-stars-fill ${tierCls}">${'★'.repeat(n)}</span><span class="hr-stars-empty">${'☆'.repeat(5-n)}</span></span>`;
+}
+
+// ESPN's team-logo CDN, keyed by league path — driven by the numeric ESPN
+// team id ESPN's own scoreboard already hands us in `situation.homeTeamId`,
+// so this covers every NCAAF school with no name/abbreviation table to
+// maintain (unlike TEAM_LOGOS, which only has the 4 hand-mapped pro leagues).
+const ESPN_TEAM_LOGO_LEAGUE = { americanfootball_nfl: 'nfl', americanfootball_ncaaf: 'ncaa' };
+function espnTeamLogoUrl(sportKey, teamId){
+  const league = ESPN_TEAM_LOGO_LEAGUE[sportKey];
+  if(!league || !teamId) return null;
+  return `https://a.espncdn.com/i/teamlogos/${league}/500/${teamId}.png`;
+}
+
+// Interactive football field: same green field / end-zone styling the old
+// wind diagram used, now driven by ESPN's live `situation` (down, distance,
+// line of scrimmage, possession) instead of wind direction. Pre-kickoff (no
+// situation yet) it's just the bare field with a kickoff-time note — markers
+// only appear once the game is actually live.
+// `yardLine` (0=away goal → 100=home goal, left→right) and the down=-1/
+// distance=-1 "between plays" sentinel were both confirmed against real
+// live NCAAF games (Alabama@Kentucky, Arizona@BYU, 2026-09-12).
+function footballFieldTrackerSvg(sportKey, game, scoreEntry){
+  const sit = scoreEntry && scoreEntry.situation;
+  const started = !!sit;
+  const live = !!(sit && !sit.isHalftime && sit.down > 0 && sit.distance >= 0);
+  let losMark = '', ballMark = '', firstDownMark = '', dirArrow = '', possessionMark = '';
+  let badgeX = 150;
+  if(live && sit.yardLine != null && sit.yardLine >= 0 && sit.yardLine <= 100){
+    const x = 24 + (sit.yardLine / 100) * 252;
+    losMark = `<line x1="${x.toFixed(1)}" y1="28" x2="${x.toFixed(1)}" y2="132" stroke="#F5D400" stroke-width="2"/>`;
+    ballMark = `<ellipse cx="${x.toFixed(1)}" cy="80" rx="5" ry="3.2" fill="#7B4A22" stroke="#241609" stroke-width="1"/>`;
+    // Possession drives toward the OPPONENT's goal: home team → toward the
+    // away end (x decreasing, driveDir -1), away team → toward the home end
+    // (x increasing, driveDir +1). Both the first-down marker and the drive
+    // arrow have to move in that same direction from the LOS, or they end up
+    // pointing the wrong way whenever the home team has the ball.
+    const towardAway = sit.possessionTeamId && sit.possessionTeamId === sit.homeTeamId;
+    const driveDir = towardAway ? -1 : 1;
+    const fx = Math.max(24, Math.min(276, x + driveDir * sit.distance * 2.52));
+    firstDownMark = `<line x1="${fx.toFixed(1)}" y1="28" x2="${fx.toFixed(1)}" y2="132" stroke="#FFA940" stroke-width="2" stroke-dasharray="4,3"/>`;
+    if(sit.possessionTeamId && (sit.possessionTeamId === sit.homeTeamId || sit.possessionTeamId === sit.awayTeamId)){
+      const ax = x + driveDir * 18;
+      const tip = ax + driveDir * 10;
+      dirArrow = `<path d="M${ax.toFixed(1)},72 L${tip.toFixed(1)},80 L${ax.toFixed(1)},88 Z" fill="#F5F5F5" opacity="0.9"/>`;
+      // A small logo of whichever team actually has the ball, right above it —
+      // the midfield logo is always the home team's turf logo, so on its own
+      // it can't answer "who has the ball" once the away team is on offense.
+      const posLogoUrl = espnTeamLogoUrl(sportKey, sit.possessionTeamId);
+      if(posLogoUrl){
+        possessionMark = `<g>
+          <circle cx="${x.toFixed(1)}" cy="58" r="13" fill="#F5F5F5" opacity="0.95"/>
+          <image href="${posLogoUrl}" x="${(x-11).toFixed(1)}" y="47" width="22" height="22" preserveAspectRatio="xMidYMid meet"/>
+        </g>`;
+      }
+    }
+    // Down & distance badge sits behind the LOS (the offense's own side, away
+    // from the first-down marker) so it never covers the ball or the marker.
+    badgeX = Math.max(60, Math.min(240, x - driveDir * 40));
+  }
+  let yardTicks = '', yardNumbers = '';
+  const yardLabels = [10,20,30,40,50,40,30,20,10];
+  let li = 0;
+  for(let x = 49.2; x <= 250.8 + 0.1; x += 25.2, li++){
+    yardTicks += `<line x1="${x.toFixed(1)}" y1="28" x2="${x.toFixed(1)}" y2="132" stroke="#1C3F24" stroke-width="0.6" opacity="0.5"/>`;
+    const label = yardLabels[li];
+    if(label != null){
+      yardNumbers += `<text x="${x.toFixed(1)}" y="44" text-anchor="middle" font-size="11" font-weight="700" fill="#E8F0EA" opacity="0.55">${label}</text>`;
+      yardNumbers += `<text x="${x.toFixed(1)}" y="122" text-anchor="middle" font-size="11" font-weight="700" fill="#E8F0EA" opacity="0.55">${label}</text>`;
+    }
+  }
+  const homeLogoUrl = espnTeamLogoUrl(sportKey, sit && sit.homeTeamId);
+  const homeLogoMark = homeLogoUrl
+    ? `<image href="${homeLogoUrl}" x="122" y="52" width="56" height="56" opacity="0.3" preserveAspectRatio="xMidYMid meet"/>`
+    : '';
+  // Down & distance as a bold, centered badge ON the field itself (like a
+  // broadcast scoreboard bug) instead of small corner text — reads at a
+  // glance regardless of where the ball actually is.
+  let downBadge = '';
+  const badgeLabel = live ? (sit.downDistanceText || sit.possessionText || '')
+    : (started ? (sit.isHalftime ? 'HALFTIME' : 'BETWEEN PLAYS') : '');
+  if(badgeLabel){
+    const label = badgeLabel.toUpperCase();
+    const w = Math.max(76, label.length * 8.2 + 24);
+    const bx = Math.max(26 + w/2, Math.min(274 - w/2, badgeX));
+    downBadge = `<g>
+      <rect x="${(bx - w/2).toFixed(1)}" y="67" width="${w.toFixed(1)}" height="26" rx="13" fill="#141414" opacity="0.72"/>
+      <text x="${bx.toFixed(1)}" y="84" text-anchor="middle" font-size="15" font-weight="800" fill="#F5F5F5" letter-spacing="0.4">${escapeHtml(label)}</text>
+    </g>`;
+  }
+  const clockBits = [];
+  if(started && !sit.isHalftime && sit.period) clockBits.push('Q' + sit.period);
+  if(started && !sit.isHalftime && sit.displayClock) clockBits.push(sit.displayClock);
+  const redZoneTag = live && sit.isRedZone ? '<span class="rz-tag">RED ZONE</span>' : '';
+  // Clock + timeouts now live on the field itself (clockBug below) instead of
+  // this HTML banner — the banner sticks around only for the Red Zone flag.
+  const banner = redZoneTag
+    ? `<div class="field-banner">${redZoneTag}</div>`
+    : '';
+  // Broadcast-style scorebug strip along the very top of the field itself:
+  // quarter + game clock centered, each team's remaining timeouts (●=have,
+  // ○=used) on their own side — away left, home right, matching the
+  // scorebox's away-then-home order elsewhere on this card.
+  let clockBug = '';
+  if(started){
+    const clockText = clockBits.join(' · ') || (sit.isHalftime ? 'HALFTIME' : '');
+    const pips = (n) => n == null ? '' : '●'.repeat(Math.max(0, n)) + '○'.repeat(Math.max(0, 3 - n));
+    const awayPips = pips(sit.awayTimeouts);
+    const homePips = pips(sit.homeTimeouts);
+    clockBug = `<g>
+      <rect x="0" y="0" width="300" height="20" fill="#141414" opacity="0.82"/>
+      ${awayPips ? `<text x="10" y="14" text-anchor="start" font-size="10" font-weight="700" fill="#F5F5F5" letter-spacing="1">${awayPips}</text>` : ''}
+      ${clockText ? `<text x="150" y="14" text-anchor="middle" font-size="12" font-weight="800" fill="#F5F5F5" letter-spacing="0.3">${escapeHtml(clockText)}</text>` : ''}
+      ${homePips ? `<text x="290" y="14" text-anchor="end" font-size="10" font-weight="700" fill="#F5F5F5" letter-spacing="1">${homePips}</text>` : ''}
+    </g>`;
+  }
+  const kickoffNote = !started
+    ? `<div class="field-note">Kickoff ${new Date(game.commence_time).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'})} — live tracker starts at kickoff</div>`
+    : '';
+  // Live scorebox: score, timeouts, and a possession highlight for each team —
+  // a fuller in-widget summary instead of relying only on the small score
+  // badge above the card. Only renders once the game has actually started
+  // (scoreEntry.scores is null pre-kickoff).
+  let scorebox = '';
+  if(scoreEntry && scoreEntry.scores){
+    const homeScore = scoreEntry.scores.find(s => s.name === game.home_team);
+    const awayScore = scoreEntry.scores.find(s => s.name === game.away_team);
+    const timeoutPips = (n) => n == null ? '' : '<span class="fs-timeouts">' + '●'.repeat(Math.max(0, n)) + '○'.repeat(Math.max(0, 3 - n)) + '</span>';
+    const teamRow = (teamId, name, score, timeouts) => {
+      const logo = espnTeamLogoUrl(sportKey, teamId);
+      const hasBall = started && sit.possessionTeamId && sit.possessionTeamId === teamId;
+      return `<div class="fs-team${hasBall ? ' fs-possession' : ''}">
+        ${logo ? `<img class="fs-logo" src="${logo}" width="20" height="20" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : ''}
+        <span class="fs-name">${escapeHtml(name)}</span>
+        <span class="fs-score">${score != null ? escapeHtml(String(score)) : '—'}</span>
+        ${timeoutPips(timeouts)}
+      </div>`;
+    };
+    if(homeScore && awayScore){
+      scorebox = `<div class="field-scorebox">
+        ${teamRow(sit && sit.awayTeamId, game.away_team, awayScore.score, sit && sit.awayTimeouts)}
+        ${teamRow(sit && sit.homeTeamId, game.home_team, homeScore.score, sit && sit.homeTimeouts)}
+      </div>`;
+    }
+  }
+  return `<div class="nfl-field-wrap">
+    ${scorebox}
+    ${banner}
+    <svg class="nfl-field" viewBox="0 0 300 140" width="100%" height="140" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+      <rect x="0" y="28" width="24" height="104" fill="#265C33" stroke="#1C3F24" stroke-width="1.5"/>
+      <rect x="276" y="28" width="24" height="104" fill="#265C33" stroke="#1C3F24" stroke-width="1.5"/>
+      <rect x="24" y="28" width="252" height="104" fill="#2F6B3C" stroke="#1C3F24" stroke-width="2"/>
+      ${yardTicks}
+      ${yardNumbers}
+      ${homeLogoMark}
+      <line x1="150" y1="28" x2="150" y2="132" stroke="#F5F5F5" stroke-width="1" opacity="0.6"/>
+      ${firstDownMark}
+      ${losMark}
+      ${dirArrow}
+      ${ballMark}
+      ${possessionMark}
+      ${downBadge}
+      ${clockBug}
+    </svg>
+    ${kickoffNote}
+  </div>`;
+}
+
+
+// ---------- shared NFL position-bucket / injury-status helpers ----------
+// Same grouping the NFL Dashboard's Injury Center already uses — shared here
+// so Board's per-game version looks and reads identically, not like a
+// simplified knockoff.
+const NFL_POS_BUCKETS = [
+  ['QB', ['QB']],
+  ['RB', ['RB', 'FB']],
+  ['WR/TE', ['WR', 'TE']],
+  ['OL', ['LT', 'LG', 'C', 'RG', 'RT', 'OT', 'G', 'OL']],
+  ['Defense', ['LDE','RDE','DE','DT','NT','LILB','RILB','MLB','ILB','OLB','LOLB','ROLB','LB','LCB','RCB','CB','SS','FS','S','DB']],
+  ['Special Teams', ['PK','K','P','LS','H','PR','KR']]
+];
+function nflBucketFor(pos){ return (NFL_POS_BUCKETS.find(([, list]) => list.includes(pos)) || ['Other'])[0]; }
+function nflStatusClass(s){
+  const t = (s || '').toLowerCase();
+  if(t.includes('out') || t.includes('injured reserve') || t.includes('ir')) return 'nfl-status out';
+  if(t.includes('doubtful')) return 'nfl-status out';
+  if(t.includes('questionable')) return 'nfl-status quest';
+  return 'nfl-status limited';
+}
+
+// ---------- per-game injury report (replaces the old 5-hour weather grid's
+// screen space) ----------
+let nflInjuriesCache = {}; // "away|home" -> {home:{name,logo,record,injuries[]}, away:{...}}
+async function fetchNflGameInjuries(games){
+  const matchups = [...new Map(games.map(g=>[g.away_team+'|'+g.home_team, g])).values()];
+  await Promise.all(matchups.map(async g=>{
+    const key = g.away_team+'|'+g.home_team;
+    if(nflInjuriesCache[key]) return;
+    try{
+      const res = await fetch(`/api/nfl/game-injuries?home=${encodeURIComponent(g.home_team)}&away=${encodeURIComponent(g.away_team)}`);
+      if(!res.ok) return;
+      nflInjuriesCache[key] = await res.json();
+    }catch(e){ /* injuries are a bonus panel — quietly skip on failure */ }
+  }));
+}
+function buildNflInjuriesHtml(game){
+  const key = game.away_team+'|'+game.home_team;
+  const data = nflInjuriesCache[key];
+  if(!data) return `<div class="injuries-strip"><div class="injuries-head">🩺 Injury Report</div><div class="hr-note">Loading…</div></div>`;
+  const teamBlock = (side)=>{
+    const head = `<div class="nba-team-head">
+      ${side.logo ? `<img src="${escapeHtml(side.logo)}" width="20" height="20" alt="" loading="lazy" onerror="this.style.display='none'">` : ''}
+      <strong>${escapeHtml(side.name)}</strong>
+      ${side.record ? `<span class="nba-record">${escapeHtml(side.record)}</span>` : ''}
+    </div>`;
+    if(!side.injuries.length) return `<div class="injuries-team">${head}<div class="hr-note">No players listed right now.</div></div>`;
+    // Who steps in for an injured starter — keyed by the injured player's id
+    // so it can render right on that player's own row instead of a separate
+    // table (this used to be nfl.js's standalone "Fantasy Impact" card).
+    const nextManByOutId = {};
+    (side.nextMen || []).forEach(n => { nextManByOutId[n.outId] = n; });
+    const byBucket = {};
+    side.injuries.forEach(i => { (byBucket[nflBucketFor(i.position)] = byBucket[nflBucketFor(i.position)] || []).push(i); });
+    const groups = Object.entries(byBucket).map(([bucket, list])=>`
+      <div class="nfl-pos-group">${escapeHtml(bucket)}</div>
+      <ul class="nba-injury-list">${list.map(i=>{
+        const nextMan = nextManByOutId[i.id];
+        return `<li>${escapeHtml(i.name)} <span class="hand-tag">${escapeHtml(i.position)}</span>
+         <span class="${nflStatusClass(i.status)}">${escapeHtml(i.status)}</span>${i.starter ? ' <span class="nfl-starter-tag">Starter</span>' : ''}
+         ${nextMan ? `<div class="next-man">→ ${escapeHtml(nextMan.in)}</div>` : ''}</li>`;
+      }).join('')}</ul>`).join('');
+    return `<div class="injuries-team">${head}${groups}</div>`;
+  };
+  return `<div class="injuries-strip">
+    <div class="injuries-head">🩺 Injury Report</div>
+    <div class="injuries-body">${teamBlock(data.away)}${teamBlock(data.home)}</div>
+  </div>`;
+}
+
+// ---------- NFL "Full Breakdown" (ported from the retired standalone NFL
+// Dashboard page, so Board can show it per-game on demand instead of a
+// separate page with its own team pickers). Shares the exact nba-*/nfl-*
+// CSS classes the old Dashboard used — same look, just a different host. ----------
+const nflFmt1 = v => v === null || v === undefined ? '—' : (Math.round(v*10)/10).toFixed(1);
+const nflRankChip = (rank) => {
+  if(!rank) return '';
+  const cls = rank <= 10 ? 'nba-rank good' : rank >= 23 ? 'nba-rank bad' : 'nba-rank';
+  return `<span class="${cls}">#${rank}</span>`;
+};
+function nflBreakdownTeamHead(side){
+  return `<div class="nba-team-head">
+    ${side.team.logo ? `<img src="${escapeHtml(side.team.logo)}" width="26" height="26" alt="" loading="lazy">` : ''}
+    <strong>${escapeHtml(side.team.name)}</strong>
+    <span class="nba-record">${escapeHtml(side.record || '')}</span>
+  </div>`;
+}
+function nflBreakdownCard(title, bodyHtml, accent){
+  return `<div class="game-card nba-card${accent?' nba-card-accent':''}">
+    <div class="nba-card-title">${escapeHtml(title)}</div>
+    <div class="nba-card-body">${bodyHtml}</div>
+  </div>`;
+}
+function nflMatchupCardHtml(m){
+  // Every metric here is a season-to-date stat — before either team has
+  // played a game, it's all nulls, which would render as a wall of "—"
+  // that reads as broken rather than "too early." Say that plainly instead.
+  if(!m.away.schedule.gamesPlayed && !m.home.schedule.gamesPlayed){
+    return nflBreakdownCard('Matchup Breakdown', `<div class="hr-note">No games played yet this season — these are season-to-date stats, so there's nothing to show until Week 1 wraps. Check the Auto Game Read and Weather cards above for what's available now.</div>`);
+  }
+  const cross = (off, def, label) => `
+    <div class="nfl-cross-row">
+      <div class="nfl-cross-side">
+        <span class="nfl-cross-team">${escapeHtml(off.team.abbrev)}</span> ${label.off}
+        <div class="nfl-cross-val">${label.offVal(off)} ${nflRankChip(label.offRank(off))}</div>
+      </div>
+      <span class="nfl-cross-vs">vs</span>
+      <div class="nfl-cross-side">
+        <span class="nfl-cross-team">${escapeHtml(def.team.abbrev)}</span> ${label.def}
+        <div class="nfl-cross-val">${label.defVal(def)} ${nflRankChip(label.defRank(def))}</div>
+      </div>
+    </div>`;
+  const rush = { off:'Rush offense', def:'Points allowed', offVal:s=>nflFmt1(s.metrics.rushYpg)+' ypg', offRank:s=>s.ranks.rushYpg, defVal:s=>nflFmt1(s.pa)+' pa/g', defRank:s=>s.ranks.pa };
+  const pass = { off:'Pass offense', def:'Pass rush', offVal:s=>nflFmt1(s.metrics.passYpg)+' ypg', offRank:s=>s.ranks.passYpg, defVal:s=>nflFmt1(s.metrics.sacksMadePerGame)+' sacks/g', defRank:s=>s.ranks.sacksMadePerGame };
+  const rows = [
+    ['Total YPG', s=>`${nflFmt1(s.metrics.ypg)} ${nflRankChip(s.ranks.ypg)}`],
+    ['Yards/Play', s=>`${s.metrics.ypp !== null ? s.metrics.ypp.toFixed(2) : '—'}`],
+    ['Comp %', s=>`${nflFmt1(s.metrics.completionPct)}%`],
+    ['Time of Poss.', s=>s.metrics.topSecPerGame !== null ? `${Math.floor(s.metrics.topSecPerGame/60)}:${String(Math.round(s.metrics.topSecPerGame%60)).padStart(2,'0')}` : '—'],
+    ['Red Zone TD%', s=>`${nflFmt1(s.metrics.redZoneTdPct)}% ${nflRankChip(s.ranks.redZoneTdPct)}`],
+    ['Third Down %', s=>`${nflFmt1(s.metrics.thirdDownPct)}% ${nflRankChip(s.ranks.thirdDownPct)}`],
+    ['ANY/A', s=>`${s.metrics.anyA !== null ? s.metrics.anyA.toFixed(2) : '—'} ${nflRankChip(s.ranks.anyA)}`],
+    ['Explosive plays/g (20+ yds)', s=>`${nflFmt1(s.metrics.explosive)} ${nflRankChip(s.ranks.explosive)}`],
+    ['Sacks allowed/g', s=>`${nflFmt1(s.metrics.sacksAllowedPerGame)} ${nflRankChip(s.ranks.sacksAllowedPerGame)}`],
+    ['Takeaway INTs/g', s=>`${nflFmt1(s.metrics.intsCaughtPerGame)} ${nflRankChip(s.ranks.intsCaughtPerGame)}`],
+    ['Turnover margin/g', s=>`${s.metrics.turnoverMargin !== null ? (s.metrics.turnoverMargin>0?'+':'')+s.metrics.turnoverMargin.toFixed(2) : '—'} ${nflRankChip(s.ranks.turnoverMargin)}`]
+  ];
+  return nflBreakdownCard('Matchup Breakdown', `
+    ${cross(m.away, m.home, rush)}
+    ${cross(m.home, m.away, rush)}
+    ${cross(m.away, m.home, pass)}
+    ${cross(m.home, m.away, pass)}
+    <div class="table-scroll" style="margin-top:10px;"><table class="props-table"><thead>
+      <tr><th></th><th>${escapeHtml(m.away.team.abbrev)}</th><th>${escapeHtml(m.home.team.abbrev)}</th></tr></thead><tbody>
+      ${rows.map(([label, fn])=>`<tr><td style="font-weight:600;">${label}</td><td>${fn(m.away)}</td><td>${fn(m.home)}</td></tr>`).join('')}
+    </tbody></table></div>
+    <div class="hr-note" style="margin-top:8px;">Yards-allowed defensive splits aren't on any free feed — defense here is points allowed, pass rush, and takeaways.</div>`);
+}
+function nflWeatherCardHtml(m){
+  const w = m.weather;
+  let body;
+  if(!w){ body = '<div class="hr-note">Weather unavailable for this venue.</div>'; }
+  else if(w.dome){ body = `<div class="hr-note">Indoor stadium — weather doesn't affect play.</div>`; }
+  else {
+    const flags = [];
+    if((w.windMph ?? 0) >= 15) flags.push(['Passing downgrade', 'bad'], ['Running upgrade', 'good']);
+    if(w.rain || w.snow) flags.push(['Ball security matters', 'bad'], ['Running upgrade', 'good']);
+    body = `
+      <div class="nba-flags" style="margin-bottom:8px;">
+        <span class="nba-flag on">${w.tempF !== null ? Math.round(w.tempF) + '°F' : '—'}</span>
+        <span class="nba-flag${(w.windMph ?? 0) >= 15 ? ' on' : ''}">Wind ${w.windMph !== null ? Math.round(w.windMph) + ' mph' : '—'}</span>
+        <span class="nba-flag${w.rain ? ' on' : ''}">Rain</span>
+        <span class="nba-flag${w.snow ? ' on' : ''}">Snow</span>
+      </div>
+      ${flags.length
+        ? `<div class="nba-leans">${flags.map(([t])=>`<span class="nba-lean">${escapeHtml(t)}</span>`).join('')}</div>`
+        : '<div class="hr-note">Current conditions look neutral for both phases.</div>'}
+      <div class="hr-note" style="margin-top:6px;">Current conditions at ${escapeHtml(m.home.team.abbrev)}'s stadium — check again close to kickoff.</div>`;
+  }
+  return nflBreakdownCard('Weather', body);
+}
+function nflFormCardHtml(m){
+  const side = s => `
+    ${nflBreakdownTeamHead(s)}
+    <div class="hr-note">
+      ${s.schedule.last10 ? `Last 10 (straight-up): <strong>${escapeHtml(s.schedule.last10)}</strong>` : 'No completed games yet this season.'}
+      ${s.schedule.streak ? ` · ${escapeHtml(s.schedule.streak)}` : ''}
+      ${s.schedule.offBye ? ' · <span class="stat-pos">Off the bye</span>' : ''}
+    </div>`;
+  return nflBreakdownCard('Recent Form', `
+    <div class="nba-two-col">
+      <div>${side(m.away)}</div>
+      <div>${side(m.home)}</div>
+    </div>
+    <div class="hr-note" style="margin-top:8px;">Against-the-spread and over/under trend history requires paid closing-line data — form shown here is straight-up wins and losses from the schedule.</div>`);
+}
+// Ties Auto Game Read's stats-only insights to the real current line instead
+// of leaving them floating with no reference to what's actually being bet.
+// FanDuel is the default book (falls back to whichever else is available),
+// with a chip row to switch — never silently swaps to "best price" the way
+// Value Finder does, since the whole point here is "the line," not "the
+// best number across books."
+const LINE_CONTEXT_BOOK_PRIORITY = { fanduel: 0, draftkings: 1 };
+function nflLineContextHtml(m, game, selectedBookKey){
+  if(!game || !game.bookmakers || !game.bookmakers.length) return '';
+  const pool = poolFor(game.bookmakers);
+  const spreadRows = modalPointRows(pool, 'spreads', m.home.team.name);
+  const totalRows = modalPointRows(pool, 'totals', 'Over');
+  if(!spreadRows.length && !totalRows.length) return '';
+
+  const bookKeys = [...new Set([...spreadRows, ...totalRows].map(r=>r.bookKey))]
+    .sort((a,b)=>(LINE_CONTEXT_BOOK_PRIORITY[a] ?? 99) - (LINE_CONTEXT_BOOK_PRIORITY[b] ?? 99));
+  const active = bookKeys.includes(selectedBookKey) ? selectedBookKey : bookKeys[0];
+  const spreadRow = spreadRows.find(r=>r.bookKey===active);
+  const totalRow = totalRows.find(r=>r.bookKey===active);
+
+  const chips = bookKeys.map(k=>{
+    const style = bookStyleFor(k);
+    return `<span class="lc-chip${k===active?' active':''}" data-game-id="${escapeHtml(String(game.id))}" data-book-key="${escapeHtml(k)}">${escapeHtml(style ? style.name : k)}</span>`;
+  }).join('');
+
+  const nums = [];
+  if(spreadRow) nums.push(`${escapeHtml(m.home.team.abbrev)} ${spreadRow.point > 0 ? '+' : ''}${spreadRow.point}`);
+  if(totalRow) nums.push(`O/U ${totalRow.point}`);
+
+  // Modest agreement check against the weather lean only — never a pick, just
+  // whether the stats above happen to point the same way as the real total.
+  let extra = '';
+  if(totalRow && m.summary && m.summary.leans){
+    if(m.summary.leans.some(l=>/under/i.test(l))) extra = 'weather lean points Under, matching this total.';
+    else if(m.summary.leans.some(l=>/over/i.test(l))) extra = 'weather lean points Over, matching this total.';
+  }
+
+  return `<div class="line-context">
+    <div class="lc-label">Current line</div>
+    <div class="lc-chips">${chips}</div>
+    <div class="lc-numbers">${nums.map(n=>`<span class="lc-line">${n}</span>`).join('')}${extra ? ` <span class="lc-extra">— ${escapeHtml(extra)}</span>` : ''}</div>
+  </div>`;
+}
+function nflSummaryCardHtml(m, game, selectedBookKey){
+  const s = m.summary;
+  return nflBreakdownCard('Auto Game Read', `
+    <ul class="nba-summary-list">${s.insights.map(i=>`<li>${escapeHtml(i)}</li>`).join('')}</ul>
+    ${s.leans.length ? `<div class="nba-leans">${s.leans.map(l=>`<span class="nba-lean">${escapeHtml(l)}</span>`).join('')}</div>` : ''}
+    <div class="nba-confidence">Signal strength: <strong>${s.confidence}/10</strong></div>
+    ${nflLineContextHtml(m, game, selectedBookKey)}
+    <div class="hr-note" style="margin-top:6px;">${escapeHtml(s.note)}</div>`, true);
+}
+// Player Form (props context) — the one interactive panel. Caller supplies
+// rosters/analyzerPlayer/playerForm/gameId so this stays a pure render (all
+// the fetch/state-tracking lives in board.js, same as everything else here).
+function nflAnalyzerCardHtml(m, gameId, rosters, analyzerPlayerId, playerForm){
+  const options = [m.away, m.home].map(s=>{
+    const roster = (rosters[s.team.id] || []).filter(p=>['QB','RB','WR','TE'].includes(p.position));
+    return `<optgroup label="${escapeHtml(s.team.name)}">${roster.map(p=>`<option value="${escapeHtml(p.id)}" ${String(p.id)===String(analyzerPlayerId)?'selected':''}>${escapeHtml(p.name)} (${escapeHtml(p.position)})</option>`).join('')}</optgroup>`;
+  }).join('');
+  let body = `<div class="search-row" style="margin-bottom:10px;">
+    <select class="nba-team-select nfl-analyzer-select" data-game-id="${escapeHtml(gameId)}">${options || '<option>Loading rosters…</option>'}</select>
+    <button class="ghost nfl-analyzer-btn" data-game-id="${escapeHtml(gameId)}">Check form</button>
+  </div>`;
+  const pf = analyzerPlayerId && playerForm[analyzerPlayerId];
+  if(analyzerPlayerId && pf && pf !== 'loading'){
+    const p = Object.values(rosters).flat().find(x=>String(x.id)===String(analyzerPlayerId));
+    if(p) body += `<div class="nba-team-head" style="margin-bottom:8px;">${avatarUrlHtml(p.headshot, 32)}<strong>${escapeHtml(p.name)}</strong> <span class="nba-record">${escapeHtml(p.position)}</span></div>`;
+  }
+  if(pf === 'loading'){
+    body += `<div class="hr-note"><span class="spinner"></span> Pulling game logs (3 seasons for the head-to-head)…</div>`;
+  } else if(pf && pf.season.games){
+    const ydsLabels = [];
+    let seen = 0;
+    (pf.labels || []).forEach((l, i)=>{
+      if(l === 'YDS'){
+        seen++;
+        const before = pf.labels.slice(0, i).join(',');
+        ydsLabels.push(before.includes('CMP') && seen === 1 ? 'Pass YDS' : before.includes('REC') ? 'Rec YDS' : 'Rush YDS');
+      }
+    });
+    const vs = pf.vsOpponent;
+    const rows = [['Last 5', pf.last5], ['Season', pf.season]];
+    if(vs && vs.games) rows.push([`vs ${vs.abbrev || 'OPP'} (3 seasons)`, vs]);
+    body += `<div class="table-scroll"><table class="props-table"><thead>
+      <tr><th>Split</th><th>G</th>${ydsLabels[0]?`<th>${ydsLabels[0]}</th>`:''}${ydsLabels[1]?`<th>${ydsLabels[1]}</th>`:''}<th>TD</th>${pf.season.rec !== null ? '<th>REC</th>' : ''}</tr></thead><tbody>
+      ${rows.map(([label, r])=>`<tr><td style="font-weight:600;">${label}</td><td>${r.games}</td>${ydsLabels[0]?`<td>${nflFmt1(r.yds1)}</td>`:''}${ydsLabels[1]?`<td>${nflFmt1(r.yds2)}</td>`:''}<td>${nflFmt1(r.td1)}</td>${pf.season.rec !== null ? `<td>${nflFmt1(r.rec)}</td>` : ''}</tr>`).join('')}
+    </tbody></table></div>`;
+    if(vs && vs.meetings && vs.meetings.length){
+      body += `<div class="nfl-pos-group" style="margin-top:8px;">Last meetings vs ${escapeHtml(vs.abbrev || '')}</div>
+        <div class="table-scroll"><table class="props-table"><thead>
+        <tr><th>Date</th><th>Site</th>${ydsLabels[0]?`<th>${ydsLabels[0]}</th>`:''}<th>TD</th>${pf.season.rec !== null ? '<th>REC</th>' : ''}</tr></thead><tbody>
+        ${vs.meetings.map(mt=>`<tr><td>${escapeHtml(mt.date || '')}</td><td>${mt.home?'Home':'Away'}</td>${ydsLabels[0]?`<td>${mt.yds1 ?? '—'}</td>`:''}<td>${mt.td1 ?? '—'}</td>${pf.season.rec !== null ? `<td>${mt.rec ?? '—'}</td>` : ''}</tr>`).join('')}
+      </tbody></table></div>`;
+    } else if(vs){
+      body += `<div class="hr-note" style="margin-top:6px;">No meetings against this opponent in the last 3 seasons.</div>`;
+    }
+    if(vs && vs.games >= 2 && vs.yds1 !== null && pf.season.yds1 !== null){
+      const d = vs.yds1 - pf.season.yds1;
+      if(Math.abs(d) >= 15){
+        body += `<div class="nba-insight">Averages ${nflFmt1(Math.abs(d))} ${d > 0 ? 'MORE' : 'fewer'} yards against this opponent than his overall norm (${vs.games}-game sample).</div>`;
+      }
+    }
+    if(pf.last5.yds1 !== null && pf.season.yds1 !== null){
+      const d = pf.last5.yds1 - pf.season.yds1;
+      body += `<div class="nba-insight">${Math.abs(d) < 15 ? 'Producing right at season norm over the last 5.' : d > 0 ? `Averaging ${nflFmt1(d)} yards above season norm over the last 5 — favorable form for Over props.` : `Averaging ${nflFmt1(-d)} yards below season norm over the last 5 — caution on Overs.`}</div>`;
+    }
+  } else if(pf === null){
+    body += `<div class="hr-note">No game-log data for this player.</div>`;
+  }
+  body += `<div class="hr-note" style="margin-top:8px;">Prop lines and odds live right above in this game's player-props panel — this card is the form behind them.</div>`;
+  return nflBreakdownCard('Player Form (props context)', body);
+}
+function buildNflFullBreakdownHtml(m, gameId, rosters, analyzerPlayerId, playerForm, game, selectedBookKey){
+  return `<div class="nfl-breakdown">
+    ${nflSummaryCardHtml(m, game, selectedBookKey)}
+    ${nflMatchupCardHtml(m)}
+    ${nflWeatherCardHtml(m)}
+    ${nflFormCardHtml(m)}
+    ${nflAnalyzerCardHtml(m, gameId, rosters, analyzerPlayerId, playerForm)}
   </div>`;
 }
 
@@ -730,6 +1646,13 @@ const TEAM_LOGOS = {
     "San Antonio Spurs":"sa", "Toronto Raptors":"tor", "Utah Jazz":"utah",
     "Washington Wizards":"wsh"
   },
+  basketball_wnba: {
+    "Atlanta Dream":"atl", "Chicago Sky":"chi", "Connecticut Sun":"con",
+    "Dallas Wings":"dal", "Golden State Valkyries":"gs", "Indiana Fever":"ind",
+    "Las Vegas Aces":"lv", "Los Angeles Sparks":"la", "Minnesota Lynx":"min",
+    "New York Liberty":"ny", "Phoenix Mercury":"phx", "Portland Fire":"por",
+    "Seattle Storm":"sea", "Toronto Tempo":"tor", "Washington Mystics":"wsh"
+  },
   americanfootball_nfl: {
     "Arizona Cardinals":"ari", "Atlanta Falcons":"atl", "Baltimore Ravens":"bal",
     "Buffalo Bills":"buf", "Carolina Panthers":"car", "Chicago Bears":"chi",
@@ -760,7 +1683,7 @@ const TEAM_LOGOS = {
 function teamLogoUrl(sportKey, teamName){
   const league = TEAM_LOGOS[sportKey];
   const abbrev = league ? league[teamName] : null;
-  return abbrev ? `https://a.espncdn.com/i/teamlogos/${sportKey === 'baseball_mlb' ? 'mlb' : sportKey === 'basketball_nba' ? 'nba' : sportKey === 'americanfootball_nfl' ? 'nfl' : 'nhl'}/500/${abbrev}.png` : null;
+  return abbrev ? `https://a.espncdn.com/i/teamlogos/${sportKey === 'baseball_mlb' ? 'mlb' : sportKey === 'basketball_nba' ? 'nba' : sportKey === 'basketball_wnba' ? 'wnba' : sportKey === 'americanfootball_nfl' ? 'nfl' : 'nhl'}/500/${abbrev}.png` : null;
 }
 // Returns an <img> tag, or '' when this sport/team has no mapped logo (NCAA,
 // EPL, MMA, or an unmapped name) — callers can just concatenate the result.
@@ -770,3 +1693,66 @@ function teamLogoImg(sportKey, teamName){
   return `<img class="team-logo" src="${url}" width="24" height="24" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`;
 }
 
+
+// ---------- season windows (free, ESPN) ----------
+// Shared by Board's empty-state and the NBA/NFL dashboard headers.
+let _seasonStatusPromise = null;
+function fetchSeasonStatus(){
+  if(!_seasonStatusPromise) _seasonStatusPromise = fetch('/api/season-status').then(r=>r.json()).catch(()=>({}));
+  return _seasonStatusPromise;
+}
+function fmtSeasonDate(iso){
+  return new Date(iso).toLocaleDateString(undefined, {month:'short', day:'numeric', year:'numeric'});
+}
+// Renders a compact season-window line into #seasonBanner, if present on the page.
+async function renderSeasonBanner(sportKey){
+  const host = document.getElementById('seasonBanner');
+  if(!host) return;
+  const all = await fetchSeasonStatus();
+  const st = all[sportKey];
+  if(!st){ host.innerHTML = ''; return; }
+  let text;
+  if(st.inSeason){
+    text = `In season — ${escapeHtml(st.name || '')} · through ${fmtSeasonDate(st.endDate)}`;
+  } else if(st.daysUntilStart !== null){
+    text = `Off season — next season starts ${fmtSeasonDate(st.startDate)} (${st.daysUntilStart} day${st.daysUntilStart===1?'':'s'} away)`;
+  } else {
+    text = `Off season — last window ran ${fmtSeasonDate(st.startDate)} to ${fmtSeasonDate(st.endDate)}`;
+  }
+  host.innerHTML = `<div class="season-banner${st.inSeason?' in-season':''}">${text}</div>`;
+}
+
+// ---------- push notifications ----------
+function urlBase64ToUint8Array(base64String){
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+function pushSupported(){
+  return 'serviceWorker' in navigator && 'PushManager' in window && typeof Notification !== 'undefined';
+}
+async function getPushSubscription(){
+  if(!pushSupported()) return null;
+  const reg = await navigator.serviceWorker.getRegistration('/sw.js');
+  if(!reg) return null;
+  return reg.pushManager.getSubscription();
+}
+async function subscribeToPush(){
+  if(!pushSupported()) return { ok:false, reason:'unsupported' };
+  const perm = await Notification.requestPermission();
+  if(perm !== 'granted') return { ok:false, reason:'denied' };
+  const keyRes = await fetch('/api/push/vapid-public-key');
+  if(!keyRes.ok) return { ok:false, reason:'not_configured' };
+  const { key } = await keyRes.json();
+  const reg = await navigator.serviceWorker.register('/sw.js');
+  const sub = await reg.pushManager.subscribe({ userVisibleOnly:true, applicationServerKey: urlBase64ToUint8Array(key) });
+  await fetch('/api/push/subscribe', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(sub) });
+  return { ok:true };
+}
+async function unsubscribeFromPush(){
+  const sub = await getPushSubscription();
+  if(!sub) return;
+  await fetch('/api/push/unsubscribe', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ endpoint: sub.endpoint }) });
+  await sub.unsubscribe();
+}

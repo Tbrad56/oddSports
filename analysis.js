@@ -51,6 +51,18 @@ function blendedLambda(recentValues, seasonValues){
   return 0.7 * weightedRate(recentValues) + 0.3 * mean(seasonValues);
 }
 
+// One box-score line -> a single headline outcome for a recent-form dot,
+// priority HR > XBH (2B/3B) > 1B > BB > OUT (matches how a batter's day is
+// usually summarized in one glance rather than showing every stat line).
+function classifyBattingGame(stat){
+  const s = stat || {};
+  if((s.homeRuns || 0) >= 1) return 'HR';
+  if(((s.doubles || 0) + (s.triples || 0)) >= 1) return 'XBH';
+  if((s.hits || 0) >= 1) return '1B';
+  if((s.baseOnBalls || 0) >= 1) return 'BB';
+  return 'OUT';
+}
+
 // prop: {player, market, line, overRows, underRows}; rows: {bookKey, bookTitle, odds}
 // stats: {recentValues (newest-first), seasonValues}
 function analyzeProp(prop, stats){
@@ -110,6 +122,7 @@ function analyzeProp(prop, stats){
       lambda, recentRate, seasonRate,
       trend: recentRate > seasonRate ? 'up' : recentRate < seasonRate ? 'down' : 'flat',
       recentValues: stats.recentValues,
+      recentOutcomes: stats.recentOutcomes || null,
       hitCount: stats.recentValues.filter(v => v > prop.line).length,
       windowSize: stats.recentValues.length,
       flags
@@ -123,6 +136,6 @@ function rankPicks(picks){
 
 module.exports = {
   americanToDecimal, poissonPmf, poissonCdf, pOver,
-  weightedRate, mean, blendedLambda, analyzeProp, rankPicks,
+  weightedRate, mean, blendedLambda, analyzeProp, rankPicks, classifyBattingGame,
   EDGE_MIN, EDGE_CHECK_NEWS, THIN_SAMPLE
 };

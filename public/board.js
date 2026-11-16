@@ -14,7 +14,15 @@
     nflMatchups: {}, // gameId -> /api/matchups/nfl response
     statcast: undefined, // batters map from /statcast/statcast.json, or null if unavailable
     oddsView: {},  // gameId -> 'full' | 'f5', survives re-renders like propsOpen
-    pitchers: {}   // gameId -> {matched, home:{id,name}|null, away:{id,name}|null}
+    pitchers: {},  // gameId -> {matched, home:{id,name}|null, away:{id,name}|null}
+    altPropsCache: {},   // "gameId|marketKey" -> raw {market}_alternate response body, once loaded
+    altPropsLoading: {}, // "gameId|marketKey" -> bool, while that fetch is in flight
+    altPropsView: {},    // "gameId|marketKey" -> 'standard' | 'alt' (default standard)
+    nflTeamsByName: null,  // team display name -> {id, name, abbrev, logo}, fetched once (retired NFL Dashboard page's team picker, now resolved automatically)
+    nflBreakdownOpen: {},  // gameId -> bool
+    nflBreakdown: {},      // gameId -> {matchup, rosters:{}, analyzerPlayer, playerForm:{}}
+    nflInjuriesOpen: {},   // gameId -> bool, survives re-renders like propsOpen
+    nflLineContextBook: {} // gameId -> bookKey, which book's line Auto Game Read shows (defaults to FanDuel)
   };
   let renderScheduled = false;
   // Coalesces multiple renderGames() requests (weather/pitchers post-fetches, audit 6.2)
@@ -25,14 +33,140 @@
     requestAnimationFrame(()=>{ renderScheduled = false; if(state.games.length) renderGames(); });
   }
 
+  // Nav deep-links (e.g. the NBA/NFL group's "Board" item) land here as
+  // /board.html?sport=basketball_nba — honor it before anything else reads
+  // the persisted sport, so both the chip and the nav's active-group
+  // highlight are correct on first paint, not just after a manual click.
+  (function applySportFromUrl(){
+    const requested = new URLSearchParams(location.search).get('sport');
+    if(requested && SPORTS.some(([k])=>k===requested)) setSport(requested);
+  })();
+
   renderNav('board');
   renderSportChips(document.getElementById('sportChips'), ()=>{
     state.propsCache = {}; state.propRegistry = {}; state.marketCollapsed = {};
     state.propsBookFilter = 'all'; state.propsOpen = {}; state.propsUnavailable = {};
-    state.propsActiveTab = {};
+    state.altPropsCache = {}; state.altPropsLoading = {}; state.altPropsView = {};
     refresh();
   });
   renderMyBooksList();
+
+  // ---------- Value Finder (moved here from Cheatsheet — reuses the games
+  // this page already fetched, so it doesn't cost a second odds request) ----------
+  const EDGE_THRESHOLD = 0.02; // 2% — below this it's just book-to-book noise, not a real edge
+  const fmtPct = p => (p*100).toFixed(1) + '%';
+
+  // Scans one game's markets for outcomes whose best price beats the
+  // multi-book consensus fair line by at least EDGE_THRESHOLD. Reuses the
+  // exact devig math (computeFairDecimal) the Game Lines grid's single
+  // "Value" tag already relies on — this just runs it across every outcome
+  // and ranks the results instead of leaving it buried per-row.
+  function scanGame(game, sportKey){
+    const pool = poolFor(game.bookmakers);
+    const candidates = [];
+
+    function consider(sideRows, oppRows, label, marketLabel, meta){
+      if(!sideRows.length || !oppRows.length) return;
+      const fair = computeFairDecimal(sideRows, oppRows);
+      if(!fair) return;
+      const best = sideRows[0];
+      const edge = americanToDecimal(best.odds) / fair - 1;
+      if(edge < EDGE_THRESHOLD) return;
+      candidates.push({ matchup: `${game.away_team} @ ${game.home_team}`, side: label, marketLabel, edge, rows: sideRows, best,
+        sport: sportKey, homeTeam: game.home_team, awayTeam: game.away_team, commenceTime: game.commence_time, meta });
+    }
+
+    const ml = { away: rowsFor(pool, 'h2h', game.away_team), home: rowsFor(pool, 'h2h', game.home_team) };
+    consider(ml.away, ml.home, `${game.away_team} to win`, 'Moneyline', { market:'h2h', selection: game.away_team, point: null });
+    consider(ml.home, ml.away, `${game.home_team} to win`, 'Moneyline', { market:'h2h', selection: game.home_team, point: null });
+
+    // Spreads/totals are fetched for MLB, NFL, NCAAF and NCAAB (see server.js's
+    // gridSports) — same sports the Game Lines grid shows them for.
+    if(['baseball_mlb', 'americanfootball_nfl', 'americanfootball_ncaaf', 'basketball_ncaab'].includes(sportKey)){
+      const spread = { away: modalPointRows(pool, 'spreads', game.away_team), home: modalPointRows(pool, 'spreads', game.home_team) };
+      if(spread.away.length && spread.home.length && spread.away[0].point != null){
+        const p = spread.away[0].point;
+        consider(spread.away, spread.home, `${game.away_team} ${p>0?'+':''}${p}`, 'Spread', { market:'spreads', selection: game.away_team, point: p });
+        const hp = spread.home[0].point;
+        consider(spread.home, spread.away, `${game.home_team} ${hp>0?'+':''}${hp}`, 'Spread', { market:'spreads', selection: game.home_team, point: hp });
+      }
+      const total = { over: modalPointRows(pool, 'totals', 'Over'), under: modalPointRows(pool, 'totals', 'Under') };
+      if(total.over.length && total.under.length){
+        consider(total.over, total.under, `Over ${total.over[0].point}`, 'Total', { market:'totals', selection:'Over', point: total.over[0].point });
+        consider(total.under, total.over, `Under ${total.under[0].point}`, 'Total', { market:'totals', selection:'Under', point: total.under[0].point });
+      }
+    }
+    return candidates;
+  }
+
+  function valueCard(c){
+    return `<div class="value-row">
+      <div class="value-row-main">
+        <div class="value-row-side">${escapeHtml(c.side)}</div>
+        <div class="value-row-sub">${escapeHtml(c.matchup)} · ${escapeHtml(c.marketLabel)}</div>
+      </div>
+      <div class="value-row-edge">
+        <span class="value-edge-pct">+${fmtPct(c.edge)}</span>
+        <span class="value-edge-label">vs consensus</span>
+      </div>
+      <div class="value-row-book">
+        ${linkedBadge(c.best.bookKey, c.best.bookTitle)}
+        <span class="odds">${fmtAmerican(c.best.odds)}</span>
+      </div>
+      <button class="add-leg-btn value-add-btn">+ Slip</button>
+    </div>`;
+  }
+
+  // Synchronous — runs over state.games, which refresh() already fetched, so
+  // picking a sport costs exactly one odds request, same as before this
+  // lived on its own page.
+  function renderValueFinder(){
+    const area = document.getElementById('valueArea');
+    if(!area) return;
+    if(!state.games.length){ area.innerHTML = ''; return; }
+    const sportKey = getSport();
+    const candidates = state.games.flatMap(g => scanGame(g, sportKey)).sort((a,b)=>b.edge-a.edge).slice(0, 25);
+    if(!candidates.length){
+      area.innerHTML = `<div class="panel"><h2>Value Finder</h2><div class="hr-note">Nothing beats the market consensus by ${fmtPct(EDGE_THRESHOLD)}+ right now — books are in close agreement. Check back closer to game time.</div></div>`;
+      return;
+    }
+    area.innerHTML = `<div class="panel">
+      <h2>Value Finder</h2>
+      <div class="hr-note" style="margin-bottom:10px;">Best price on each outcome vs. the de-vigged consensus of every book scanned — not a pick, just where the market disagrees with itself. Top ${candidates.length}, best edge first.</div>
+      ${candidates.map(valueCard).join('')}
+    </div>`;
+    area.querySelectorAll('.value-row').forEach((row, i)=>{
+      row.querySelector('.value-add-btn').addEventListener('click', ()=>{
+        const c = candidates[i];
+        addLegToSlip({ id: Date.now()+Math.random(), matchup: c.matchup, side: c.side, rows: c.rows,
+          meta: { sport: c.sport, market: c.meta.market, selection: c.meta.selection, point: c.meta.point } });
+        trackBet({ sport: c.sport, homeTeam: c.homeTeam, awayTeam: c.awayTeam, commenceTime: c.commenceTime,
+          matchup: c.matchup, market: c.meta.market, selection: c.meta.selection, point: c.meta.point });
+        showToast('Added ✓');
+        flashEl(row);
+      });
+    });
+    staggerIn(area.querySelector('.panel'), 20);
+  }
+
+  // Pages that used to live in a per-sport nav flyout (now flattened to one
+  // link per sport) but aren't part of this merged page — kept reachable via
+  // a quiet in-context row instead of nav clutter.
+  const RELATED_PAGES = {
+    baseball_mlb: [['/getprops.html','🎯','Get Props'], ['/record.html','📈','Record']],
+    basketball_nba: [['/nba.html','📈','NBA Dashboard']]
+    // NFL Dashboard retired — its cards (Injury Center, Matchup Breakdown,
+    // Weather, Recent Form, Player Form) now live directly on each game's
+    // own card here instead of a separate page with its own team pickers.
+  };
+  function renderRelatedLinks(){
+    const el = document.getElementById('relatedLinks');
+    if(!el) return;
+    const pages = RELATED_PAGES[getSport()];
+    el.innerHTML = pages
+      ? 'Also see: ' + pages.map(([href,icon,label])=>`<a href="${href}">${icon} ${escapeHtml(label)}</a>`).join(' · ')
+      : '';
+  }
 
   async function refresh(){
     clearError();
@@ -44,6 +178,8 @@
       const {games, remaining, cacheAge} = await fetchOddsFor(getSport());
       state.games = games;
       renderGames();
+      renderValueFinder();
+      renderRelatedLinks();
       updateTicker(games);
       setStatus(true, oddsStatusText(games.length, remaining, cacheAge));
 
@@ -52,6 +188,8 @@
       if(sport === 'baseball_mlb' && games.length){
         fetchStadiumWeather(games).then(scheduleRender).catch(()=>{});
         fetchStartingPitchers(games).then(scheduleRender).catch(()=>{});
+        fetchTopHitters(games).then(scheduleRender).catch(()=>{});
+        fetchMlbParkDimensions().then(scheduleRender).catch(()=>{});
       }
       // Live scores: fetch now, then keep polling every 30s while this sport is loaded
       state.scores = []; state.mlbLive = [];
@@ -64,6 +202,8 @@
       setStatus(false, 'Fetch failed.');
       const message = e.message || 'Could not fetch odds — try again shortly.';
       showError(message);
+      state.games = [];
+      document.getElementById('valueArea').innerHTML = '';
       document.getElementById('gamesArea').innerHTML = '<div class="empty-state"><h3>Couldn\'t load games</h3><p>' + escapeHtml(message) + '</p><button class="primary" id="retryBtn">Retry</button></div>';
       const retryBtn = document.getElementById('retryBtn');
       if(retryBtn) retryBtn.addEventListener('click', refresh);
@@ -95,11 +235,24 @@
   async function refreshScores(){
     const sport = getSport();
     try{
+      const completedBefore = new Set(
+        state.games.filter(g => (findScoreFor(state.scores, g) || {}).completed).map(g => g.id)
+      );
       state.scores = await fetchScoresFor(sport);
       if(sport === 'baseball_mlb'){
         state.mlbLive = await fetchMlbLive().catch(()=>[]);
       }
-      if(state.games.length) patchScores();
+      if(state.games.length){
+        // A game just finishing means renderGames() needs to drop its card —
+        // patchScores() only updates the score badge in place, it can't remove
+        // a card. Everything else (nothing newly completed) stays on the cheap
+        // in-place patch so open props/scroll position survive the 30s poll.
+        const justFinished = state.games.some(g =>
+          !completedBefore.has(g.id) && (findScoreFor(state.scores, g) || {}).completed
+        );
+        if(justFinished) renderGames();
+        else patchScores();
+      }
     }catch(e){
       // scores are a bonus overlay — quietly skip on failure, odds board still works
     }
@@ -122,7 +275,7 @@
       row.querySelector('input').addEventListener('change', ()=>{
         const checked = [...host.querySelectorAll('input:checked')].map(i=>i.value);
         setMyBooks(checked);
-        if(state.games.length) renderGames();
+        if(state.games.length){ renderGames(); renderValueFinder(); }
       });
       host.appendChild(row);
     });
@@ -273,15 +426,30 @@
     let bms = (data.bookmakers || []).filter(b => TRACKED_KEYS.includes(b.key.toLowerCase()));
     let bookmakersToUse = bms.length ? bms : (data.bookmakers || []);
     if(state.propsBookFilter !== 'all'){
-      bookmakersToUse = bookmakersToUse.filter(b => b.key.toLowerCase() === state.propsBookFilter);
+      out = out.filter(b => b.key.toLowerCase() === state.propsBookFilter);
     }
+    return out;
+  }
 
-    let html = '<div class="props-block">';
-    let any = false;
-    markets.forEach(marketKey=>{
+  function buildPropsHtml(game, data, markets){
+    const bookmakersToUse = filterBookmakers(data.bookmakers);
+
+    // First pass: which markets actually have rows for this game (with the
+    // current book filter applied) — needed up front to build the quick
+    // category-filter chips before the sections themselves.
+    // Each market section can independently be toggled to its "Alt Lines"
+    // tab (every line the books quote, not just the one standard line) —
+    // once that data's been fetched for this game it's cached, so flipping
+    // the tab back and forth afterward is instant/free.
+    const marketData = markets.map(marketKey=>{
+      const sectionKey = game.id+'|'+marketKey;
+      const altBody = state.altPropsCache[sectionKey];
+      const useAlt = state.altPropsView[sectionKey] === 'alt' && !!altBody;
+      const effectiveKey = useAlt ? marketKey+'_alternate' : marketKey;
+      const sourceBookmakers = useAlt ? filterBookmakers(altBody.bookmakers) : bookmakersToUse;
       const perPlayer = {}; // "playerName|side|point" -> {player, side, point, rows}
-      bookmakersToUse.forEach(bm=>{
-        const market = bm.markets.find(m=>m.key===marketKey);
+      sourceBookmakers.forEach(bm=>{
+        const market = bm.markets.find(m=>m.key===effectiveKey);
         if(!market) return;
         market.outcomes.forEach(o=>{
           const playerName = o.description || o.name;
@@ -290,27 +458,114 @@
           perPlayer[rowKey].rows.push({bookKey:bm.key, bookTitle:bm.title, odds:o.price, link:o.link||bm.link||null, sid:o.sid||null, marketSid:market.sid||null});
         });
       });
-      const rowKeys = Object.keys(perPlayer);
-      if(!rowKeys.length) return;
-      any = true;
+      return {
+        marketKey, perPlayer, rowKeys: Object.keys(perPlayer),
+        useAlt, altLoaded: !!altBody, altLoading: !!state.altPropsLoading[sectionKey]
+      };
+    }).filter(m => m.rowKeys.length || m.altLoading);
+
+    let html = '<div class="props-block">';
+
+    // Quick category filter: every prop market shows collapsed by default (a
+    // game can have 5-6 of these — all expanded at once is exactly what was
+    // jumbled) — tap a chip to jump straight to just that category, or "All"
+    // to go back to browsing them yourself. Same chips row style/behavior
+    // works for every sport since it's just built off whatever markets this
+    // game actually has data for.
+    if(marketData.length > 1){
+      const noneForcedOpen = marketData.every(m => state.marketCollapsed[game.id+'|'+m.marketKey] !== false);
+      html += `<div class="chip-row props-market-filter" data-game-id="${escapeHtml(String(game.id))}" style="margin:0 0 10px;">
+        <span class="chip prop-filter-chip${noneForcedOpen?' active':''}" data-filter="all">All</span>
+        ${marketData.map(m=>{
+          const active = state.marketCollapsed[game.id+'|'+m.marketKey] === false;
+          return `<span class="chip prop-filter-chip${active?' active':''}" data-filter="${escapeHtml(m.marketKey)}">${escapeHtml(marketLabel(m.marketKey))}</span>`;
+        }).join('')}
+      </div>`;
+    }
+
+    marketData.forEach(({marketKey, perPlayer, rowKeys, useAlt, altLoaded, altLoading})=>{
       const sectionKey = game.id + '|' + marketKey;
-      const collapsed = !!state.marketCollapsed[sectionKey];
+      // Collapsed by default — only stays open once the user (or a filter
+      // chip) has explicitly opened it.
+      const collapsed = state.marketCollapsed[sectionKey] !== false;
       html += `<div class="props-market-label prop-market-head" data-section-key="${escapeHtml(sectionKey)}" tabindex="0" role="button" aria-expanded="${!collapsed}" title="Click to ${collapsed?'expand':'collapse'}">
         <span class="market-arrow">${collapsed?'▸':'▾'}</span>${escapeHtml(marketLabel(marketKey))}
         <span class="market-count">(${rowKeys.length})</span>
       </div>`;
-      html += `<div class="market-body" style="${collapsed?'display:none;':''}"><div class="table-scroll">`;
-      html += `<table class="props-table"><thead><tr><th>Player</th><th>Line</th><th>Line shop (best → worst)</th><th></th></tr></thead><tbody>`;
-      rowKeys.slice(0,20).forEach(rk=>{
-        const entry = perPlayer[rk];
-        const rows = entry.rows.sort((a,b)=>americanToDecimal(b.odds)-americanToDecimal(a.odds));
-        const pointTxt = entry.point !== undefined && entry.point !== null ? `${entry.side} ${entry.point}` : entry.side;
-        const chips = rows.map((r,idx)=>{
-          const style = bookStyleFor(r.bookKey);
-          const label = style ? style.name : r.bookTitle;
-          const link = BOOK_LINKS[r.bookKey.toLowerCase()];
-          const chip = `<span class="odds-chip${idx===0?' best':''}" title="${escapeHtml(label)}">${escapeHtml(label)} ${fmtAmerican(r.odds)}</span>`;
-          return link ? `<a href="${link}" target="_blank" rel="noopener" style="text-decoration:none;">${chip}</a>` : chip;
+      html += `<div class="market-body" style="${collapsed?'display:none;':''}">`;
+      // Alt Lines sub-tab: every line the books quote for this stat, not
+      // just the one standard line — a real sub-tab within the category,
+      // same as Board's Full game/First 5 innings tabs. Anytime-scorer
+      // markets skip this entirely since there's only ever one line.
+      if(!NO_ALT_MARKETS.has(marketKey)){
+        html += `<div class="line-view-tabs" data-game-id="${escapeHtml(String(game.id))}" data-market-key="${escapeHtml(marketKey)}">
+          <button type="button" class="line-view-tab${!useAlt?' active':''}" data-view="standard">Standard</button>
+          <button type="button" class="line-view-tab${useAlt?' active':''}" data-view="alt">${altLoading ? '<span class="spinner"></span> Alt Lines' : 'Alt Lines'}</button>
+        </div>`;
+      }
+      html += `<div class="table-scroll">`;
+      // One row per player, always — never the player's name repeated once
+      // per line/side. Standard shows a pill per side at the book's one
+      // line (Over/Under, or just "Yes" for anytime-scorer markets). Alt
+      // Lines shows a condensed ladder of Over thresholds (150+, 175+,
+      // 200+...) instead of every raw line the books happen to quote. No
+      // per-book chip list either way — book comparison for whatever
+      // ends up in the slip lives on the Slip/Cheatsheet pages instead.
+      const byPlayer = {};
+      if(useAlt){
+        rowKeys.forEach(rk=>{
+          const entry = perPlayer[rk];
+          if(entry.side !== 'Over') return;
+          const best = entry.rows.slice().sort((a,b)=>americanToDecimal(b.odds)-americanToDecimal(a.odds))[0];
+          (byPlayer[entry.player] = byPlayer[entry.player] || []).push({ side: entry.side, point: entry.point, best, rows: entry.rows });
+        });
+      } else {
+        // Standard is exactly one pill per side (Over/Under, or "Yes") —
+        // even when books quote slightly different points for that side,
+        // pick whichever point the most tracked books share (same "modal
+        // point" convention the Game Lines grid already uses for
+        // spreads/totals), then the best price within it.
+        const bySidePoint = {}; // "player|side" -> [{point, rows}]
+        rowKeys.forEach(rk=>{
+          const entry = perPlayer[rk];
+          const key = entry.player + '|' + entry.side;
+          (bySidePoint[key] = bySidePoint[key] || []).push({ point: entry.point, rows: entry.rows });
+        });
+        Object.keys(bySidePoint).forEach(key=>{
+          const sep = key.lastIndexOf('|');
+          const player = key.slice(0, sep), side = key.slice(sep+1);
+          const modal = bySidePoint[key].slice().sort((a,b)=>b.rows.length-a.rows.length)[0];
+          const best = modal.rows.slice().sort((a,b)=>americanToDecimal(b.odds)-americanToDecimal(a.odds))[0];
+          (byPlayer[player] = byPlayer[player] || []).push({ side, point: modal.point, best, rows: modal.rows });
+        });
+      }
+      const players = Object.keys(byPlayer).sort((a,b)=>a.localeCompare(b)).slice(0, 20);
+      html += `<table class="props-table alt-lines-table"><tbody>`;
+      players.forEach(playerName=>{
+        let pointRows = byPlayer[playerName];
+        pointRows = useAlt
+          ? condenseAltPoints(pointRows.sort((a,b)=>a.point-b.point), 12)
+          : pointRows.sort((a,b)=> a.side === b.side ? 0 : a.side === 'Over' ? -1 : b.side === 'Over' ? 1 : a.side.localeCompare(b.side));
+        const headshotUrl = data.headshots && data.headshots[playerName.toLowerCase()];
+        const avatar = headshotUrl ? avatarUrlHtml(headshotUrl, 20) : emptyAvatarHtml(20);
+        const pills = pointRows.map(pr=>{
+          const hasPoint = pr.point !== undefined && pr.point !== null;
+          const sideLabel = useAlt ? 'Over' : pr.side;
+          const pillLabel = useAlt ? `${Math.ceil(pr.point)}+` : (hasPoint ? `${pr.side === 'Over' ? 'O' : pr.side === 'Under' ? 'U' : pr.side} ${pr.point}` : pr.side);
+          const propId = 'p' + (++state.propIdCounter);
+          state.propRegistry[propId] = {
+            side: `${playerName} ${sideLabel}${hasPoint ? ' '+pr.point : ''} ${marketLabel(marketKey)}`,
+            matchup: `${game.away_team} @ ${game.home_team}`, rows: pr.rows,
+            // Raw fields for server-side grading (trackProp) — display string
+            // above is for the Slip UI, these are what actually get sent.
+            sport: game.sport_key, player: playerName, market: marketKey,
+            line: hasPoint ? pr.point : null, propSide: sideLabel,
+            homeTeam: game.home_team, awayTeam: game.away_team, commenceTime: game.commence_time
+          };
+          return `<button type="button" class="alt-line-pill prop-slip-btn" data-prop-id="${propId}" title="Best price across your tracked books">
+            <span class="alt-line-point">${escapeHtml(pillLabel)}</span>
+            <span class="alt-line-price">${fmtAmerican(pr.best.odds)}</span>
+          </button>`;
         }).join('');
         // register this prop so the + Slip button can add it as a parlay leg
         const propId = 'p' + (++state.propIdCounter);
@@ -323,15 +578,14 @@
         const nflId = data.nflIds && data.nflIds[nameKey];
         const avatar = mlbId ? playerAvatarHtml(mlbId, 20) : nflId ? nflAvatarHtml(nflId, 20) : emptyAvatarHtml(20);
         html += `<tr>
-          <td style="font-weight:600; white-space:nowrap;">${avatar}${escapeHtml(entry.player)}</td>
-          <td style="color:var(--text-dim); white-space:nowrap;">${escapeHtml(pointTxt)}</td>
-          <td><div class="line-shop">${chips}</div></td>
-          <td><button class="add-leg-btn prop-slip-btn" data-prop-id="${propId}">+ Slip</button></td>
+          <td style="font-weight:600; white-space:nowrap;">${avatar}${escapeHtml(playerName)}</td>
+          <td><div class="alt-line-row">${pills}</div></td>
         </tr>`;
       });
-      html += `</tbody></table></div></div>`;
+      html += `</tbody></table>`;
+      html += `</div></div>`;
     });
-    if(!any){
+    if(!marketData.length){
       if(state.propsBookFilter !== 'all'){
         const filterStyle = bookStyleFor(state.propsBookFilter);
         const filterName = filterStyle ? filterStyle.name : state.propsBookFilter;
@@ -415,6 +669,64 @@
     }));
   }
 
+  // Same endpoint the opt-in HR Matchups section below uses — fetching it up
+  // front here means that section finds state.hrCache already warm and skips
+  // its own fetch (see the hrAlreadyLoaded check further down), so this box
+  // doesn't cost a second StatsAPI call per game.
+  async function fetchTopHitters(games){
+    await Promise.all(games.map(async game=>{
+      if(state.hrCache[game.id]) return;
+      const dateStr = new Date(game.commence_time).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+      try{
+        const res = await fetch(`/api/hr-matchups/mlb?home=${encodeURIComponent(game.home_team)}&away=${encodeURIComponent(game.away_team)}&date=${dateStr}`);
+        if(!res.ok) return;
+        state.hrCache[game.id] = await res.json();
+      }catch(e){ /* best-effort */ }
+    }));
+  }
+
+  // Two panels, own full-width row on the card — empty until lineups post
+  // (2-4 hours before first pitch), same as the opt-in HR Matchups section
+  // below:
+  //  - HR Watch: top 3 by a composite star rating (power vs today's specific
+  //    pitcher, ballpark, weather — see hrWatchRating in common.js), each
+  //    with a plain-English reason line built from those same stats.
+  //  - HR Leaders: top 3 by plain season HR count, regardless of tonight's
+  //    matchup — the two lists can (and often do) disagree, which is the point.
+  function buildTopHittersHtml(game){
+    const data = state.hrCache[game.id];
+    if(!data || !data.matched) return '';
+    const withTeam = (batters, team, pitcher) => (batters || []).map(b=>({...b, team, pitcher}));
+    const all = [
+      ...withTeam(data.away.batters, game.away_team, data.home.pitcher),
+      ...withTeam(data.home.batters, game.home_team, data.away.pitcher)
+    ];
+    const pool = all.map(b => ({ b, rating: hrWatchRating(b, b.pitcher, game) })).filter(x => x.rating);
+    if(!pool.length) return '';
+    const watchTop = pool.slice().sort((a,b)=>b.rating.score-a.rating.score).slice(0,3);
+    const leaders = all.filter(b => b.seasonHr !== null && b.seasonHr !== undefined).sort((a,b)=>b.seasonHr-a.seasonHr).slice(0,3);
+
+    const watchHtml = `<div class="hr-watch-panel">
+      <div class="top-hitters-title">HR Watch</div>
+      ${watchTop.map(({b,rating})=>`<div class="hr-watch-row">
+        <div class="hr-watch-top">
+          <div><div class="hitter-name">${escapeHtml(b.name)}</div><div class="hitter-team">${escapeHtml(b.team)}</div></div>
+          <div style="text-align:right; flex-shrink:0;">${starsHtml(rating.stars)}<span class="hitter-stat-sub">${b.seasonHr ?? '—'} HR</span></div>
+        </div>
+        <div class="hr-watch-why">${escapeHtml(rating.summary)}</div>
+      </div>`).join('')}
+    </div>`;
+    const leadersHtml = leaders.length ? `<div class="hr-leaders-panel">
+      <div class="top-hitters-title">HR Leaders</div>
+      ${leaders.map(b=>`<div class="hitter-row">
+        <div><div class="hitter-name">${escapeHtml(b.name)}</div><div class="hitter-team">${escapeHtml(b.team)}</div></div>
+        <div><span class="hitter-stat">${b.seasonHr}</span><span class="hitter-stat-sub">HR</span></div>
+      </div>`).join('')}
+    </div>` : '';
+
+    return `<div class="hr-panels-row">${watchHtml}${leadersHtml}</div>`;
+  }
+
   function buildStartingPitchersHtml(game){
     const info = state.pitchers[game.id];
     if(!info || !info.matched) return '';
@@ -439,7 +751,7 @@
     }
     const rows = [['season','Season'], ['vl','vs LHB'], ['vr','vs RHB']];
     let html = `<div class="hr-pitcher">${playerAvatarHtml(pitcher.id, 28)}Facing: ${escapeHtml(pitcher.name)} <span class="hand-tag">${escapeHtml(pitcher.hand)}HP</span></div>`;
-    html += `<table class="props-table"><thead><tr><th>Split</th><th>IP</th><th>WHIP</th><th>HR</th><th>HR/9</th></tr></thead><tbody>`;
+    html += `<div class="table-scroll"><table class="props-table"><thead><tr><th>Split</th><th>IP</th><th>WHIP</th><th>HR</th><th>HR/9</th></tr></thead><tbody>`;
     rows.forEach(([code, label])=>{
       const st = pitcher.rows[code];
       if(!st) return;
@@ -448,19 +760,23 @@
         + statCell(st.hr9, 1.4, 0.8, n=>n.toFixed(2))
         + `</tr>`;
     });
-    html += `</tbody></table>`;
+    html += `</tbody></table></div>`;
     return html;
   }
 
-  function batterTableHtml(teamName, side, hrOdds, statcast){
+  function batterTableHtml(teamName, side, hrOdds, statcast, pitcher, game){
     if(!side.lineupPosted){
       return `<div class="hr-pitcher" style="margin-top:12px;">${escapeHtml(teamName)} lineup</div>`
         + `<div class="hr-note">Lineups usually post 2-4 hours before first pitch.</div>`;
     }
     const scCols = statcast ? '<th>EV</th><th>Barrel%</th><th>HardHit%</th>' : '';
     let html = `<div class="hr-pitcher" style="margin-top:12px;">${escapeHtml(teamName)} lineup <span class="lineup-tag confirmed">✓ Confirmed</span></div>`;
-    html += `<table class="props-table"><thead><tr><th>Batter</th><th>HR odds</th><th>vs This P</th><th>HR</th><th>BA</th><th>OBP</th><th>SLG</th><th>ISO</th>${scCols}</tr></thead><tbody>`;
+    html += `<div class="table-scroll"><table class="props-table"><thead><tr><th>Watch</th><th>Batter</th><th>HR odds</th><th>vs This P</th><th>HR</th><th>BA</th><th>OBP</th><th>SLG</th><th>ISO</th>${scCols}</tr></thead><tbody>`;
     side.batters.forEach(b=>{
+      const rating = pitcher ? hrWatchRating(b, pitcher, game) : null;
+      const watchCell = rating
+        ? `<td title="${escapeHtml(rating.summary)}">${starsHtml(rating.stars)}</td>`
+        : '<td>—</td>';
       const odds = hrOdds[b.name.toLowerCase()];
       const style = odds ? bookStyleFor(odds.bookKey) : null;
       const link = odds ? BOOK_LINKS[odds.bookKey.toLowerCase()] : null;
@@ -479,10 +795,12 @@
           ? statCell(m.ev, 90, 86, n=>n.toFixed(1)) + statCell(m.barrel, 10, 5, n=>n.toFixed(1)+'%') + statCell(m.hardhit, 42, 33, n=>n.toFixed(1)+'%')
           : '<td>—</td><td>—</td><td>—</td>';
       }
-      html += `<tr><td style="font-weight:600; white-space:nowrap;">${playerAvatarHtml(b.id, 22)}${escapeHtml(b.name)} <span class="hand-tag">${escapeHtml(b.hand)}</span></td>`
+      html += `<tr>`
+        + watchCell
+        + `<td style="font-weight:600; white-space:nowrap;">${playerAvatarHtml(b.id, 22)}${escapeHtml(b.name)} <span class="hand-tag">${escapeHtml(b.hand)}</span></td>`
         + oddsCell
         + bvpCell
-        + `<td>${b.hr !== null ? b.hr : '—'}</td>`
+        + `<td>${b.seasonHr !== null ? b.seasonHr : '—'}</td>`
         + statCell(b.ba, 0.280, 0.230, n=>n.toFixed(3))
         + statCell(b.obp, 0.350, 0.300, n=>n.toFixed(3))
         + statCell(b.slg, 0.480, 0.370, n=>n.toFixed(3))
@@ -490,7 +808,7 @@
         + scCells
         + `</tr>`;
     });
-    html += `</tbody></table>`;
+    html += `</tbody></table></div>`;
     return html;
   }
 
@@ -503,10 +821,10 @@
     let html = '<div class="hr-block">';
     // Away lineup faces the home pitcher, and vice versa
     html += pitcherTableHtml(data.home.pitcher);
-    html += batterTableHtml(game.away_team, data.away, hrOdds, statcast);
+    html += batterTableHtml(game.away_team, data.away, hrOdds, statcast, data.home.pitcher, game);
     html += '<div style="height:10px;"></div>';
     html += pitcherTableHtml(data.away.pitcher);
-    html += batterTableHtml(game.home_team, data.home, hrOdds, statcast);
+    html += batterTableHtml(game.home_team, data.home, hrOdds, statcast, data.away.pitcher, game);
     html += `<div class="hr-note">Bands are league-average context, not picks. "vs This P" is career batter-vs-pitcher — samples are tiny, treat as color not signal.</div>`;
     html += '</div>';
     return html;
@@ -630,6 +948,139 @@
     marketHead.setAttribute('aria-expanded', String(!nowCollapsed));
   }
 
+  // Jump straight to one prop category: collapses every other market for
+  // this game and opens just the clicked one (or, for "All", back to
+  // everything collapsed — the default browsing state). Re-renders that
+  // game's props host in place, same as the book-filter chips already do.
+  function applyPropFilter(gameId, marketKey){
+    if(!state.propsCache[gameId]) return;
+    (PROP_MARKETS[getSport()] || []).forEach(mk=>{
+      state.marketCollapsed[gameId+'|'+mk] = (marketKey !== 'all' && mk === marketKey) ? false : true;
+    });
+    rerenderPropsHost(gameId);
+  }
+
+  function rerenderPropsHost(gameId){
+    const cached = state.propsCache[gameId];
+    if(!cached) return;
+    const host = document.querySelector(`.props-host[data-game-id="${CSS.escape(String(gameId))}"]`);
+    if(host) host.innerHTML = buildPropsHtml(cached.game, cached.data, PROP_MARKETS[getSport()] || []);
+  }
+
+  // Opt-in fetch of every line for one market on one game — the credit cost
+  // (a second upstream request, same as the standard props call) only
+  // happens the first time someone actually flips a category to its Alt
+  // Lines tab; flipping back and forth after that is free (already cached).
+  async function loadAltLines(gameId, marketKey){
+    const key = gameId+'|'+marketKey;
+    if(state.altPropsCache[key] || state.altPropsLoading[key]) return;
+    state.altPropsLoading[key] = true;
+    rerenderPropsHost(gameId);
+    try{
+      const res = await fetch(`/api/props-alt/${getSport()}/${gameId}/${marketKey}`);
+      if(res.ok) state.altPropsCache[key] = await res.json();
+    }catch(e){ /* best-effort — tab just stays on Standard so it can be retried */ }
+    finally{
+      state.altPropsLoading[key] = false;
+      rerenderPropsHost(gameId);
+    }
+  }
+
+  function setLineView(gameId, marketKey, view){
+    const key = gameId+'|'+marketKey;
+    if(view === 'alt' && !state.altPropsCache[key]){
+      state.altPropsView[key] = 'alt'; // optimistic — the tab shows active/loading right away
+      loadAltLines(gameId, marketKey);
+      return;
+    }
+    state.altPropsView[key] = view;
+    rerenderPropsHost(gameId);
+  }
+
+  // Team-name -> ESPN id, fetched once (cached 24h server-side already) and
+  // reused for every game's breakdown — /api/nfl/matchup needs ids, but
+  // Board only ever has the Odds API's team-name strings.
+  async function nflTeamsByName(){
+    if(state.nflTeamsByName) return state.nflTeamsByName;
+    const res = await fetch('/api/nfl/teams');
+    const data = res.ok ? await res.json() : { teams: [] };
+    state.nflTeamsByName = {};
+    (data.teams || []).forEach(t => { state.nflTeamsByName[t.name] = t; });
+    return state.nflTeamsByName;
+  }
+
+  function renderNflBreakdownInto(hostEl, game){
+    const b = state.nflBreakdown[game.id];
+    if(!b || !b.matchup){ hostEl.innerHTML = '<div class="hr-note"><span class="spinner"></span> Building the breakdown — first run computes league-wide ranks (32 teams), later ones are cached and fast.</div>'; return; }
+    hostEl.innerHTML = buildNflFullBreakdownHtml(b.matchup, game.id, b.rosters, b.analyzerPlayer, b.playerForm, game, state.nflLineContextBook[game.id]);
+  }
+
+  async function loadNflInjuries(game){
+    const key = game.away_team+'|'+game.home_team;
+    if(nflInjuriesCache[key]) return;
+    try{
+      await fetchNflGameInjuries([game]);
+    }catch(e){ /* buildNflInjuriesHtml just keeps showing "Loading…" */ }
+    const host = document.querySelector(`.nfl-injuries-host[data-game-id="${CSS.escape(String(game.id))}"]`);
+    if(host) host.innerHTML = buildNflInjuriesHtml(game);
+  }
+
+  async function loadNflBreakdown(game){
+    if(state.nflBreakdown[game.id]) return;
+    state.nflBreakdown[game.id] = { matchup: null, rosters: {}, analyzerPlayer: null, playerForm: {} };
+    const host = document.querySelector(`.nfl-breakdown-host[data-game-id="${CSS.escape(String(game.id))}"]`);
+    if(host) renderNflBreakdownInto(host, game);
+    try{
+      const teams = await nflTeamsByName();
+      const home = teams[game.home_team], away = teams[game.away_team];
+      if(!home || !away) throw new Error('Unknown team');
+      const res = await fetch(`/api/nfl/matchup?home=${encodeURIComponent(home.id)}&away=${encodeURIComponent(away.id)}`);
+      if(!res.ok) throw new Error('Matchup data unavailable');
+      const matchup = await res.json();
+      const b = state.nflBreakdown[game.id];
+      b.matchup = matchup;
+      const host2 = document.querySelector(`.nfl-breakdown-host[data-game-id="${CSS.escape(String(game.id))}"]`);
+      if(host2) renderNflBreakdownInto(host2, game);
+      // Rosters ride along after — needed for the Player Form dropdown, not
+      // worth blocking the rest of the breakdown on.
+      const [homeRoster, awayRoster] = await Promise.all([
+        fetch(`/api/nfl/roster?team=${encodeURIComponent(home.id)}`).then(r=>r.ok?r.json():{players:[]}).catch(()=>({players:[]})),
+        fetch(`/api/nfl/roster?team=${encodeURIComponent(away.id)}`).then(r=>r.ok?r.json():{players:[]}).catch(()=>({players:[]}))
+      ]);
+      b.rosters[home.id] = homeRoster.players || [];
+      b.rosters[away.id] = awayRoster.players || [];
+      const host3 = document.querySelector(`.nfl-breakdown-host[data-game-id="${CSS.escape(String(game.id))}"]`);
+      if(host3) renderNflBreakdownInto(host3, game);
+    }catch(e){
+      const b = state.nflBreakdown[game.id];
+      if(b) b.error = e.message || 'Could not load breakdown';
+      const host4 = document.querySelector(`.nfl-breakdown-host[data-game-id="${CSS.escape(String(game.id))}"]`);
+      if(host4) host4.innerHTML = `<div class="hr-note">Could not load the full breakdown right now — try again shortly.</div>`;
+    }
+  }
+
+  async function checkNflPlayerForm(gameId, playerId){
+    const b = state.nflBreakdown[gameId];
+    if(!b || !b.matchup) return;
+    b.analyzerPlayer = playerId;
+    if(!b.playerForm[playerId]){
+      b.playerForm[playerId] = 'loading';
+      const host = document.querySelector(`.nfl-breakdown-host[data-game-id="${CSS.escape(String(gameId))}"]`);
+      const game = state.games.find(g=>String(g.id)===String(gameId));
+      if(host && game) renderNflBreakdownInto(host, game);
+      const m = b.matchup;
+      const onAway = (b.rosters[m.away.team.id] || []).some(p => String(p.id) === String(playerId));
+      const oppId = onAway ? m.home.team.id : m.away.team.id;
+      try{
+        const res = await fetch(`/api/nfl/player-form?id=${encodeURIComponent(playerId)}&vsTeam=${encodeURIComponent(oppId)}`);
+        b.playerForm[playerId] = res.ok ? await res.json() : null;
+      }catch(e){ b.playerForm[playerId] = null; }
+    }
+    const host = document.querySelector(`.nfl-breakdown-host[data-game-id="${CSS.escape(String(gameId))}"]`);
+    const game = state.games.find(g=>String(g.id)===String(gameId));
+    if(host && game) renderNflBreakdownInto(host, game);
+  }
+
   document.getElementById('gamesArea').addEventListener('click', (e)=>{
     const groupTab = e.target.closest('.prop-group-tab');
     if(groupTab){
@@ -646,6 +1097,8 @@
       const prop = state.propRegistry[slipBtn.dataset.propId];
       if(!prop) return;
       addLegToSlip({ id: Date.now()+Math.random(), matchup: prop.matchup, side: prop.side, rows: prop.rows });
+      trackProp({ sport: prop.sport, player: prop.player, market: prop.market, line: prop.line, side: prop.propSide,
+        matchup: prop.matchup, homeTeam: prop.homeTeam, awayTeam: prop.awayTeam, commenceTime: prop.commenceTime });
       showToast('Added ✓');
       const row = slipBtn.closest('tr');
       if(row) flashEl(row);
@@ -664,16 +1117,40 @@
     const area = document.getElementById('gamesArea');
     if(!state.games.length){
       area.innerHTML = '<div class="empty-state"><h3>No games found</h3><p>Try a different sport — this one may be out of season.</p></div>';
+      const sport = getSport();
+      // Free (ESPN), long-cached shared helper — turns a bare "no games" into
+      // "season starts Aug 6" when that's why.
+      fetchSeasonStatus().then(all=>{
+        // Bail if the user switched sports or games loaded while this was in flight
+        const st = all[sport];
+        if(getSport() !== sport || state.games.length) return;
+        const p = area.querySelector('.empty-state p');
+        if(!p || !st) return;
+        if(st.inSeason){
+          p.textContent = `Currently in season (${st.name || ''}) — no games on the board right now, check back soon.`;
+        } else if(st.daysUntilStart !== null){
+          p.textContent = `Season starts ${fmtSeasonDate(st.startDate)} — ${st.daysUntilStart} day${st.daysUntilStart===1?'':'s'} away.`;
+        } else {
+          p.textContent = `Off season — last window was ${fmtSeasonDate(st.startDate)} to ${fmtSeasonDate(st.endDate)}.`;
+        }
+      });
       return;
     }
 
     const term = state.searchTerm.trim().toLowerCase();
-    const gamesToShow = term
+    const termFiltered = term
       ? state.games.filter(g => (g.home_team+' '+g.away_team).toLowerCase().includes(term))
       : state.games;
+    // Drop finished games once ESPN's score poll confirms them complete — keeps
+    // the list scrolled to live/upcoming games instead of growing all session.
+    const gamesToShow = termFiltered.filter(g => !(findScoreFor(state.scores, g) || {}).completed);
 
-    if(!gamesToShow.length){
+    if(!termFiltered.length){
       area.innerHTML = `<div class="empty-state"><h3>No matches</h3><p>Nothing found for "${escapeHtml(state.searchTerm)}". Try a different team name.</p></div>`;
+      return;
+    }
+    if(!gamesToShow.length){
+      area.innerHTML = '<div class="empty-state"><h3>All caught up</h3><p>Every game on this slate has finished — check back for the next one, or hit Get Odds to refresh.</p></div>';
       return;
     }
 
@@ -708,7 +1185,7 @@
 
       // MLB: stadium weather strip, then both starting pitchers with photos
       if(sportKey === 'baseball_mlb'){
-        const weatherHtml = buildWeatherStrip(game);
+        const weatherHtml = buildWeatherStrip(game, buildTopHittersHtml(game));
         if(weatherHtml){
           const w = document.createElement('div');
           w.innerHTML = weatherHtml;
@@ -721,6 +1198,64 @@
           card.appendChild(p.firstElementChild);
         }
       }
+      // NFL: injury report + who's stepping in for each injured starter,
+      // plus the live line-of-scrimmage/down/possession field tracker.
+      // NCAAF gets the same field tracker (ESPN's live situation data works
+      // the same way) but no injury report — hundreds of schools, no
+      // depth-chart endpoint to key off.
+      if(sportKey === 'americanfootball_nfl' || sportKey === 'americanfootball_ncaaf'){
+        const f = document.createElement('div');
+        f.innerHTML = footballFieldTrackerSvg(sportKey, game, scoreEntry);
+        card.appendChild(f.firstElementChild);
+      }
+
+      // NFL only: injury report, opt-in via a button right under the field
+      // instead of always showing — it was clutter on every card, most
+      // useful right before kickoff, not by default.
+      if(sportKey === 'americanfootball_nfl'){
+        const injToggleWrap = document.createElement('div');
+        injToggleWrap.className = 'props-toggle';
+        const injOpen = !!state.nflInjuriesOpen[game.id];
+        const injToggleBtn = document.createElement('button');
+        injToggleBtn.className = 'ghost nfl-injuries-toggle';
+        injToggleBtn.dataset.gameId = game.id;
+        injToggleBtn.textContent = injOpen ? 'Hide injury report' : 'Injury report';
+        injToggleWrap.appendChild(injToggleBtn);
+        card.appendChild(injToggleWrap);
+
+        const injHost = document.createElement('div');
+        injHost.className = 'nfl-injuries-host reveal' + (injOpen ? ' is-open' : '');
+        injHost.dataset.gameId = game.id;
+        injHost.style.display = injOpen ? 'block' : 'none';
+        card.appendChild(injHost);
+        if(injOpen) injHost.innerHTML = buildNflInjuriesHtml(game);
+      }
+
+      // NFL only: Matchup Breakdown / Weather / Recent Form / Player Form —
+      // everything the old standalone NFL Dashboard page showed, now folded
+      // into the game it's actually about instead of a separate page with
+      // its own team pickers. Opt-in per game (same reasoning as props: it's
+      // a heavier fetch — league-wide ranks across all 32 teams — not worth
+      // spending on every card by default).
+      if(sportKey === 'americanfootball_nfl'){
+        const toggleWrap = document.createElement('div');
+        toggleWrap.className = 'props-toggle';
+        const isOpen = !!state.nflBreakdownOpen[game.id];
+        const alreadyLoaded = !!state.nflBreakdown[game.id];
+        const toggleBtn = document.createElement('button');
+        toggleBtn.className = 'ghost nfl-breakdown-toggle';
+        toggleBtn.dataset.gameId = game.id;
+        toggleBtn.textContent = isOpen ? 'Hide full breakdown' : (alreadyLoaded ? 'Show full breakdown' : 'Load full breakdown');
+        toggleWrap.appendChild(toggleBtn);
+        card.appendChild(toggleWrap);
+
+        const breakdownHost = document.createElement('div');
+        breakdownHost.className = 'nfl-breakdown-host reveal' + (isOpen ? ' is-open' : '');
+        breakdownHost.dataset.gameId = game.id;
+        breakdownHost.style.display = isOpen ? 'block' : 'none';
+        card.appendChild(breakdownHost);
+        if(alreadyLoaded) renderNflBreakdownInto(breakdownHost, game);
+      }
 
       // MLB only: Spread/Total/Moneyline grid like a sportsbook's own game-lines
       // page, one row per team. Each cell is the best price across whichever
@@ -731,49 +1266,34 @@
         const suffix = view === 'f5' ? '_1st_5_innings' : '';
         const tag = view === 'f5' ? ' (F5)' : '';
         const [awayTeam, homeTeam] = [game.away_team, game.home_team];
-        const trackedBookmakers = game.bookmakers.filter(b => TRACKED_KEYS.includes(b.key.toLowerCase()));
-        const bookmakersToUse = trackedBookmakers.length ? trackedBookmakers : game.bookmakers;
-        const myBooks = getMyBooks();
-        const scoped = myBooks.length ? bookmakersToUse.filter(b=>myBooks.includes(b.key.toLowerCase())) : [];
-        const pool = scoped.length ? scoped : bookmakersToUse;
+        const pool = poolFor(game.bookmakers);
 
-        function rowsFor(marketKey, outcomeName){
-          const rows = [];
-          pool.forEach(bm=>{
-            const market = bm.markets.find(m=>m.key===marketKey);
-            if(!market) return;
-            const outcome = market.outcomes.find(o=>o.name===outcomeName);
-            if(!outcome) return;
-            rows.push({bookKey:bm.key, bookTitle:bm.title, odds:outcome.price, point:outcome.point, link:outcome.link||bm.link||null, sid:outcome.sid||null, marketSid:market.sid||null});
-          });
-          rows.sort((a,b)=>americanToDecimal(b.odds)-americanToDecimal(a.odds));
-          return rows;
-        }
-        // Books can quote slightly different lines (mostly totals) — group by
-        // point, keep whichever point the most tracked books share, best price within it.
-        function modalPointRows(marketKey, outcomeName){
-          const all = rowsFor(marketKey, outcomeName);
-          if(!all.length) return [];
-          const byPoint = {};
-          all.forEach(r=>{ const k=String(r.point); (byPoint[k]=byPoint[k]||[]).push(r); });
-          const bestKey = Object.keys(byPoint).sort((a,b)=>byPoint[b].length-byPoint[a].length)[0];
-          return byPoint[bestKey];
-        }
-
-        const ml = { away: rowsFor('h2h'+suffix, awayTeam), home: rowsFor('h2h'+suffix, homeTeam) };
-        const spread = { away: modalPointRows('spreads'+suffix, awayTeam), home: modalPointRows('spreads'+suffix, homeTeam) };
-        const total = { over: modalPointRows('totals'+suffix, 'Over'), under: modalPointRows('totals'+suffix, 'Under') };
+        const ml = { away: rowsFor(pool, 'h2h'+suffix, awayTeam), home: rowsFor(pool, 'h2h'+suffix, homeTeam) };
+        const spread = { away: modalPointRows(pool, 'spreads'+suffix, awayTeam), home: modalPointRows(pool, 'spreads'+suffix, homeTeam) };
+        const total = { over: modalPointRows(pool, 'totals'+suffix, 'Over'), under: modalPointRows(pool, 'totals'+suffix, 'Under') };
 
         if(![ml.away, ml.home, spread.away, spread.home, total.over, total.under].some(r=>r.length)) return false;
 
-        const addLeg = (side, rows, cellEl)=>{
+        const addLeg = (side, rows, cellEl, meta)=>{
           if(!rows.length) return;
-          addLegToSlip({ id: Date.now()+Math.random(), matchup: `${awayTeam} @ ${homeTeam}`, side, rows });
+          // No meta.sport on F5 legs — F5 markets aren't in the bulk odds
+          // fetch (see the comment above), so there's no market key Slip
+          // could use to refresh them later; they just stay a frozen price.
+          addLegToSlip({ id: Date.now()+Math.random(), matchup: `${awayTeam} @ ${homeTeam}`, side, rows,
+            meta: (meta && !suffix) ? { sport: sportKey, market: meta.market, selection: meta.selection, point: meta.point } : undefined });
+          // F5 (first-5-innings) legs aren't tracked — grading needs the
+          // through-5 score, which ESPN's scoreboard doesn't expose, only the
+          // final. Only full-game legs are actually gradable server-side.
+          if(meta && !suffix){
+            trackBet({ sport: sportKey, homeTeam: game.home_team, awayTeam: game.away_team,
+              commenceTime: game.commence_time, matchup: `${awayTeam} @ ${homeTeam}`,
+              market: meta.market, selection: meta.selection, point: meta.point });
+          }
           showToast('Added ✓');
           flashEl(cellEl);
         };
 
-        function cell(rows, lineLabel, side){
+        function cell(rows, lineLabel, side, meta){
           const div = document.createElement('div');
           if(!rows.length){
             div.className = 'gl-cell gl-empty';
@@ -784,7 +1304,7 @@
           div.title = 'Tap to add to Slip';
           const best = rows[0];
           div.innerHTML = `${lineLabel ? `<div class="gl-line">${escapeHtml(lineLabel)}</div>` : ''}<div class="gl-price ${Number(best.odds)>0?'pos':''}">${fmtAmerican(best.odds)}</div>`;
-          div.addEventListener('click', ()=>addLeg(side, rows, div));
+          div.addEventListener('click', ()=>addLeg(side, rows, div, meta));
           return div;
         }
 
@@ -804,10 +1324,13 @@
           name.textContent = team;
           grid.appendChild(name);
           const spreadLabel = spreadRows.length ? fmtAmerican(spreadRows[0].point) : '';
-          grid.appendChild(cell(spreadRows, spreadLabel, `${team}${tag} ${spreadLabel}`.trim()));
+          grid.appendChild(cell(spreadRows, spreadLabel, `${team}${tag} ${spreadLabel}`.trim(),
+            spreadRows.length ? { market:'spreads', selection: team, point: spreadRows[0].point } : null));
           const totalLabel = totalRows.length ? (totalSide === 'Over' ? 'O ' : 'U ') + totalRows[0].point : '';
-          grid.appendChild(cell(totalRows, totalLabel, `${totalSide} ${totalRows.length ? totalRows[0].point : ''}${tag}`.trim()));
-          grid.appendChild(cell(mlRows, '', `${team}${tag}`));
+          grid.appendChild(cell(totalRows, totalLabel, `${totalSide} ${totalRows.length ? totalRows[0].point : ''}${tag}`.trim(),
+            totalRows.length ? { market:'totals', selection: totalSide, point: totalRows[0].point } : null));
+          grid.appendChild(cell(mlRows, '', `${team}${tag}`,
+            mlRows.length ? { market:'h2h', selection: team, point: null } : null));
         }
         teamRow(awayTeam, spread.away, total.over, 'Over', ml.away);
         teamRow(homeTeam, spread.home, total.under, 'Under', ml.home);
@@ -845,8 +1368,6 @@
           const rows = rowsByTeam[team];
           if(!rows.length) return;
           renderedAny = true;
-          const otherTeam = teams.find(t=>t!==team);
-          const fairDecimal = computeFairDecimal(rows, rowsByTeam[otherTeam] || []);
           const sideLabel = marketKey === 'h2h' ? team : team + ' (F5)';
 
           const block = document.createElement('div');
@@ -861,8 +1382,16 @@
               id: Date.now()+Math.random(),
               matchup: `${game.away_team} @ ${game.home_team}`,
               side: sideLabel,
-              rows: rows
+              rows: rows,
+              // F5 (marketKey !== 'h2h') isn't in the bulk odds fetch, so
+              // there's nothing Slip could refresh it against later.
+              meta: marketKey === 'h2h' ? { sport: sportKey, market: 'h2h', selection: team, point: null } : undefined
             });
+            if(marketKey === 'h2h'){
+              trackBet({ sport: sportKey, homeTeam: game.home_team, awayTeam: game.away_team,
+                commenceTime: game.commence_time, matchup: `${game.away_team} @ ${game.home_team}`,
+                market: 'h2h', selection: team, point: null });
+            }
             showToast('Added ✓');
             if(rowEl) flashEl(rowEl);
           };
@@ -901,15 +1430,15 @@
               block.appendChild(hint);
             }
           } else {
-            rows.forEach((r, idx)=>{
+            // No Best/Value badges here — rows are already sorted best price
+            // first, and book selection (with that book's own price) happens
+            // on the Slip page, so a per-row ranking badge is redundant noise.
+            rows.forEach((r)=>{
               const row = document.createElement('div');
-              const isValue = fairDecimal && americanToDecimal(r.odds) > fairDecimal * 1.015;
-              row.className = 'book-row' + (idx===0 ? ' best' : '');
+              row.className = 'book-row';
               const style = bookStyleFor(r.bookKey);
               const link = BOOK_LINKS[r.bookKey.toLowerCase()];
               row.innerHTML = `
-                ${idx===0 ? '<span class="best-tag">Best</span>' : ''}
-                ${isValue ? '<span class="value-tag" title="Pays better than the market-consensus fair line">Value</span>' : ''}
                 <span class="book-odds ${Number(r.odds)>0?'pos':'neg'}">${fmtAmerican(r.odds)}</span>
                 <button class="add-leg-btn">+ Slip</button>
                 ${link ? `<a class="book-link-btn" href="${link}" target="_blank" rel="noopener" title="Open ${escapeHtml(style?style.name:r.bookTitle)}">↗</a>` : ''}
@@ -934,21 +1463,38 @@
         }
       } else
       // MLB: F5 toggle swaps the same grid between full-game and first-5-innings lines.
-      if(sportKey === 'baseball_mlb'){
-        const view = state.oddsView[game.id] === 'f5' ? 'f5' : 'full';
-        const tabs = document.createElement('div');
-        tabs.className = 'f5-tabs';
-        tabs.innerHTML = `
-          <button class="f5-tab${view==='full'?' active':''}" data-view="full">Full game</button>
-          <button class="f5-tab${view==='f5'?' active':''}" data-view="f5">First 5 innings</button>
-        `;
-        tabs.querySelectorAll('.f5-tab').forEach(btn=>{
-          btn.addEventListener('click', ()=>{
-            state.oddsView[game.id] = btn.dataset.view;
-            renderGames();
+      // Everyone else with real, reliably-posted spread/total markets (NFL,
+      // NCAAF, NCAAB, NBA, WNBA, NHL) gets the same Spread/Total/Money grid,
+      // just without the F5 tabs (no period-market equivalent fetched for
+      // those) — one consistent look across sports instead of two different
+      // UIs. Two deliberate exceptions, both verified live: MMA has no
+      // spreads market at all (no such thing as a point spread in a fight),
+      // and EPL's tracked/regulated books post zero spreads across every
+      // current game (checked all 19) — only offshore books this app doesn't
+      // track carry it. Both would show a permanently-empty Spread column on
+      // the grid, so they stay on the book-row list below instead, which
+      // only shows markets that actually exist.
+      if(sportKey === 'baseball_mlb' || sportKey === 'americanfootball_nfl'
+        || sportKey === 'americanfootball_ncaaf' || sportKey === 'basketball_ncaab'
+        || sportKey === 'basketball_nba' || sportKey === 'basketball_wnba'
+        || sportKey === 'icehockey_nhl'){
+        let view = 'full';
+        if(sportKey === 'baseball_mlb'){
+          view = state.oddsView[game.id] === 'f5' ? 'f5' : 'full';
+          const tabs = document.createElement('div');
+          tabs.className = 'f5-tabs';
+          tabs.innerHTML = `
+            <button class="f5-tab${view==='full'?' active':''}" data-view="full">Full game</button>
+            <button class="f5-tab${view==='f5'?' active':''}" data-view="f5">First 5 innings</button>
+          `;
+          tabs.querySelectorAll('.f5-tab').forEach(btn=>{
+            btn.addEventListener('click', ()=>{
+              state.oddsView[game.id] = btn.dataset.view;
+              renderGames();
+            });
           });
-        });
-        card.appendChild(tabs);
+          card.appendChild(tabs);
+        }
 
         const renderedAny = renderGameLinesGrid(view);
         if(!renderedAny){

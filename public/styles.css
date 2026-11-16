@@ -121,38 +121,81 @@
   .rail-btn:hover{background:var(--bg-raised); color:var(--text-dim);}
   .rail-btn.active{background:rgba(187,0,0,0.14); color:var(--accent); border-color:rgba(187,0,0,0.35);}
 
+  /* ---------- Nav rail sport-group dropdowns ---------- */
+  .rail-group{position:relative;}
+  .rail-group.active .rail-group-btn{background:rgba(187,0,0,0.14); color:var(--accent); border-color:rgba(187,0,0,0.35);}
+  .rail-caret{font-size:7px; margin-left:2px; display:inline-block; transition:transform .18s ease; vertical-align:1px;}
+  .rail-group.open .rail-caret{transform:rotate(180deg);}
+  .rail-group.open .rail-group-btn{background:var(--bg-raised); color:var(--text);}
+  .rail-flyout{
+    position:absolute; top:0; left:calc(100% + 8px);
+    min-width:168px; background:var(--bg-card); border:1px solid var(--border);
+    border-radius:10px; padding:6px; box-shadow:0 10px 30px rgba(0,0,0,0.45);
+    display:flex; flex-direction:column; gap:2px; z-index:50;
+    opacity:0; transform:translateX(-6px) scale(0.97); pointer-events:none;
+    transition:opacity .16s ease, transform .16s ease;
+  }
+  .rail-group.open .rail-flyout{opacity:1; transform:translateX(0) scale(1); pointer-events:auto;}
+  .rail-flyout-item{
+    display:flex; align-items:center; gap:9px;
+    padding:9px 11px; border-radius:7px; font-size:12.5px; font-weight:600;
+    color:var(--text-dim); text-decoration:none; white-space:nowrap;
+    transition:background .12s ease, color .12s ease;
+  }
+  .rail-flyout-item:hover{background:var(--bg-raised); color:var(--text);}
+  .rail-flyout-item span{font-size:15px;}
+
   .chip-row{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px;}
   .chip{
     font-family:var(--font-body); font-size:12.5px; font-weight:600;
     background:var(--bg-raised); border:1px solid var(--border); color:var(--text-dim);
     padding:7px 13px; border-radius:20px; cursor:pointer; transition:all .15s;
+    display:inline-flex; align-items:center; gap:6px;
   }
   .chip:hover{border-color:var(--accent-dim); color:var(--text); transform:translateY(-1px);}
   .chip:active{transform:scale(0.95);}
   .chip.active{background:rgba(187,0,0,0.16); border-color:var(--accent); color:var(--accent);}
+  .chip-logo{display:block; object-fit:contain; border-radius:50%; background:#fff;}
 
   .hero-line{
     font-family:var(--font-display); font-size:30px; font-weight:600; letter-spacing:.3px;
     margin-bottom:4px;
   }
   .hero-sub{font-size:13px; color:var(--text-dim); margin-bottom:16px;}
+  .section-title{
+    font-family:var(--font-display); font-size:21px; font-weight:600; letter-spacing:.3px;
+    margin:32px 0 4px; padding-top:20px; border-top:1px solid var(--border-soft);
+  }
   body{display:flex; flex-direction:column;}
   .layout{
     max-width:1500px; margin:0 auto; width:100%;
     display:grid; grid-template-columns:76px 1fr 360px;
     gap:0; flex:1;
   }
-  .layout main{padding:24px;}
+  .layout main{padding:24px; position:relative;}
   .layout .sidebar{padding:24px 24px 24px 0;}
+  .sport-watermark{
+    position:absolute; top:0; right:0; width:320px; height:320px;
+    background-size:contain; background-repeat:no-repeat; background-position:center;
+    opacity:0.05; pointer-events:none; z-index:0;
+  }
+  @media (max-width:980px){ .sport-watermark{display:none;} }
   @media (max-width:980px){
     .layout{grid-template-columns:1fr;}
     .nav-rail{
       flex-direction:row; justify-content:center; border-right:none;
-      border-bottom:1px solid var(--border-soft); padding:10px;
+      border-bottom:1px solid var(--border-soft); padding:10px; flex-wrap:wrap;
     }
     .nav-rail .rail-logo{display:none;}
     .layout main{padding:16px;}
     .layout .sidebar{padding:0 16px 16px;}
+    /* Horizontal rail on mobile — flyouts drop down below the button instead
+       of popping out to the right, and stay centered under it. */
+    .rail-flyout{
+      top:calc(100% + 8px); left:50%; right:auto;
+      transform:translateX(-50%) translateY(-6px) scale(0.97);
+    }
+    .rail-group.open .rail-flyout{transform:translateX(-50%) translateY(0) scale(1);}
   }
 
   .status-row{
@@ -204,7 +247,6 @@
   }
   .book-row:last-child{margin-bottom:0;}
   .book-row:hover{background:var(--bg-card-hover); transform:translateX(3px);}
-  .book-row.best{border-color:var(--accent-dim); background:rgba(187,0,0,0.08);}
   .book-badge{
     font-family:var(--font-display); font-weight:600; font-size:15px;
     padding:4px 10px; border-radius:5px; letter-spacing:.3px;
@@ -217,17 +259,8 @@
   }
   .book-odds.pos{color:var(--good);}
   .book-odds.neg{color:var(--text);}
-  .best-tag{
-    font-size:10px; font-weight:700; color:var(--accent); text-transform:uppercase;
-    letter-spacing:.5px; margin-right:6px;
-  }
   .add-leg-btn{
     font-size:11.5px; padding:5px 9px; margin-left:10px;
-  }
-  .value-tag{
-    font-size:10px; font-weight:700; color:#1B1B1B; background:var(--warn);
-    text-transform:uppercase; letter-spacing:.5px; padding:2px 6px; border-radius:4px;
-    margin-right:6px;
   }
   .book-link-btn{
     font-size:11px; padding:5px 8px; margin-left:6px; color:var(--text-dim);
@@ -294,6 +327,23 @@
   .props-market-label .market-arrow{font-size:10px;}
   .props-market-label .market-count{color:var(--text-faint); font-weight:600; text-transform:none; letter-spacing:0;}
   .props-market-label:first-child{margin-top:0;}
+  .line-view-tabs{display:inline-flex; gap:4px; margin:0 0 8px;}
+  .line-view-tab{
+    font-size:10.5px; font-weight:600; padding:4px 10px; border-radius:12px;
+    background:var(--bg-raised); border:1px solid var(--border); color:var(--text-dim);
+  }
+  .line-view-tab.active{background:rgba(187,0,0,0.16); border-color:var(--accent); color:var(--accent);}
+  .line-view-tab .spinner{width:9px; height:9px; border-width:1.5px; margin-right:2px;}
+  .alt-lines-table td{vertical-align:middle; padding:8px;}
+  .alt-line-row{display:flex; flex-wrap:wrap; gap:6px;}
+  .alt-line-pill{
+    display:flex; flex-direction:column; align-items:center; gap:1px;
+    min-width:54px; padding:5px 8px; border-radius:8px;
+    background:var(--bg-raised); border:1px solid var(--border);
+  }
+  .alt-line-pill:hover{border-color:var(--accent-dim); background:var(--bg-card-hover);}
+  .alt-line-point{font-size:11.5px; font-weight:700; color:var(--text);}
+  .alt-line-price{font-family:var(--font-mono); font-size:11px; color:var(--good); font-weight:600;}
   .line-shop{display:flex; flex-wrap:wrap; gap:5px;}
   .odds-chip{
     font-family:var(--font-mono); font-size:10.5px; font-weight:600;
@@ -323,15 +373,25 @@
   .props-table td.stat-r{color:var(--bad); font-weight:600;}
   .hr-note{font-size:10.5px; color:var(--text-faint); margin-top:10px;}
 
-  /* ---------- Cheatsheet ---------- */
-  .cheat-row{
-    display:flex; justify-content:space-between; align-items:center;
-    padding:8px 0; border-bottom:1px solid var(--border-soft); font-size:12.5px;
+  /* ---------- Value Finder (lives on Board) ---------- */
+  .value-row{
+    display:grid; grid-template-columns:1fr auto auto auto;
+    align-items:center; gap:14px; padding:10px 8px;
+    border-bottom:1px solid var(--border-soft); transition:background .15s ease;
   }
-  .cheat-row:last-child{border-bottom:none;}
-  .cheat-row .cheat-side{font-weight:600;}
-  .cheat-row .cheat-sub{color:var(--text-faint); font-size:11px;}
-  .cheat-row .cheat-odds{font-family:var(--font-mono); color:var(--warn); font-weight:700;}
+  .value-row:last-child{border-bottom:none;}
+  .value-row:hover{background:rgba(187,0,0,0.05);}
+  .value-row-side{font-weight:700; font-size:13.5px;}
+  .value-row-sub{font-size:11px; color:var(--text-faint); margin-top:1px;}
+  .value-row-edge{text-align:center; white-space:nowrap;}
+  .value-edge-pct{display:block; font-family:var(--font-mono); font-weight:800; font-size:14px; color:var(--good);}
+  .value-edge-label{font-size:9px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.4px;}
+  .value-row-book{display:flex; align-items:center; gap:8px; white-space:nowrap;}
+  .value-row-book .odds{font-family:var(--font-mono); font-weight:700;}
+  @media (max-width:640px){
+    .value-row{grid-template-columns:1fr auto; row-gap:8px;}
+    .value-row-book, .value-add-btn{grid-column:1/2;}
+  }
 
   /* ---------- Sidebar / Slip ---------- */
   .sidebar{display:flex; flex-direction:column; gap:18px;}
@@ -348,6 +408,32 @@
   }
   .settings-hint{font-size:11.5px; color:var(--text-faint); margin-top:6px; line-height:1.5;}
 
+  /* ---------- Notifications page ---------- */
+  .notify-pref-row{
+    display:flex; align-items:flex-start; gap:10px; padding:10px 0;
+    border-bottom:1px solid var(--border-soft); cursor:pointer;
+  }
+  .notify-pref-row:last-child{border-bottom:none;}
+  .notify-pref-row input{margin-top:3px; flex-shrink:0;}
+  .notify-pref-title{font-size:13px; font-weight:600; color:var(--text);}
+  .notify-pref-sub{font-size:11.5px; color:var(--text-faint); margin-top:2px;}
+  .watchlist-add-row{display:flex; gap:8px; flex-wrap:wrap;}
+  .watchlist-add-row select{
+    background:var(--bg-raised); color:var(--text); border:1px solid var(--border);
+    border-radius:6px; padding:9px 10px; font-family:var(--font-body); font-size:13px;
+  }
+  .watchlist-add-row input{flex:1; min-width:180px;}
+  .watchlist-row{
+    display:flex; align-items:center; gap:10px; padding:9px 12px;
+    background:var(--bg-raised); border:1px solid var(--border-soft); border-radius:8px;
+    margin-bottom:6px;
+  }
+  .watchlist-sport{
+    font-size:10.5px; font-weight:700; color:var(--text-faint); text-transform:uppercase;
+    letter-spacing:.4px; flex-shrink:0; min-width:88px;
+  }
+  .watchlist-team{flex:1; font-size:13px; font-weight:600; color:var(--text);}
+
   .leg-item{
     padding:10px; border-radius:8px; background:var(--bg-raised);
     border:1px solid var(--border-soft); margin-bottom:8px; font-size:13px;
@@ -363,16 +449,43 @@
     cursor:pointer; padding:0 2px; line-height:1;
   }
   .leg-item .remove-btn:hover{color:var(--bad);}
-  .leg-book-row{
-    display:flex; align-items:center; gap:8px; margin-top:8px;
+  .leg-book-tabs{display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;}
+  .leg-book-tab{
+    display:flex; flex-direction:column; align-items:flex-start; gap:1px;
+    font-family:var(--font-body); font-size:11px; font-weight:700;
+    background:var(--bg-card); border:1px solid var(--border); color:var(--text-dim);
+    padding:5px 10px; border-radius:8px; cursor:pointer; transition:all .15s ease;
   }
-  .leg-book-label{font-size:11px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.6px; font-weight:600;}
-  .leg-book-select{
-    flex:1; font-family:var(--font-mono); font-size:12.5px; font-weight:600;
-    color:var(--good); background:var(--bg-card); border:1px solid var(--border);
-    border-radius:6px; padding:6px 8px;
+  .leg-book-tab:hover{border-color:var(--accent-dim); color:var(--text);}
+  .leg-book-tab.active{background:rgba(61,220,132,0.14); border-color:var(--good); color:var(--good);}
+  .leg-book-tab-odds{font-family:var(--font-mono); font-size:12px; font-weight:700; color:var(--text);}
+  .leg-book-tab.active .leg-book-tab-odds{color:var(--good);}
+
+  .leg-odds-moved{
+    display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
+    margin-top:8px; padding:7px 10px; border-radius:7px; font-size:11.5px;
+    background:rgba(255,180,67,0.08); border:1px solid rgba(255,180,67,0.35); color:var(--text-dim);
   }
-  .leg-book-select:focus{border-color:var(--accent);}
+  .leg-odds-moved b{color:var(--warn);}
+  .leg-odds-moved .leg-update-btn{font-size:11px; padding:4px 10px; flex-shrink:0;}
+
+  .parlay-picker-label{
+    font-size:11px; color:var(--text-faint); text-transform:uppercase;
+    letter-spacing:.6px; font-weight:600; margin-bottom:6px;
+  }
+  .parlay-picker{display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px;}
+  .parlay-chip{
+    display:flex; flex-direction:column; align-items:flex-start; gap:1px;
+    font-family:var(--font-body); font-size:11.5px; font-weight:700;
+    background:var(--bg-raised); border:1px solid var(--border); color:var(--text-dim);
+    padding:6px 12px; border-radius:10px; cursor:pointer; transition:all .15s ease;
+  }
+  .parlay-chip:hover{border-color:var(--accent-dim); color:var(--text);}
+  .parlay-chip.active{background:rgba(61,220,132,0.14); border-color:var(--good); color:var(--good);}
+  .parlay-chip.partial{opacity:.8;}
+  .parlay-chip-count{font-family:var(--font-mono); font-weight:600; opacity:.8;}
+  .parlay-chip-odds{font-family:var(--font-mono); font-size:12.5px; font-weight:700; color:var(--accent);}
+  .parlay-chip.active .parlay-chip-odds{color:var(--good);}
 
   .parlay-result{
     margin-top:12px; padding-top:12px; border-top:1px solid var(--border-soft);
@@ -496,6 +609,27 @@
 .bar-strip{display:flex; align-items:flex-end; gap:3px; height:44px; margin:8px 0;}
 .bar-strip .bar{flex:1 1 0; max-width:14px; min-width:4px; background:var(--text-faint); border-radius:2px 2px 0 0; min-height:3px;}
 .bar-strip .bar.hit{background:var(--good);}
+.form-strip{display:flex; flex-wrap:wrap; gap:4px; margin-top:8px;}
+.form-dot{
+  width:22px; height:22px; border-radius:50%; flex-shrink:0;
+  display:flex; align-items:center; justify-content:center;
+  font-size:8px; font-weight:800; font-family:var(--font-mono); letter-spacing:-.2px;
+}
+.form-dot.form-hr{background:var(--warn); color:#1B1B1B;}
+.form-dot.form-xbh{background:var(--good); color:#0B2416;}
+.form-dot.form-1b{background:rgba(61,220,132,0.35); color:var(--text);}
+.form-dot.form-bb{background:var(--accent-dim); color:#FFFFFF;}
+.form-dot.form-out{background:var(--bg-raised); border:1px solid var(--border-soft);}
+.form-legend{
+  display:flex; align-items:center; flex-wrap:wrap; gap:4px 10px;
+  font-size:10px; color:var(--text-faint); margin-top:4px;
+}
+.form-legend-dot{width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:3px;}
+.form-legend-dot.form-hr{background:var(--warn);}
+.form-legend-dot.form-xbh{background:var(--good);}
+.form-legend-dot.form-1b{background:rgba(61,220,132,0.35);}
+.form-legend-dot.form-bb{background:var(--accent-dim);}
+.form-legend-dot.form-out{background:var(--bg-raised); border:1px solid var(--border-soft);}
 .flag-chip{
   font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.5px;
   padding:2px 7px; border-radius:4px; margin-right:6px; display:inline-block;
@@ -525,7 +659,7 @@
   background:var(--bg-card);
 }
 .weather-head{
-  display:flex; align-items:center; gap:8px; margin-bottom:8px;
+  display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:8px;
   font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.5px; font-weight:700;
 }
 .roof-tag{
@@ -533,14 +667,26 @@
   background:var(--bg-raised); border:1px solid var(--border); color:var(--text-faint);
   text-transform:uppercase; letter-spacing:.4px;
 }
-.weather-slots{display:flex; gap:6px; overflow-x:auto; padding-bottom:2px;}
+.weather-body-row{display:flex; align-items:flex-start; gap:14px;}
+/* Same recipe as .table-scroll (used for the batter-stats tables, which
+   already scroll fine on mobile) — overflow-x:auto + -webkit-overflow-
+   scrolling:touch + max-width:100%. Dropped the extra touch-action/
+   overscroll-behavior/scroll-snap properties from an earlier pass since
+   they weren't part of the pattern actually proven to work. */
+.weather-slots{
+  display:flex; gap:6px; overflow-x:auto; -webkit-overflow-scrolling:touch;
+  max-width:100%; padding-bottom:2px; flex:1; min-width:0;
+}
 .weather-slot{
-  min-width:86px; padding:7px 9px; border-radius:8px;
+  display:flex; align-items:center; gap:8px;
+  min-width:150px; padding:6px 10px 6px 6px; border-radius:8px;
   background:var(--bg-raised); border:1px solid var(--border-soft);
   font-size:11px; line-height:1.55; flex-shrink:0;
   transition:transform .15s ease, border-color .15s ease;
 }
 .weather-slot:hover{transform:translateY(-2px); border-color:var(--accent-dim);}
+.ws-field{display:block; flex-shrink:0;}
+.ws-info{min-width:0;}
 .weather-slot .w-time{color:var(--text-faint); font-weight:700; font-size:10px; text-transform:uppercase;}
 .weather-slot .w-temp{font-family:var(--font-mono); font-weight:600; font-size:13px;}
 .weather-slot .w-wind{color:var(--text-dim);}
@@ -565,16 +711,88 @@
 .pitcher-name{font-size:12.5px; font-weight:600; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
 .pitcher-team{font-size:10.5px; color:var(--text-faint);}
 .pitcher-vs{font-size:11px; color:var(--text-faint); font-weight:600; text-transform:uppercase; flex-shrink:0;}
-.wind-field-wrap{
-  margin-left:auto; display:flex; align-items:center; gap:6px; flex-shrink:0;
-}
-.wind-field{display:block;}
-.wind-mph{
-  font-family:var(--font-mono); font-size:10px; line-height:1.2;
-  color:var(--text-dim); text-align:center; text-transform:none; letter-spacing:0;
-}
 .weather-note{font-size:11px; color:var(--text-faint);}
 .analyze-cost{font-size:10.5px; color:var(--text-faint); margin-left:8px;}
+
+/* ---------- Per-game injury report (NFL) ---------- */
+/* Reuses the NFL Dashboard's own nba-team-head/nfl-pos-group/nba-injury-list/
+   nfl-status/nfl-starter-tag classes (defined further down) so this looks
+   identical to the Injury Center it's standing in for on Board — just the
+   strip/layout wrapper is new. */
+.injuries-strip{
+  padding:10px 16px; border-bottom:1px solid var(--border-soft);
+  background:var(--bg-card);
+}
+.injuries-head{
+  font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.5px; font-weight:700;
+  margin-bottom:8px;
+}
+.injuries-body{display:flex; gap:16px; flex-wrap:wrap;}
+.injuries-team{flex:1; min-width:200px;}
+.next-man{font-size:10.5px; color:var(--text-faint); margin-top:2px;}
+
+/* ---------- NFL live field tracker (line of scrimmage / down / possession) ---------- */
+.nfl-field-wrap{
+  padding:10px 16px; border-bottom:1px solid var(--border-soft);
+  background:var(--bg-card);
+}
+.field-banner{
+  display:flex; align-items:center; gap:8px; margin-bottom:8px;
+  font-size:12px; color:var(--text-dim);
+}
+.field-banner strong{color:var(--text); font-weight:700;}
+.field-banner span{font-family:var(--font-mono); color:var(--text-faint);}
+.rz-tag{
+  font-size:10px; font-weight:700; padding:2px 7px; border-radius:4px;
+  background:rgba(187,0,0,0.14); border:1px solid var(--accent); color:var(--accent);
+  text-transform:uppercase; letter-spacing:.4px;
+}
+.nfl-field{display:block; border-radius:6px;}
+.field-note{font-size:11px; color:var(--text-faint); margin-top:8px;}
+.field-scorebox{
+  display:flex; flex-direction:column; gap:6px;
+  margin-bottom:10px; padding-bottom:10px; border-bottom:1px solid var(--border-soft);
+}
+.fs-team{display:flex; align-items:center; gap:8px; padding:4px 8px; border-radius:6px; border:1px solid transparent;}
+.fs-team.fs-possession{background:rgba(187,0,0,0.1); border-color:rgba(187,0,0,0.3);}
+.fs-logo{display:block; border-radius:50%; background:#fff; object-fit:contain; flex-shrink:0;}
+.fs-name{flex:1; min-width:0; font-size:12.5px; font-weight:600; color:var(--text-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.fs-team.fs-possession .fs-name{color:var(--text);}
+.fs-score{font-family:var(--font-mono); font-size:15px; font-weight:700; color:var(--text); min-width:22px; text-align:right;}
+.fs-timeouts{font-size:9px; letter-spacing:2px; color:var(--text-faint);}
+
+/* ---------- HR Watch / HR Leaders panels (own row on the MLB card) ---------- */
+.hr-panels-row{
+  display:flex; flex-wrap:wrap; gap:10px;
+  margin-top:8px; padding-top:8px; border-top:1px solid var(--border-soft);
+}
+.hr-watch-panel{
+  flex:2 1 240px; background:var(--bg-raised); border:1px solid var(--border-soft);
+  border-radius:8px; padding:8px 10px;
+}
+.hr-leaders-panel{
+  flex:1 1 150px; background:var(--bg-raised); border:1px solid var(--border-soft);
+  border-radius:8px; padding:8px 10px;
+}
+.top-hitters-title{
+  font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:.5px;
+  color:var(--text-faint); margin-bottom:6px;
+}
+.hitter-row{display:flex; justify-content:space-between; align-items:center; gap:8px; padding:4px 0;}
+.hitter-row + .hitter-row{border-top:1px solid var(--border-soft);}
+.hitter-name{font-weight:600; color:var(--text); font-size:11.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.hitter-team{font-size:9.5px; color:var(--text-faint); display:block; margin-top:1px;}
+.hitter-stat{font-family:var(--font-mono); font-weight:700; color:var(--good); font-size:13px; flex-shrink:0; text-align:right;}
+.hitter-stat-sub{font-size:9px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.3px; display:block; text-align:right;}
+.hr-stars{font-size:12.5px; letter-spacing:1.5px; white-space:nowrap;}
+.hr-stars-empty{color:var(--border);}
+.hr-stars-fill.tier-strong{color:var(--good);}
+.hr-stars-fill.tier-live{color:var(--warn);}
+.hr-stars-fill.tier-modest{color:var(--text-faint);}
+.hr-watch-row{padding:7px 0;}
+.hr-watch-row + .hr-watch-row{border-top:1px solid var(--border-soft);}
+.hr-watch-top{display:flex; justify-content:space-between; align-items:flex-start; gap:10px;}
+.hr-watch-why{font-size:10.5px; color:var(--text-dim); line-height:1.55; margin-top:4px;}
 
 /* ---------- Shared motion utilities ---------- */
 @keyframes enterUp{
@@ -647,6 +865,14 @@
   .book-odds{margin-left:0;}
 }
 
+/* ---------- Weather row + HR panels stack on narrow cards ---------- */
+@media (max-width:640px){
+  .weather-body-row{flex-direction:column;}
+}
+@media (max-width:480px){
+  .hr-watch-panel, .hr-leaders-panel{flex-basis:100%;}
+}
+
 /* ---------- Mobile tap targets (audit 2.5) ---------- */
 @media (max-width:640px){
   .odds-chip{padding:6px 9px; min-height:32px; display:inline-flex; align-items:center;}
@@ -680,3 +906,147 @@
   text-transform:uppercase; letter-spacing:.6px;
 }
 .stat-detail{padding:0 16px 14px;}
+
+/* ---------- Cheatsheet: cross-sport team glossary ---------- */
+.team-result{
+  display:flex; align-items:center; gap:12px;
+  padding:12px 16px; cursor:pointer; margin-bottom:8px;
+}
+.team-result:hover{background:var(--bg-card-hover);}
+.team-result img{width:32px; height:32px; object-fit:contain; flex-shrink:0;}
+.team-result-name{flex:1; min-width:0; font-weight:700; font-size:14px;}
+.team-result-sport{
+  font-size:10.5px; font-weight:700; color:var(--text-faint);
+  text-transform:uppercase; letter-spacing:.6px;
+  border:1px solid var(--border-soft); border-radius:4px; padding:2px 7px;
+}
+.glossary-head{display:flex; align-items:center; gap:14px; margin-bottom:18px;}
+.glossary-head img{width:48px; height:48px; object-fit:contain; flex-shrink:0;}
+.glossary-head-name{font-family:var(--font-display); font-size:26px; font-weight:600; letter-spacing:.3px;}
+.glossary-head-record{font-size:12.5px; color:var(--text-dim); font-family:var(--font-mono);}
+.glossary-groups{
+  display:grid; grid-template-columns:repeat(auto-fit, minmax(250px, 1fr)); gap:14px;
+}
+.glossary-group-title{
+  font-size:10.5px; font-weight:700; color:var(--accent-dim); text-transform:uppercase;
+  letter-spacing:.6px; margin-bottom:6px;
+}
+.glossary-row{
+  display:flex; justify-content:space-between; align-items:baseline; gap:10px;
+  padding:5px 0; border-bottom:1px solid var(--border-soft); font-size:12.5px;
+}
+.glossary-row:last-child{border-bottom:none;}
+.glossary-label{color:var(--text-dim);}
+.glossary-value{font-family:var(--font-mono); font-weight:600; white-space:nowrap;}
+.glossary-value.na{color:var(--text-faint); font-weight:400; font-style:italic; cursor:help;}
+
+/* ---------- NBA Dashboard ---------- */
+.nba-team-select{
+  flex:1; min-width:180px; background:var(--bg-raised); color:var(--text);
+  border:1px solid var(--border); border-radius:6px; padding:9px 12px;
+  font-family:var(--font-body); font-size:13.5px; font-weight:600;
+}
+.nba-team-select:focus{border-color:var(--accent);}
+.nba-matchup-title{
+  font-family:var(--font-display); font-size:26px; font-weight:600;
+  margin:6px 0 14px; letter-spacing:.3px;
+}
+.nba-matchup-title .vs{color:var(--text-faint); font-size:18px; margin:0 8px; font-family:var(--font-body);}
+.nba-card{margin-bottom:14px;}
+.nba-card-accent{border-color:var(--accent-dim);}
+.nba-card-title{
+  font-size:11px; font-weight:700; color:var(--accent-dim); text-transform:uppercase;
+  letter-spacing:.6px; padding:12px 16px 0;
+}
+.nba-card-body{padding:10px 16px 14px;}
+.nba-two-col{display:grid; grid-template-columns:1fr 1fr; gap:16px;}
+@media (max-width:640px){ .nba-two-col{grid-template-columns:1fr;} }
+.nba-team-head{display:flex; align-items:center; gap:8px; margin-bottom:8px; font-size:13.5px;}
+.nba-record{color:var(--text-faint); font-family:var(--font-mono); font-size:12px;}
+.nba-rank{
+  font-family:var(--font-mono); font-size:10.5px; font-weight:700;
+  border:1px solid var(--border-soft); border-radius:4px; padding:1px 5px;
+  color:var(--text-faint); margin-left:4px;
+}
+.nba-rank.good{color:var(--good); border-color:rgba(61,220,132,0.4);}
+.nba-rank.bad{color:var(--bad); border-color:rgba(255,107,107,0.4);}
+.stat-pos{color:var(--good); font-weight:700;}
+.stat-neg{color:var(--bad); font-weight:700;}
+.nba-flags{display:flex; flex-wrap:wrap; gap:6px;}
+.nba-flag{
+  font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.4px;
+  border:1px solid var(--border-soft); border-radius:4px; padding:2px 7px;
+  color:var(--text-faint); opacity:.45;
+}
+.nba-flag.on{color:var(--warn); border-color:rgba(255,180,67,0.5); opacity:1;}
+.nba-injury-list{list-style:none; font-size:12.5px; color:var(--text-dim);}
+.nba-injury-list li{padding:3px 0; border-bottom:1px solid var(--border-soft);}
+.nba-injury-list li:last-child{border-bottom:none;}
+.nba-insight{
+  margin-top:10px; font-size:12.5px; color:var(--text);
+  background:rgba(187,0,0,0.07); border-left:3px solid var(--accent);
+  padding:8px 12px; border-radius:0 6px 6px 0;
+}
+.nba-summary-list{list-style:none; font-size:13px;}
+.nba-summary-list li{padding:5px 0 5px 18px; position:relative; border-bottom:1px solid var(--border-soft);}
+.nba-summary-list li:last-child{border-bottom:none;}
+.nba-summary-list li::before{content:'›'; position:absolute; left:2px; color:var(--accent); font-weight:700;}
+.nba-leans{display:flex; flex-wrap:wrap; gap:6px; margin-top:10px;}
+.nba-lean{
+  font-size:11.5px; font-weight:700; background:rgba(187,0,0,0.14);
+  border:1px solid var(--accent-dim); color:var(--accent); border-radius:14px; padding:4px 11px;
+}
+.nba-confidence{margin-top:10px; font-size:12.5px; color:var(--text-dim); font-family:var(--font-mono);}
+.line-context{margin-top:10px; padding-top:10px; border-top:1px solid var(--border-soft);}
+.lc-label{font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--text-faint); margin-bottom:6px;}
+.lc-chips{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px;}
+.lc-chip{
+  font-family:var(--font-body); font-size:11px; font-weight:700;
+  background:var(--bg-raised); border:1px solid var(--border); color:var(--text-dim);
+  padding:4px 10px; border-radius:12px; cursor:pointer; transition:all .15s ease;
+}
+.lc-chip:hover{border-color:var(--accent-dim); color:var(--text);}
+.lc-chip.active{background:rgba(61,220,132,0.14); border-color:var(--good); color:var(--good);}
+.lc-numbers{font-size:12.5px; color:var(--text-dim);}
+.lc-line{font-family:var(--font-mono); font-weight:700; color:var(--text); margin-right:10px;}
+.lc-extra{color:var(--text-faint);}
+
+/* ---------- NFL Dashboard (shares the .nba-* dashboard styles) ---------- */
+.nfl-pos-group{
+  font-size:10.5px; font-weight:700; color:var(--accent-dim); text-transform:uppercase;
+  letter-spacing:.6px; margin:8px 0 2px;
+}
+.nfl-status{
+  font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.4px;
+  border-radius:4px; padding:1px 6px; margin-left:6px;
+}
+.nfl-status.out{background:rgba(255,107,107,0.16); color:var(--bad);}
+.nfl-status.quest{background:rgba(255,180,67,0.16); color:var(--warn);}
+.nfl-status.limited{background:var(--bg-raised); color:var(--text-dim);}
+.nfl-starter-tag{
+  font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:.4px;
+  color:var(--accent); margin-left:5px;
+}
+.nfl-cross-row{
+  display:flex; align-items:center; gap:10px;
+  padding:8px 10px; border-radius:8px; background:var(--bg-raised);
+  margin-bottom:6px;
+}
+.nfl-cross-side{flex:1; font-size:12px; color:var(--text-dim);}
+.nfl-cross-side:last-child{text-align:right;}
+.nfl-cross-team{font-weight:700; color:var(--text); margin-right:4px;}
+.nfl-cross-val{font-family:var(--font-mono); font-size:13px; font-weight:700; color:var(--text); margin-top:1px;}
+.nfl-cross-vs{
+  font-size:10px; font-weight:800; color:var(--text-faint); text-transform:uppercase;
+  flex-shrink:0;
+}
+
+/* ---------- Season status banner (Board empty-state + dashboard headers) ---------- */
+.season-banner{
+  font-size:12px; font-weight:600; color:var(--warn);
+  background:rgba(255,180,67,0.1); border:1px solid rgba(255,180,67,0.3);
+  border-radius:8px; padding:8px 12px; margin-bottom:14px; display:inline-block;
+}
+.season-banner.in-season{
+  color:var(--good); background:rgba(61,220,132,0.1); border-color:rgba(61,220,132,0.3);
+}

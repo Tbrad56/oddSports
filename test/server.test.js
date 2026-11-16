@@ -29,7 +29,7 @@ function fakeFetch(responder) {
 test('rejects unknown sport with 400 and never calls upstream', async () => {
   const f = fakeFetch(() => okResponse([]));
   const app = createApp({ apiKey: 'k', fetchFn: f });
-  const res = await request(app).get('/api/odds/basketball_wnba');
+  const res = await request(app).get('/api/odds/basketball_madeup');
   assert.equal(res.status, 400);
   assert.equal(f.calls.length, 0);
 });
@@ -38,13 +38,13 @@ test('proxies a valid sport, appends key upstream, passes body and quota header 
   const games = [{ id: 'abc', home_team: 'A', away_team: 'B' }];
   const f = fakeFetch(() => okResponse(games, '123'));
   const app = createApp({ apiKey: 'sekret', fetchFn: f });
-  const res = await request(app).get('/api/odds/basketball_nba');
+  const res = await request(app).get('/api/odds/soccer_epl');
   assert.equal(res.status, 200);
   assert.deepEqual(res.body, games);
   assert.equal(res.headers['x-requests-remaining'], '123');
   assert.equal(res.headers['x-cache-age-seconds'], '0');
   assert.equal(f.calls.length, 1);
-  assert.match(f.calls[0], /^https:\/\/api\.the-odds-api\.com\/v4\/sports\/basketball_nba\/odds\/\?regions=us&markets=h2h&oddsFormat=american&includeLinks=true&includeSids=true&apiKey=sekret$/);
+  assert.match(f.calls[0], /^https:\/\/api\.the-odds-api\.com\/v4\/sports\/soccer_epl\/odds\/\?regions=us&markets=h2h&oddsFormat=american&includeLinks=true&includeSids=true&apiKey=sekret$/);
 });
 
 test('MLB odds request includes full-game spreads/totals in one call', async () => {
@@ -68,8 +68,37 @@ test('non-MLB odds request does not include F5 markets', async () => {
   const app = createApp({ apiKey: 'k', fetchFn: f });
   const res = await request(app).get('/api/odds/basketball_nba');
   assert.equal(res.status, 200);
-  assert.match(f.calls[0], /markets=h2h&/);
+  assert.match(f.calls[0], /markets=h2h,spreads,totals&/);
   assert.doesNotMatch(f.calls[0], /1st_5_innings/);
+});
+
+test('NFL odds request includes full-game spreads/totals in one call, same as MLB', async () => {
+  const f = fakeFetch(() => okResponse([]));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/odds/americanfootball_nfl');
+  assert.equal(res.status, 200);
+  assert.equal(f.calls.length, 1);
+  assert.match(f.calls[0], /markets=h2h,spreads,totals&/);
+});
+
+test('NHL/NBA/WNBA odds requests include full-game spreads/totals too (grid applies to them now)', async () => {
+  for (const sport of ['icehockey_nhl', 'basketball_nba', 'basketball_wnba']) {
+    const f = fakeFetch(() => okResponse([]));
+    const app = createApp({ apiKey: 'k', fetchFn: f });
+    const res = await request(app).get(`/api/odds/${sport}`);
+    assert.equal(res.status, 200);
+    assert.match(f.calls[0], /markets=h2h,spreads,totals&/);
+  }
+});
+
+test('EPL/MMA odds requests stay moneyline-only (no reliable spreads market for either, verified live)', async () => {
+  for (const sport of ['soccer_epl', 'mma_mixed_martial_arts']) {
+    const f = fakeFetch(() => okResponse([]));
+    const app = createApp({ apiKey: 'k', fetchFn: f });
+    const res = await request(app).get(`/api/odds/${sport}`);
+    assert.equal(res.status, 200);
+    assert.match(f.calls[0], /markets=h2h&/);
+  }
 });
 
 test('second request within TTL is served from cache', async () => {
@@ -82,6 +111,39 @@ test('second request within TTL is served from cache', async () => {
   assert.equal(res2.status, 200);
   assert.equal(f.calls.length, 1);
   assert.equal(res2.headers['x-cache-age-seconds'], '120');
+});
+
+test('?cacheOnly=1 with nothing cached returns 204, never calls upstream', async () => {
+  const f = fakeFetch(() => okResponse([{ id: 'x' }]));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/odds/basketball_nba?cacheOnly=1');
+  assert.equal(res.status, 204);
+  assert.equal(f.calls.length, 0, 'a decorative ticker fetch must never spend a real credit');
+});
+
+test('?cacheOnly=1 serves an existing cache hit without a fresh upstream call', async () => {
+  let t = 1000000;
+  const f = fakeFetch(() => okResponse([{ id: 'x' }], '77'));
+  const app = createApp({ apiKey: 'k', fetchFn: f, cacheTtlMs: 600000, now: () => t });
+  await request(app).get('/api/odds/basketball_nba'); // warms the cache (e.g. from Board)
+  t += 90000;
+  const res = await request(app).get('/api/odds/basketball_nba?cacheOnly=1');
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, [{ id: 'x' }]);
+  assert.equal(res.headers['x-cache-age-seconds'], '90');
+  assert.equal(res.headers['x-requests-remaining'], '77');
+  assert.equal(f.calls.length, 1, 'only the original warming call, not a second one for cacheOnly');
+});
+
+test('?cacheOnly=1 does not serve an expired cache entry — falls back to 204', async () => {
+  let t = 1000000;
+  const f = fakeFetch(() => okResponse([{ id: 'x' }]));
+  const app = createApp({ apiKey: 'k', fetchFn: f, cacheTtlMs: 600000, now: () => t });
+  await request(app).get('/api/odds/basketball_nba');
+  t += 600001; // past TTL
+  const res = await request(app).get('/api/odds/basketball_nba?cacheOnly=1');
+  assert.equal(res.status, 204);
+  assert.equal(f.calls.length, 1, 'expired cache must not trigger a fresh upstream call under cacheOnly');
 });
 
 test('cache expires after TTL', async () => {
@@ -170,6 +232,103 @@ test('props: proxies valid request with server-side market list', async () => {
   assert.equal(res.status, 200);
   assert.deepEqual(res.body, payload);
   assert.match(f.calls[0], /\/v4\/sports\/basketball_nba\/events\/0a1b2c3d4e5f\/odds\/\?regions=us&markets=player_points,player_rebounds,player_assists,player_threes,player_points_rebounds_assists&oddsFormat=american&includeLinks=true&includeSids=true&apiKey=k$/);
+});
+
+test('props: empty bookmakers skips headshot resolution entirely (no extra fetches)', async () => {
+  const payload = { id: 'e1', bookmakers: [] };
+  const f = fakeFetch(() => okResponse(payload));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  await request(app).get('/api/props/basketball_nba/0a1b2c3d4e5f');
+  assert.equal(f.calls.length, 1, 'no team/roster lookups should fire when there are no player names to resolve');
+});
+
+test('props: MLB resolves a real headshot URL per matched player', async () => {
+  const propsPayload = {
+    id: 'ev1', home_team: 'Los Angeles Dodgers', away_team: 'Colorado Rockies',
+    bookmakers: [{ key: 'draftkings', title: 'DraftKings', markets: [{ key: 'batter_home_runs',
+      outcomes: [{ name: 'Over', description: 'Shohei Ohtani', price: 150, point: 0.5 }] }] }]
+  };
+  const f = routedFetch([
+    ['/events/ev1/odds', okResponse(propsPayload)],
+    ['/api/v1/sports/1/players', okResponse({ people: [{ id: 660271, fullName: 'Shohei Ohtani' }] })]
+  ]);
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/props/baseball_mlb/ev1');
+  assert.equal(res.status, 200);
+  assert.equal(res.body.headshots['shohei ohtani'], 'https://img.mlbstatic.com/mlb-photos/image/upload/w_180,q_100/v1/people/660271/headshot/67/current.png');
+});
+
+test('props: NBA resolves headshots via the two teams\' ESPN rosters, matched name-insensitively', async () => {
+  const propsPayload = {
+    id: 'ev2', home_team: 'Los Angeles Lakers', away_team: 'Boston Celtics',
+    bookmakers: [{ key: 'fanduel', title: 'FanDuel', markets: [{ key: 'player_points',
+      outcomes: [{ name: 'Over', description: 'Jayson Tatum', price: -110, point: 27.5 }] }] }]
+  };
+  const teamsPayload = { sports: [{ leagues: [{ teams: [
+    { team: { id: '2', displayName: 'Boston Celtics', abbreviation: 'BOS', logos: [] } },
+    { team: { id: '13', displayName: 'Los Angeles Lakers', abbreviation: 'LAL', logos: [] } }
+  ] }] }] };
+  const f = routedFetch([
+    ['/events/ev2/odds', okResponse(propsPayload)],
+    ['/teams?limit=32', okResponse(teamsPayload)],
+    ['/teams/2/roster', okResponse({ athletes: [{ id: '4065648', displayName: 'Jayson Tatum', position: { abbreviation: 'SF' }, headshot: { href: 'https://a.espncdn.com/tatum.png' } }] })],
+    ['/teams/13/roster', okResponse({ athletes: [] })]
+  ]);
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/props/basketball_nba/ev2');
+  assert.equal(res.status, 200);
+  assert.equal(res.body.headshots['jayson tatum'], 'https://a.espncdn.com/tatum.png');
+});
+
+test('props: NBA gracefully has no headshots if team/roster lookup fails (props still work)', async () => {
+  const propsPayload = {
+    id: 'ev3', home_team: 'Unknown Team', away_team: 'Also Unknown',
+    bookmakers: [{ key: 'fanduel', title: 'FanDuel', markets: [{ key: 'player_points',
+      outcomes: [{ name: 'Over', description: 'Some Player', price: -110, point: 10.5 }] }] }]
+  };
+  const f = routedFetch([
+    ['/events/ev3/odds', okResponse(propsPayload)],
+    ['/teams?limit=32', () => { throw new Error('ESPN unreachable'); }]
+  ]);
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/props/basketball_nba/ev3');
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, propsPayload);
+});
+
+test('props-alt: fetches the {market}_alternate market for one game, opt-in', async () => {
+  const altPayload = { id: 'ev4', bookmakers: [{ key: 'draftkings', title: 'DraftKings', markets: [{ key: 'batter_hits_alternate',
+    outcomes: [{ name: 'Over', description: 'Shohei Ohtani', price: 200, point: 0.5 }, { name: 'Over', description: 'Shohei Ohtani', price: -150, point: 1.5 }] }] }] };
+  const f = fakeFetch(() => okResponse(altPayload));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/props-alt/baseball_mlb/ev4/batter_hits');
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, altPayload);
+  assert.match(f.calls[0], /\/v4\/sports\/baseball_mlb\/events\/ev4\/odds\/\?regions=us&markets=batter_hits_alternate&oddsFormat=american&includeLinks=true&includeSids=true&apiKey=k$/);
+});
+
+test('props-alt: rejects a binary anytime-scorer market — no alternates exist', async () => {
+  const f = fakeFetch(() => okResponse({}));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/props-alt/americanfootball_nfl/ev5/player_anytime_td');
+  assert.equal(res.status, 400);
+  assert.equal(f.calls.length, 0);
+});
+
+test('props-alt: rejects a market not offered for this sport', async () => {
+  const f = fakeFetch(() => okResponse({}));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/props-alt/baseball_mlb/ev6/batter_walks');
+  assert.equal(res.status, 400);
+  assert.equal(f.calls.length, 0);
+});
+
+test('props-alt: rejects a malformed event id, nothing fetched', async () => {
+  const f = fakeFetch(() => okResponse({}));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/props-alt/baseball_mlb/bad..id/batter_hits');
+  assert.equal(res.status, 400);
+  assert.equal(f.calls.length, 0);
 });
 
 // ---------- /api/analyze/mlb ----------
@@ -401,7 +560,7 @@ test('filtered list dedupes a batter benched across multiple markets', async () 
 test('scores: rejects unknown sport with 400, never calls upstream', async () => {
   const f = fakeFetch(() => okResponse([]));
   const app = createApp({ apiKey: 'k', fetchFn: f });
-  const res = await request(app).get('/api/scores/basketball_wnba');
+  const res = await request(app).get('/api/scores/basketball_madeup');
   assert.equal(res.status, 400);
   assert.equal(f.calls.length, 0);
 });
@@ -696,6 +855,7 @@ test('hr-matchups: matched game returns Season/vl/vr pitcher rows and batter spl
   assert.equal(res.body.home.lineupPosted, true);
   const homeSlugger = res.body.home.batters.find(b => b.name === 'Home Slugger');
   assert.equal(homeSlugger.hr, 4);              // vl split, since facing an L pitcher
+  assert.equal(homeSlugger.seasonHr, 13);       // full-season total, not the split
   assert.equal(homeSlugger.slg, 0.41);
   assert.ok(Math.abs(homeSlugger.iso - (0.41 - 0.255)) < 1e-9);
 
@@ -710,6 +870,7 @@ test('hr-matchups: matched game returns Season/vl/vr pitcher rows and batter spl
   // away.batters face the HOME pitcher's hand (Home Ace, R) -> read the vr split
   const awaySlugger = res.body.away.batters.find(b => b.name === 'Away Slugger');
   assert.equal(awaySlugger.hr, 8);               // vr split, since facing an R pitcher
+  assert.equal(awaySlugger.seasonHr, 11);        // full-season total, not the split
 });
 
 test('hr-matchups: lineup not posted -> lineupPosted false, empty batters, pitcher still returned', async () => {
