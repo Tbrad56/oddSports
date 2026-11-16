@@ -276,6 +276,11 @@
     background:#101010;
   }
   .f5-tabs{display:flex; gap:6px; margin:12px 16px 0;}
+  .props-group-tabs{
+    display:flex; gap:6px; flex-wrap:wrap; padding:12px 16px 0;
+    border-top:1px dashed var(--border-soft); background:#101010;
+  }
+  .props-group-tabs + .props-block{border-top:none;}
   .f5-tab{
     flex:1; font-size:12px; font-weight:600; padding:8px 10px;
     background:var(--bg-raised); border:1px solid var(--border); color:var(--text-dim);

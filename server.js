@@ -21,13 +21,18 @@ const SPORTS = new Set([
 ]);
 
 // Server-controlled prop markets per sport (quota protection: clients
-// cannot request arbitrary markets). Copied from the prototype.
-// College sports (NCAAF, NCAAB) intentionally have no entry here — many
-// states, including Ohio, prohibit betting on individual college athletes'
-// performance, so no player-props endpoint is offered for those sports at
-// all (handlePropsRequest/handlePropsAltRequest both 400 on an unlisted sport).
+// cannot request arbitrary markets). NFL is split into named fetch groups so
+// the client's category tabs only spend quota on what the user opens; the
+// other sports are flat lists with no group choice.
 const PROP_MARKETS = {
-  americanfootball_nfl: ['player_pass_yds', 'player_pass_tds', 'player_rush_yds', 'player_receptions', 'player_reception_yds', 'player_anytime_td'],
+  americanfootball_nfl: {
+    popular: ['player_pass_yds', 'player_pass_tds', 'player_rush_yds', 'player_receptions', 'player_reception_yds', 'player_anytime_td'],
+    passing: ['player_pass_attempts', 'player_pass_completions', 'player_pass_interceptions', 'player_pass_yds_alternate', 'player_pass_tds_alternate'],
+    rush_receive: ['player_rush_attempts', 'player_rush_longest', 'player_reception_longest', 'player_rush_yds_alternate', 'player_receptions_alternate', 'player_reception_yds_alternate'],
+    td: ['player_1st_td', 'player_last_td'],
+    kicker_defense: ['player_kicking_points', 'player_field_goals', 'player_tackles_assists', 'player_sacks', 'player_defensive_interceptions']
+  },
+  americanfootball_ncaaf: ['player_pass_yds', 'player_pass_tds', 'player_rush_yds', 'player_receptions', 'player_reception_yds', 'player_anytime_td'],
   basketball_nba: ['player_points', 'player_rebounds', 'player_assists', 'player_threes', 'player_points_rebounds_assists'],
   basketball_wnba: ['player_points', 'player_rebounds', 'player_assists', 'player_threes', 'player_points_rebounds_assists'],
   baseball_mlb: ['batter_hits', 'batter_home_runs', 'batter_total_bases', 'batter_rbis', 'pitcher_strikeouts'],
@@ -64,24 +69,19 @@ const MLB_MARKET_STATS = {
   batter_home_runs:   { group: 'hitting',  stat: 'homeRuns',   window: 15 }
 };
 
-// market key -> which ESPN box-score category+column backs it (verified live
-// against a real completed game's /summary?event= response — ESPN returns
-// each category's rows as a `labels` array + parallel `stats` string array,
-// not a keyed object, so category/label here are literally what to look up).
-// player_anytime_td isn't here — it's graded as a special case (rushing.TD>0
-// OR receiving.TD>0), since it has no numeric line to compare against.
-const NFL_MARKET_STATS = {
-  player_pass_yds:      { category: 'passing',   label: 'YDS' },
-  player_pass_tds:      { category: 'passing',   label: 'TD' },
-  player_rush_yds:      { category: 'rushing',   label: 'YDS' },
-  player_receptions:    { category: 'receiving', label: 'REC' },
-  player_reception_yds: { category: 'receiving', label: 'YDS' }
+// Odds API full team names -> the abbreviations Sleeper's player dump uses.
+const NFL_TEAM_ABBREV = {
+  'Arizona Cardinals': 'ARI', 'Atlanta Falcons': 'ATL', 'Baltimore Ravens': 'BAL', 'Buffalo Bills': 'BUF',
+  'Carolina Panthers': 'CAR', 'Chicago Bears': 'CHI', 'Cincinnati Bengals': 'CIN', 'Cleveland Browns': 'CLE',
+  'Dallas Cowboys': 'DAL', 'Denver Broncos': 'DEN', 'Detroit Lions': 'DET', 'Green Bay Packers': 'GB',
+  'Houston Texans': 'HOU', 'Indianapolis Colts': 'IND', 'Jacksonville Jaguars': 'JAX', 'Kansas City Chiefs': 'KC',
+  'Las Vegas Raiders': 'LV', 'Los Angeles Chargers': 'LAC', 'Los Angeles Rams': 'LAR', 'Miami Dolphins': 'MIA',
+  'Minnesota Vikings': 'MIN', 'New England Patriots': 'NE', 'New Orleans Saints': 'NO', 'New York Giants': 'NYG',
+  'New York Jets': 'NYJ', 'Philadelphia Eagles': 'PHI', 'Pittsburgh Steelers': 'PIT', 'San Francisco 49ers': 'SF',
+  'Seattle Seahawks': 'SEA', 'Tampa Bay Buccaneers': 'TB', 'Tennessee Titans': 'TEN', 'Washington Commanders': 'WAS'
 };
 
-function createApp({
-  apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now = Date.now, dataDir = null, enableSweep = false,
-  enableAuth = false, sessionSecret = null
-} = {}) {
+function createApp({ apiKey, fetchFn = fetch, cacheTtlMs = 10 * 60 * 1000, now = Date.now, dataDir = null, enableSweep = false } = {}) {
   const app = express();
   app.set('trust proxy', 1); // Railway terminates TLS; this makes req.secure/req.protocol honor X-Forwarded-Proto
   app.use(express.json({ limit: '64kb' }));
@@ -1798,43 +1798,12 @@ function createApp({
   app.get('/api/odds/:sport', (req, res) => {
     const { sport } = req.params;
     if (!SPORTS.has(sport)) return res.status(400).json({ error: 'Unknown sport' });
-    // Every sport with a real spreads/totals market: full-game spreads/totals
-    // alongside moneyline — Board's Game Lines grid needs Spread/Total/Money
-    // for these (costs 3x the credits of a moneyline-only call, same tradeoff
-    // already made for MLB, now extended to most sports for a consistent grid
-    // look across Board instead of a second, book-row-list UI). Two deliberate
-    // exceptions, both verified live: MMA has no spreads market at all (no
-    // such thing as a point spread in a fight), and EPL's tracked/regulated
-    // books (FanDuel/DraftKings/BetMGM/BetRivers) post zero spreads across
-    // all 19 live games checked — only offshore books not in TRACKED_KEYS
-    // carry it. Both stay moneyline+totals-only here and keep the book-row
-    // list client-side rather than show a permanently-empty Spread column.
-    // College sports get spread/total/moneyline only — no player props —
-    // since that's what's actually legal to bet on in states like Ohio.
-    // F5 markets are deliberately NOT requested here (see MLB_F5_MARKETS
-    // above — the bulk endpoint 422s the whole request if asked for them).
-    const gridSports = sport === 'baseball_mlb' || sport === 'americanfootball_nfl'
-      || sport === 'americanfootball_ncaaf' || sport === 'basketball_ncaab'
-      || sport === 'basketball_nba' || sport === 'basketball_wnba'
-      || sport === 'icehockey_nhl';
-    const markets = gridSports ? ['h2h', 'spreads', 'totals'] : ['h2h'];
-    const upstreamPath = `/v4/sports/${sport}/odds/?regions=us&markets=${markets.join(',')}&oddsFormat=american&includeLinks=true&includeSids=true`;
-    // Pages that aren't actually about odds (Cheatsheet's team search, Slip,
-    // Record, Stats) only want this to fill their decorative ticker banner —
-    // that's not worth spending a real credit over. ?cacheOnly=1 serves
-    // whatever's already cached (e.g. from someone using Board recently) and
-    // otherwise returns 204 with no upstream call at all, so "just looking
-    // at stats" never costs anything.
-    if (req.query.cacheOnly) {
-      const hit = cache.get(upstreamPath);
-      if (hit && now() < hit.expires) {
-        if (hit.remaining) res.set('x-requests-remaining', hit.remaining);
-        res.set('x-cache-age-seconds', String(Math.round((now() - hit.cachedAt) / 1000)));
-        return res.json(hit.body);
-      }
-      return res.status(204).end();
-    }
-    proxy(upstreamPath, res);
+    // MLB and NFL: full-game spreads/totals alongside moneyline — the Board's
+    // Game Lines grid needs Spread/Total/Money for both. F5 markets are
+    // deliberately NOT requested here (see MLB_F5_MARKETS above).
+    const markets = sport === 'baseball_mlb' || sport === 'americanfootball_nfl'
+      ? ['h2h', 'spreads', 'totals'] : ['h2h'];
+    proxy(`/v4/sports/${sport}/odds/?regions=us&markets=${markets.join(',')}&oddsFormat=american&includeLinks=true&includeSids=true`, res);
   });
 
   // Live/recent scores — served from ESPN's free public scoreboard instead of
@@ -1974,6 +1943,24 @@ function createApp({
     })().catch(err => sendUpstreamError(res, err));
   });
 
+  // Sleeper's full NFL player dump (free, no key, ~5MB) — fetched at most
+  // once per 24h. nameToId only maps players currently on a roster, so a
+  // retired player sharing a name never steals an active player's photo.
+  const SLEEPER_TTL_MS = 24 * 60 * 60 * 1000;
+  let sleeperCache = null; // {players, nameToId, expires}
+  async function getSleeperPlayers(){
+    if (sleeperCache && now() < sleeperCache.expires) return sleeperCache;
+    const resp = await fetchFn('https://api.sleeper.app/v1/players/nfl');
+    if (!resp.ok) throw new Error(`Sleeper ${resp.status}`);
+    const players = await resp.json();
+    const nameToId = {};
+    Object.entries(players).forEach(([id, p]) => {
+      if (p && p.full_name && p.team) nameToId[p.full_name.toLowerCase()] = id;
+    });
+    sleeperCache = { players, nameToId, expires: now() + SLEEPER_TTL_MS };
+    return sleeperCache;
+  }
+
   app.get('/api/props/:sport/:eventId', (req, res) => {
     handlePropsRequest(req, res).catch(err => {
       console.error(`Props fetch failed: ${err && err.message || err}`);
@@ -2004,9 +1991,19 @@ function createApp({
 
   async function handlePropsRequest(req, res){
     const { sport, eventId } = req.params;
-    const markets = PROP_MARKETS[sport];
-    if (!markets) return res.status(400).json({ error: 'Props not supported for this sport' });
+    const sportMarkets = PROP_MARKETS[sport];
+    if (!sportMarkets) return res.status(400).json({ error: 'Props not supported for this sport' });
     if (!/^[a-z0-9]{1,64}$/i.test(eventId)) return res.status(400).json({ error: 'Bad event id' });
+
+    let markets;
+    if (Array.isArray(sportMarkets)) {
+      if (req.query.group !== undefined) return res.status(400).json({ error: 'This sport has no prop groups' });
+      markets = sportMarkets;
+    } else {
+      const group = req.query.group === undefined ? 'popular' : req.query.group;
+      markets = sportMarkets[group];
+      if (!markets) return res.status(400).json({ error: 'Unknown prop group' });
+    }
 
     let r;
     try {
@@ -2016,18 +2013,22 @@ function createApp({
     }
 
     let body = r.body;
-    // Resolve each prop's player name to a real headshot URL — MLB via
-    // StatsAPI personId (same helper /api/analyze uses), NBA/NFL via the two
-    // teams' ESPN rosters (already fetched/cached for the roster pages, so
-    // this doesn't cost a fresh request beyond the two roster calls
-    // themselves). Best-effort throughout — a miss just means that player's
-    // row falls back to the blank avatar placeholder, never an error.
-    const names = new Set();
-    (body.bookmakers || []).forEach(bm => (bm.markets || []).forEach(m => (m.outcomes || []).forEach(o => {
-      const nm = o.description || o.name;
-      if (nm) names.add(nm);
-    })));
-    const headshots = {};
+    // NFL: resolve player names to Sleeper IDs so the frontend can show real
+    // headshots (sleepercdn is keyed by these). Best-effort — Sleeper being
+    // down just means no photos, never a failed props response.
+    if (sport === 'americanfootball_nfl') {
+      try {
+        const { nameToId } = await getSleeperPlayers();
+        const nflIds = {};
+        (body.bookmakers || []).forEach(bm => (bm.markets || []).forEach(m => (m.outcomes || []).forEach(o => {
+          const nm = (o.description || o.name || '').toLowerCase();
+          if (nm && nameToId[nm]) nflIds[nm] = nameToId[nm];
+        })));
+        body = { ...body, nflIds };
+      } catch (e) { /* best-effort — a Sleeper miss just means no photos */ }
+    }
+    // MLB only: resolve each player name to a StatsAPI personId (cached lookup,
+    // same helper /api/analyze uses) so the frontend can show a real headshot.
     if (sport === 'baseball_mlb') {
       const season = new Date(now()).getFullYear();
       for (const nm of names) {
@@ -2248,6 +2249,119 @@ function createApp({
       matched: true,
       home: toPitcher(mg.teams.home.probablePitcher),
       away: toPitcher(mg.teams.away.probablePitcher)
+    });
+  }
+
+  // ---------- NFL matchups (Sleeper stats + ESPN defense) ----------
+
+  // Generic cached JSON fetch for absolute URLs (Sleeper stats, ESPN) — the
+  // odds cache is path-keyed against The Odds API and fetchStats is pinned to
+  // MLB's StatsAPI, so the NFL stats sources get their own small cache.
+  const jsonCache = new Map(); // absolute URL -> {body, expires}
+  async function fetchCachedJson(url, ttlMs){
+    const hit = jsonCache.get(url);
+    if (hit && now() < hit.expires) return hit.body;
+    const resp = await fetchFn(url);
+    if (!resp.ok) throw new Error(`${resp.status} for ${url}`);
+    const body = await resp.json();
+    jsonCache.set(url, { body, expires: now() + ttlMs });
+    return body;
+  }
+
+  const NFL_STATS_TTL_MS = 6 * 60 * 60 * 1000;
+
+  // Season aggregates for every player. Until the current season has games
+  // played (offseason/preseason), serve the completed previous season so the
+  // matchup view isn't a wall of zeros — the response says which season.
+  async function getNflSeasonStats(){
+    const year = new Date(now()).getUTCFullYear();
+    for (const season of [year, year - 1]) {
+      const stats = await fetchCachedJson(`https://api.sleeper.app/v1/stats/nfl/regular/${season}`, NFL_STATS_TTL_MS);
+      if (Object.values(stats || {}).some(s => s && s.gp > 0)) return { season, stats };
+    }
+    return null;
+  }
+
+  // Opponent (allowed) per-game stats for one team from ESPN's public API,
+  // ranks included (1 = fewest allowed). Returns null when the team or the
+  // stats can't be found — the matchup response just omits that block.
+  async function getEspnDefense(teamName){
+    const list = await fetchCachedJson('https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams', 24 * 60 * 60 * 1000);
+    const teams = ((((list.sports || [])[0] || {}).leagues || [])[0] || {}).teams || [];
+    const entry = teams.find(t => t.team && t.team.displayName === teamName);
+    if (!entry) return null;
+    const stats = await fetchCachedJson(`https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/${entry.team.id}/statistics`, NFL_STATS_TTL_MS);
+    const cats = (stats.results || {}).opponent || [];
+    const pick = (cat, name) => {
+      const c = cats.find(x => x.name === cat);
+      const s = c && (c.stats || []).find(x => x.name === name);
+      return s ? { value: s.value, rank: s.rank } : null;
+    };
+    const defense = {
+      passYdsAllowed: pick('passing', 'passingYardsPerGame'),
+      rushYdsAllowed: pick('rushing', 'rushingYardsPerGame'),
+      ptsAllowed: pick('scoring', 'totalPointsPerGame')
+    };
+    return (defense.passYdsAllowed || defense.rushYdsAllowed || defense.ptsAllowed) ? defense : null;
+  }
+
+  // QB1, top-2 RBs, top-3 WR/TEs for a team — ranked by season stat totals
+  // (depth chart as tiebreaker), emitted with per-game averages.
+  function keyPlayersFor(abbrev, players, stats){
+    const onTeam = Object.entries(players).filter(([, p]) => p && p.team === abbrev);
+    const stat = (id, k) => (stats[id] && Number(stats[id][k])) || 0;
+    const depth = p => (p.depth_chart_order == null ? 99 : p.depth_chart_order);
+    const top = (positions, key, n) => onTeam
+      .filter(([, p]) => positions.includes(p.position))
+      .sort(([ia, pa], [ib, pb]) => (stat(ib, key) - stat(ia, key)) || (depth(pa) - depth(pb)))
+      .slice(0, n);
+    const per = (id, k, gp) => gp ? Math.round(stat(id, k) / gp * 10) / 10 : null;
+    const payload = ([id, p]) => {
+      const gp = stat(id, 'gp');
+      const base = { id, name: p.full_name, pos: p.position, gp };
+      if (p.position === 'QB') return { ...base, passYds: per(id, 'pass_yd', gp), passTds: per(id, 'pass_td', gp) };
+      if (p.position === 'RB') return { ...base, rushYds: per(id, 'rush_yd', gp), rushTds: per(id, 'rush_td', gp), rec: per(id, 'rec', gp) };
+      return { ...base, rec: per(id, 'rec', gp), recYds: per(id, 'rec_yd', gp), recTds: per(id, 'rec_td', gp) };
+    };
+    return [
+      ...top(['QB'], 'pass_yd', 1),
+      ...top(['RB'], 'rush_yd', 2),
+      ...top(['WR', 'TE'], 'rec_yd', 3)
+    ].map(payload);
+  }
+
+  app.get('/api/matchups/nfl', (req, res) => {
+    handleNflMatchups(req, res).catch(err => {
+      console.error(`NFL matchups failed: ${err && err.message || err}`);
+      if (!res.headersSent) res.status(502).json({ error: 'Stats service unavailable' });
+    });
+  });
+
+  async function handleNflMatchups(req, res){
+    const { home, away } = req.query;
+    if (!home || !away) return res.status(400).json({ error: 'home and away are required' });
+    const homeAb = NFL_TEAM_ABBREV[home], awayAb = NFL_TEAM_ABBREV[away];
+    if (!homeAb || !awayAb) return res.json({ matched: false });
+
+    let dump, seasonStats;
+    try {
+      dump = await getSleeperPlayers();
+      seasonStats = await getNflSeasonStats();
+    } catch (e) {
+      return res.json({ matched: true, statsUnavailable: true });
+    }
+    if (!seasonStats) return res.json({ matched: true, statsUnavailable: true });
+
+    // Defense blocks are best-effort: ESPN being down never blocks the players.
+    const [homeDef, awayDef] = await Promise.all(
+      [home, away].map(t => getEspnDefense(t).catch(() => null))
+    );
+
+    res.json({
+      matched: true,
+      season: seasonStats.season,
+      home: { team: home, players: keyPlayersFor(homeAb, dump.players, seasonStats.stats), defense: homeDef },
+      away: { team: away, players: keyPlayersFor(awayAb, dump.players, seasonStats.stats), defense: awayDef }
     });
   }
 

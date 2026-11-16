@@ -68,16 +68,37 @@ const BOOK_LINKS = {
 // performance, so the "Load player props" UI never appears for those sports
 // (every call site below already guards on PROP_MARKETS[sportKey] existing).
 const PROP_MARKETS = {
-  americanfootball_nfl:["player_pass_yds","player_pass_tds","player_rush_yds","player_receptions","player_reception_yds","player_anytime_td"],
+  // NFL is grouped into server-side fetch bundles (see NFL_PROP_TABS); the
+  // other sports are flat lists fetched in one go.
+  americanfootball_nfl:{
+    popular:["player_pass_yds","player_pass_tds","player_rush_yds","player_receptions","player_reception_yds","player_anytime_td"],
+    passing:["player_pass_attempts","player_pass_completions","player_pass_interceptions","player_pass_yds_alternate","player_pass_tds_alternate"],
+    rush_receive:["player_rush_attempts","player_rush_longest","player_reception_longest","player_rush_yds_alternate","player_receptions_alternate","player_reception_yds_alternate"],
+    td:["player_1st_td","player_last_td"],
+    kicker_defense:["player_kicking_points","player_field_goals","player_tackles_assists","player_sacks","player_defensive_interceptions"]
+  },
+  americanfootball_ncaaf:["player_pass_yds","player_pass_tds","player_rush_yds","player_receptions","player_reception_yds","player_anytime_td"],
   basketball_nba:["player_points","player_rebounds","player_assists","player_threes","player_points_rebounds_assists"],
   basketball_wnba:["player_points","player_rebounds","player_assists","player_threes","player_points_rebounds_assists"],
   baseball_mlb:["batter_hits","batter_home_runs","batter_total_bases","batter_rbis","pitcher_strikeouts"],
   icehockey_nhl:["player_points","player_assists","player_shots_on_goal","player_goal_scorer_anytime"]
 };
 
-// Binary anytime-scorer markets have exactly one line (yes/no) — no alt
-// lines exist for these (mirrors server.js's NO_ALT_MARKETS).
-const NO_ALT_MARKETS = new Set(['player_anytime_td', 'player_goal_scorer_anytime']);
+// DraftKings-style category tabs for NFL props. Each tab displays `markets`
+// (which can span fetch groups — Passing shows the core pass yds/TDs loaded
+// with Popular) and triggers `fetchGroup` the first time it's opened.
+const NFL_PROP_TABS = [
+  { id:"popular", label:"Popular", fetchGroup:"popular",
+    markets:["player_pass_yds","player_pass_tds","player_rush_yds","player_receptions","player_reception_yds","player_anytime_td"] },
+  { id:"passing", label:"Passing", fetchGroup:"passing",
+    markets:["player_pass_yds","player_pass_tds","player_pass_attempts","player_pass_completions","player_pass_interceptions","player_pass_yds_alternate","player_pass_tds_alternate"] },
+  { id:"rush_receive", label:"Rush/Receive", fetchGroup:"rush_receive",
+    markets:["player_rush_yds","player_receptions","player_reception_yds","player_rush_attempts","player_rush_longest","player_reception_longest","player_rush_yds_alternate","player_receptions_alternate","player_reception_yds_alternate"] },
+  { id:"td", label:"TD Scorers", fetchGroup:"td",
+    markets:["player_anytime_td","player_1st_td","player_last_td"] },
+  { id:"kicker_defense", label:"Kick & Def", fetchGroup:"kicker_defense",
+    markets:["player_kicking_points","player_field_goals","player_tackles_assists","player_sacks","player_defensive_interceptions"] }
+];
 
 // ---------- odds math ----------
 function americanToDecimal(a){
@@ -179,6 +200,15 @@ function marketLabel(key){
   const labels = {
     player_pass_yds:"Passing Yards", player_pass_tds:"Passing TDs", player_rush_yds:"Rushing Yards",
     player_receptions:"Receptions", player_reception_yds:"Receiving Yards", player_anytime_td:"Anytime TD",
+    player_pass_attempts:"Pass Attempts", player_pass_completions:"Pass Completions",
+    player_pass_interceptions:"Interceptions Thrown", player_pass_yds_alternate:"Alt Passing Yards",
+    player_pass_tds_alternate:"Alt Passing TDs", player_rush_attempts:"Rush Attempts",
+    player_rush_longest:"Longest Rush", player_reception_longest:"Longest Reception",
+    player_rush_yds_alternate:"Alt Rushing Yards", player_receptions_alternate:"Alt Receptions",
+    player_reception_yds_alternate:"Alt Receiving Yards", player_1st_td:"First TD Scorer",
+    player_last_td:"Last TD Scorer", player_kicking_points:"Kicking Points",
+    player_field_goals:"Field Goals Made", player_tackles_assists:"Tackles + Assists",
+    player_sacks:"Sacks", player_defensive_interceptions:"Defensive INTs",
     player_points:"Points", player_rebounds:"Rebounds", player_assists:"Assists",
     player_threes:"Threes Made", player_points_rebounds_assists:"Pts + Reb + Ast",
     batter_hits:"Batter Hits", batter_home_runs:"Home Runs", batter_total_bases:"Total Bases",

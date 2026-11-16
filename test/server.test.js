@@ -951,433 +951,270 @@ test('pitchers: schedule StatsAPI failure -> 502 Stats service unavailable', asy
   assert.equal(res.body.error, 'Stats service unavailable');
 });
 
-// ---------- watchlist + push notifications ----------
-test('watchlist: starts empty with default prefs', async () => {
-  const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
-  const res = await request(app).get('/api/watchlist');
+// ---------- NFL: odds markets, prop groups, nflIds ----------
+
+const SLEEPER_DUMP = {
+  '6770': { full_name: 'Joe Burrow', position: 'QB', team: 'CIN', status: 'Active', depth_chart_order: 1 },
+  '9509': { full_name: 'Chase Brown', position: 'RB', team: 'CIN', status: 'Active', depth_chart_order: 1 },
+  '1111': { full_name: 'Old Retired', position: 'QB', team: null, status: 'Inactive', depth_chart_order: null }
+};
+
+const NFL_PROPS_BODY = {
+  id: 'ev9',
+  bookmakers: [{
+    key: 'draftkings', title: 'DraftKings',
+    markets: [{
+      key: 'player_pass_yds',
+      outcomes: [
+        { name: 'Over',  description: 'Joe Burrow', point: 267.5, price: -110 },
+        { name: 'Under', description: 'Joe Burrow', point: 267.5, price: -110 }
+      ]
+    }]
+  }]
+};
+
+function nflApp(overrides = {}){
+  const f = routedFetch([
+    ...(overrides.routes || []),
+    ['api.the-odds-api.com', okResponse(NFL_PROPS_BODY)],
+    ['api.sleeper.app/v1/players/nfl', okResponse(SLEEPER_DUMP)]
+  ]);
+  const app = createApp({ apiKey: 'k', fetchFn: f, ...(overrides.opts || {}) });
+  return { app, f };
+}
+
+test('NFL odds request includes spreads and totals, no F5 markets', async () => {
+  const f = fakeFetch(() => okResponse([]));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/odds/americanfootball_nfl');
   assert.equal(res.status, 200);
-  assert.deepEqual(res.body, { watchlist: [], prefs: { gameStart: true, betGraded: true } });
+  assert.equal(f.calls.length, 1);
+  assert.match(f.calls[0], /markets=h2h,spreads,totals&/);
+  assert.doesNotMatch(f.calls[0], /1st_5_innings/);
 });
 
-test('watchlist: rejects an unknown sport, nothing added', async () => {
-  const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
-  const res = await request(app).post('/api/watchlist').send({ sport: 'basketball_madeup', team: 'Aces' });
+test('NCAAF odds request stays moneyline-only', async () => {
+  const f = fakeFetch(() => okResponse([]));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  await request(app).get('/api/odds/americanfootball_ncaaf');
+  assert.match(f.calls[0], /markets=h2h&/);
+});
+
+test('NFL props: missing group defaults to the popular markets', async () => {
+  const { app, f } = nflApp();
+  const res = await request(app).get('/api/props/americanfootball_nfl/0a1b2c3d4e5f');
+  assert.equal(res.status, 200);
+  const oddsCall = f.calls.find(u => u.includes('api.the-odds-api.com'));
+  assert.match(oddsCall, /markets=player_pass_yds,player_pass_tds,player_rush_yds,player_receptions,player_reception_yds,player_anytime_td&/);
+});
+
+test('NFL props: explicit group swaps the upstream market list', async () => {
+  const { app, f } = nflApp();
+  const res = await request(app).get('/api/props/americanfootball_nfl/0a1b2c3d4e5f').query({ group: 'passing' });
+  assert.equal(res.status, 200);
+  const oddsCall = f.calls.find(u => u.includes('api.the-odds-api.com'));
+  assert.match(oddsCall, /markets=player_pass_attempts,player_pass_completions,player_pass_interceptions,player_pass_yds_alternate,player_pass_tds_alternate&/);
+});
+
+test('NFL props: unknown group -> 400, upstream not called', async () => {
+  const { app, f } = nflApp();
+  const res = await request(app).get('/api/props/americanfootball_nfl/0a1b2c3d4e5f').query({ group: 'nope' });
   assert.equal(res.status, 400);
-  const list = await request(app).get('/api/watchlist');
-  assert.deepEqual(list.body.watchlist, []);
+  assert.equal(f.calls.filter(u => u.includes('api.the-odds-api.com')).length, 0);
 });
 
-test('watchlist: rejects a missing team, nothing added', async () => {
-  const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
-  const res = await request(app).post('/api/watchlist').send({ sport: 'americanfootball_ncaaf' });
+test('props: explicit group on a flat-list sport -> 400, upstream not called', async () => {
+  const f = fakeFetch(() => okResponse({}));
+  const app = createApp({ apiKey: 'k', fetchFn: f });
+  const res = await request(app).get('/api/props/basketball_nba/0a1b2c3d4e5f').query({ group: 'passing' });
   assert.equal(res.status, 400);
+  assert.equal(f.calls.length, 0);
 });
 
-test('watchlist: add then remove a team round-trips cleanly', async () => {
-  const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
-  const add = await request(app).post('/api/watchlist').send({ sport: 'americanfootball_ncaaf', team: 'Ohio State' });
-  assert.equal(add.status, 200);
-  assert.deepEqual(add.body.watchlist, [{ sport: 'americanfootball_ncaaf', team: 'Ohio State' }]);
-
-  const dupe = await request(app).post('/api/watchlist').send({ sport: 'americanfootball_ncaaf', team: 'Ohio State' });
-  assert.deepEqual(dupe.body.watchlist, [{ sport: 'americanfootball_ncaaf', team: 'Ohio State' }]); // no duplicate
-
-  const del = await request(app).delete('/api/watchlist').send({ sport: 'americanfootball_ncaaf', team: 'Ohio State' });
-  assert.equal(del.status, 200);
-  assert.deepEqual(del.body.watchlist, []);
+test('NFL props: each group is cached separately, repeats within TTL are free', async () => {
+  let t = 1000000;
+  const { app, f } = nflApp({ opts: { cacheTtlMs: 600000, now: () => t } });
+  const oddsCalls = () => f.calls.filter(u => u.includes('api.the-odds-api.com')).length;
+  await request(app).get('/api/props/americanfootball_nfl/0a1b2c3d4e5f');
+  assert.equal(oddsCalls(), 1);
+  await request(app).get('/api/props/americanfootball_nfl/0a1b2c3d4e5f').query({ group: 'passing' });
+  assert.equal(oddsCalls(), 2, 'a second group must cost a second upstream call');
+  t += 120000;
+  await request(app).get('/api/props/americanfootball_nfl/0a1b2c3d4e5f').query({ group: 'passing' });
+  assert.equal(oddsCalls(), 2, 'a repeat of a fetched group within TTL must be served from cache');
 });
 
-test('notify prefs: toggling persists and is reflected on GET /api/watchlist', async () => {
-  const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
-  const res = await request(app).post('/api/notify/prefs').send({ gameStart: false });
+test('NFL props: response carries nflIds for active players only', async () => {
+  const { app } = nflApp();
+  const res = await request(app).get('/api/props/americanfootball_nfl/0a1b2c3d4e5f');
   assert.equal(res.status, 200);
-  assert.deepEqual(res.body.prefs, { gameStart: false, betGraded: true });
-  const list = await request(app).get('/api/watchlist');
-  assert.deepEqual(list.body.prefs, { gameStart: false, betGraded: true });
+  assert.deepEqual(res.body.nflIds, { 'joe burrow': '6770' });
 });
 
-test('push: vapid-public-key is 503 when VAPID env vars are absent', async () => {
-  const saved = { pub: process.env.VAPID_PUBLIC_KEY, priv: process.env.VAPID_PRIVATE_KEY };
-  delete process.env.VAPID_PUBLIC_KEY; delete process.env.VAPID_PRIVATE_KEY;
-  try {
-    const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
-    const res = await request(app).get('/api/push/vapid-public-key');
-    assert.equal(res.status, 503);
-  } finally {
-    if (saved.pub !== undefined) process.env.VAPID_PUBLIC_KEY = saved.pub;
-    if (saved.priv !== undefined) process.env.VAPID_PRIVATE_KEY = saved.priv;
-  }
+test('NFL props: Sleeper failure leaves props intact without nflIds', async () => {
+  const { app } = nflApp({ routes: [['api.sleeper.app', errResponse(500)]] });
+  const res = await request(app).get('/api/props/americanfootball_nfl/0a1b2c3d4e5f');
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.bookmakers, NFL_PROPS_BODY.bookmakers);
+  assert.equal(res.body.nflIds, undefined);
 });
 
-test('push: malformed VAPID keys disable push instead of crashing app boot', async () => {
-  const saved = { pub: process.env.VAPID_PUBLIC_KEY, priv: process.env.VAPID_PRIVATE_KEY };
-  process.env.VAPID_PUBLIC_KEY = 'not-a-real-key';
-  process.env.VAPID_PRIVATE_KEY = 'also-not-real';
-  try {
-    const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
-    const res = await request(app).get('/api/push/vapid-public-key');
-    assert.equal(res.status, 503);
-  } finally {
-    if (saved.pub !== undefined) process.env.VAPID_PUBLIC_KEY = saved.pub; else delete process.env.VAPID_PUBLIC_KEY;
-    if (saved.priv !== undefined) process.env.VAPID_PRIVATE_KEY = saved.priv; else delete process.env.VAPID_PRIVATE_KEY;
-  }
+test('NFL props: Sleeper dump is fetched once across requests (24h cache)', async () => {
+  let t = 1000000;
+  const { app, f } = nflApp({ opts: { cacheTtlMs: 1000, now: () => t } });
+  await request(app).get('/api/props/americanfootball_nfl/0a1b2c3d4e5f');
+  t += 2000; // odds cache expired, sleeper cache (24h) still fresh
+  await request(app).get('/api/props/americanfootball_nfl/0a1b2c3d4e5f');
+  assert.equal(f.calls.filter(u => u.includes('api.sleeper.app')).length, 1);
+  assert.equal(f.calls.filter(u => u.includes('api.the-odds-api.com')).length, 2);
 });
 
-test('push: valid VAPID keys serve the public key', async () => {
-  const webpush = require('web-push');
-  const keys = webpush.generateVAPIDKeys();
-  const saved = { pub: process.env.VAPID_PUBLIC_KEY, priv: process.env.VAPID_PRIVATE_KEY };
-  process.env.VAPID_PUBLIC_KEY = keys.publicKey;
-  process.env.VAPID_PRIVATE_KEY = keys.privateKey;
-  try {
-    const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
-    const res = await request(app).get('/api/push/vapid-public-key');
-    assert.equal(res.status, 200);
-    assert.equal(res.body.key, keys.publicKey);
-  } finally {
-    if (saved.pub !== undefined) process.env.VAPID_PUBLIC_KEY = saved.pub; else delete process.env.VAPID_PUBLIC_KEY;
-    if (saved.priv !== undefined) process.env.VAPID_PRIVATE_KEY = saved.priv; else delete process.env.VAPID_PRIVATE_KEY;
-  }
-});
+// ---------- /api/matchups/nfl ----------
 
-test('push: subscribe requires an endpoint, then unsubscribe accepts it back', async () => {
-  const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
-  const bad = await request(app).post('/api/push/subscribe').send({ keys: {} });
-  assert.equal(bad.status, 400);
-  const ok = await request(app).post('/api/push/subscribe').send({ endpoint: 'https://push.example.com/abc', keys: { p256dh: 'x', auth: 'y' } });
-  assert.equal(ok.status, 200);
-  const unsub = await request(app).post('/api/push/unsubscribe').send({ endpoint: 'https://push.example.com/abc' });
-  assert.equal(unsub.status, 200);
-});
+const MATCHUP_DUMP = {
+  // Bengals
+  'qb1': { full_name: 'Joe Burrow', position: 'QB', team: 'CIN', status: 'Active', depth_chart_order: 1 },
+  'qb2': { full_name: 'Backup Guy', position: 'QB', team: 'CIN', status: 'Active', depth_chart_order: 2 },
+  'rb1': { full_name: 'Chase Brown', position: 'RB', team: 'CIN', status: 'Active', depth_chart_order: 1 },
+  'rb2': { full_name: 'Second Back', position: 'RB', team: 'CIN', status: 'Active', depth_chart_order: 2 },
+  'rb3': { full_name: 'Third Back', position: 'RB', team: 'CIN', status: 'Active', depth_chart_order: 3 },
+  'wr1': { full_name: 'Top Wideout', position: 'WR', team: 'CIN', status: 'Active', depth_chart_order: 1 },
+  'wr2': { full_name: 'Deep Threat', position: 'WR', team: 'CIN', status: 'Active', depth_chart_order: 2 },
+  'te1': { full_name: 'Tight Endman', position: 'TE', team: 'CIN', status: 'Active', depth_chart_order: 1 },
+  'wr3': { full_name: 'Fourth Option', position: 'WR', team: 'CIN', status: 'Active', depth_chart_order: 3 },
+  // Steelers
+  'pqb': { full_name: 'Steel Passer', position: 'QB', team: 'PIT', status: 'Active', depth_chart_order: 1 },
+  'prb': { full_name: 'Steel Runner', position: 'RB', team: 'PIT', status: 'Active', depth_chart_order: 1 },
+  'pwr': { full_name: 'Steel Catcher', position: 'WR', team: 'PIT', status: 'Active', depth_chart_order: 1 },
+  // noise
+  'k1': { full_name: 'Some Kicker', position: 'K', team: 'CIN', status: 'Active', depth_chart_order: 1 }
+};
 
-// ---------- track-bet: grading slip picks the Slip's localStorage can't reach the server for ----------
-function espnFootballGame({ id = 'g1', home, away, homeScore, awayScore, state = 'post', completed = true }){
-  return { events: [{
-    id, date: '2026-09-12T23:30Z',
-    status: { type: { state, completed } },
-    competitions: [{ competitors: [
-      { homeAway: 'home', team: { displayName: home }, score: String(homeScore) },
-      { homeAway: 'away', team: { displayName: away }, score: String(awayScore) }
-    ] }]
-  }] };
+const MATCHUP_STATS_2025 = {
+  qb1: { gp: 17, pass_yd: 4500, pass_td: 34 },
+  qb2: { gp: 3, pass_yd: 300, pass_td: 2 },
+  rb1: { gp: 17, rush_yd: 990, rush_td: 7, rec: 34 },
+  rb2: { gp: 10, rush_yd: 450, rush_td: 2, rec: 10 },
+  rb3: { gp: 8, rush_yd: 120, rush_td: 0, rec: 2 },
+  wr1: { gp: 16, rec: 117, rec_yd: 1500, rec_td: 12 },
+  wr2: { gp: 17, rec: 68, rec_yd: 900, rec_td: 6 },
+  te1: { gp: 17, rec: 51, rec_yd: 510, rec_td: 3 },
+  wr3: { gp: 12, rec: 20, rec_yd: 190, rec_td: 1 },
+  pqb: { gp: 17, pass_yd: 3400, pass_td: 17 },
+  prb: { gp: 17, rush_yd: 1190, rush_td: 9, rec: 17 },
+  pwr: { gp: 17, rec: 85, rec_yd: 1020, rec_td: 5 }
+};
+
+const ESPN_TEAMS_BODY = { sports: [{ leagues: [{ teams: [
+  { team: { id: '4', displayName: 'Cincinnati Bengals' } },
+  { team: { id: '23', displayName: 'Pittsburgh Steelers' } }
+] }] }] };
+
+function espnStatsBody(passYds, passRank, rushYds, rushRank, pts, ptsRank){
+  return { results: { opponent: [
+    { name: 'passing', stats: [{ name: 'passingYardsPerGame', value: passYds, rank: passRank }] },
+    { name: 'rushing', stats: [{ name: 'rushingYardsPerGame', value: rushYds, rank: rushRank }] },
+    { name: 'scoring', stats: [{ name: 'totalPointsPerGame', value: pts, rank: ptsRank }] }
+  ] } };
 }
 
-test('track-bet: rejects unknown sport, bad market, missing selection, missing point for spreads/totals', async () => {
-  const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
-  const base = { homeTeam: 'A', awayTeam: 'B', market: 'h2h', selection: 'A' };
-  assert.equal((await request(app).post('/api/track-bet').send({ ...base, sport: 'basketball_madeup' })).status, 400);
-  assert.equal((await request(app).post('/api/track-bet').send({ ...base, sport: 'americanfootball_ncaaf', market: 'weird' })).status, 400);
-  assert.equal((await request(app).post('/api/track-bet').send({ ...base, sport: 'americanfootball_ncaaf', selection: undefined })).status, 400);
-  assert.equal((await request(app).post('/api/track-bet').send({ ...base, sport: 'americanfootball_ncaaf', market: 'spreads' })).status, 400); // no point
-});
+const JULY_2026 = Date.UTC(2026, 6, 19);
 
-test('track-bet: logs a bet, dedupes on repeat, and shows up pending in /api/record', async () => {
-  const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
-  const payload = { sport: 'americanfootball_ncaaf', homeTeam: 'Ohio State', awayTeam: 'Texas',
-    commenceTime: '2026-09-12T23:30:00Z', matchup: 'Texas @ Ohio State', market: 'h2h', selection: 'Ohio State' };
-  const first = await request(app).post('/api/track-bet').send(payload);
-  assert.equal(first.status, 200);
-  assert.equal(first.body.logged, true);
-  const dupe = await request(app).post('/api/track-bet').send(payload);
-  assert.equal(dupe.body.logged, false); // same id, no duplicate
-  const rec = await request(app).get('/api/record');
-  assert.equal(rec.body.summary.pending, 1);
-});
-
-test('bet grading: moneyline hit/miss by final score, matched by team name not gameId', async () => {
-  const espn = espnFootballGame({ home: 'Ohio State', away: 'Texas', homeScore: 38, awayScore: 14 });
-  const f = fakeFetch(() => okResponse(espn));
-  const app = createApp({ apiKey: 'k', fetchFn: f });
-  await request(app).post('/api/track-bet').send({
-    sport: 'americanfootball_ncaaf', homeTeam: 'Ohio State', awayTeam: 'Texas',
-    commenceTime: '2026-09-12T23:30:00Z', market: 'h2h', selection: 'Ohio State'
-  });
-  await app.locals.gradePendingBets();
-  const res = await request(app).get('/api/record');
-  assert.equal(res.body.summary.hits, 1);
-  assert.equal(res.body.recent[0].actual, 24); // 38 - 14
-});
-
-test('bet grading: spread accounts for the point (favorite covering vs not)', async () => {
-  const espn = espnFootballGame({ home: 'Ohio State', away: 'Texas', homeScore: 24, awayScore: 21 });
-  const f = fakeFetch(() => okResponse(espn));
-  const app = createApp({ apiKey: 'k', fetchFn: f });
-  // Ohio State -7.5: won by only 3, does NOT cover
-  await request(app).post('/api/track-bet').send({
-    sport: 'americanfootball_ncaaf', homeTeam: 'Ohio State', awayTeam: 'Texas',
-    commenceTime: '2026-09-12T23:30:00Z', market: 'spreads', selection: 'Ohio State', point: -7.5
-  });
-  await app.locals.gradePendingBets();
-  const res = await request(app).get('/api/record');
-  assert.equal(res.body.summary.misses, 1);
-  assert.ok(Math.abs(res.body.recent[0].actual - (-4.5)) < 1e-9); // (24-21) + (-7.5)
-});
-
-test('bet grading: total over/under compares combined score to the point, push is exact', async () => {
-  const espn = espnFootballGame({ home: 'Chiefs', away: 'Bills', homeScore: 24, awayScore: 24 });
-  const f = fakeFetch(() => okResponse(espn));
-  const app = createApp({ apiKey: 'k', fetchFn: f });
-  await request(app).post('/api/track-bet').send({
-    sport: 'americanfootball_nfl', homeTeam: 'Chiefs', awayTeam: 'Bills',
-    commenceTime: '2026-09-14T20:00:00Z', market: 'totals', selection: 'Over', point: 48
-  });
-  await app.locals.gradePendingBets();
-  const res = await request(app).get('/api/record');
-  assert.equal(res.body.summary.pushes, 1);
-  assert.equal(res.body.recent[0].actual, 48);
-});
-
-test('bet grading: an unfinished game stays pending, not graded', async () => {
-  const espn = espnFootballGame({ home: 'Ohio State', away: 'Texas', homeScore: 10, awayScore: 7, state: 'in', completed: false });
-  const f = fakeFetch(() => okResponse(espn));
-  const app = createApp({ apiKey: 'k', fetchFn: f });
-  await request(app).post('/api/track-bet').send({
-    sport: 'americanfootball_ncaaf', homeTeam: 'Ohio State', awayTeam: 'Texas',
-    commenceTime: '2026-09-12T23:30:00Z', market: 'h2h', selection: 'Ohio State'
-  });
-  await app.locals.gradePendingBets();
-  const res = await request(app).get('/api/record');
-  assert.equal(res.body.summary.pending, 1);
-  assert.equal(res.body.summary.graded, 0);
-});
-
-test('computeRecord: a mix of a graded bet and a prop does not crash /api/record on avgModelP', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lw-mixed-'));
+function matchupApp(overrides = {}){
   const f = routedFetch([
-    ['espn.com', okResponse(espnFootballGame({ home: 'Ohio State', away: 'Texas', homeScore: 38, awayScore: 14 }))],
-    ['/api/v1/people/', okResponse(DATED_GAMELOG_BODY)]
+    ...(overrides.routes || []),
+    ['api.sleeper.app/v1/players/nfl', okResponse(MATCHUP_DUMP)],
+    ['api.sleeper.app/v1/stats/nfl/regular/2026', okResponse({ qb1: { gp: 0 } })],
+    ['api.sleeper.app/v1/stats/nfl/regular/2025', okResponse(MATCHUP_STATS_2025)],
+    ['/nfl/teams/4/statistics', okResponse(espnStatsBody(245.6, 26, 147.1, 32, 28.9, 30))],
+    ['/nfl/teams/23/statistics', okResponse(espnStatsBody(204.6, 8, 105.7, 9, 19.3, 6))],
+    ['site.api.espn.com/apis/site/v2/sports/football/nfl/teams', okResponse(ESPN_TEAMS_BODY)]
   ]);
-  const app = createApp({ apiKey: 'k', fetchFn: f, dataDir: dir, now: () => Date.parse('2026-07-12T16:00:00Z') });
-  app.locals.store.logPick({
-    id: 'evX|Test Pitcher|pitcher_strikeouts|5.5|Over', kind: 'prop', ts: '2026-07-10T18:00:00.000Z',
-    eventId: 'evX', gameDate: '2026-07-10', matchup: 'A @ B',
-    player: 'Test Pitcher', mlbId: 660271, market: 'pitcher_strikeouts', line: 5.5, side: 'Over',
-    modelP: 0.6, impliedP: 0.5, edge: 0.1, bestBook: { bookKey: 'fanduel', odds: -110 }, flags: []
-  });
-  await request(app).post('/api/track-bet').send({
-    sport: 'americanfootball_ncaaf', homeTeam: 'Ohio State', awayTeam: 'Texas',
-    commenceTime: '2026-09-12T23:30:00Z', market: 'h2h', selection: 'Ohio State'
-  });
-  await app.locals.gradePendingPicks();
-  await app.locals.gradePendingBets();
-  const res = await request(app).get('/api/record');
-  assert.equal(res.body.summary.graded, 2);
-  assert.ok(!Number.isNaN(res.body.summary.avgModelP));
-  assert.equal(res.body.summary.avgModelP, 0.6); // only the prop counts
-});
-
-// ---------- track-prop: player props added from Board, not Get Props' MLB-only Analyze flow ----------
-function espnNflSummary({ homeTeam, awayTeam, athletes }){
-  // athletes: [{ team: 'home'|'away', name, category, labels, stats }]
-  const byTeam = { home: [], away: [] };
-  athletes.forEach(a => byTeam[a.team].push(a));
-  const teamBlock = (name, list) => ({
-    team: { displayName: name },
-    statistics: Object.values(list.reduce((acc, a) => {
-      const cat = acc[a.category] || (acc[a.category] = { name: a.category, labels: a.labels, athletes: [] });
-      cat.athletes.push({ athlete: { displayName: a.name }, stats: a.stats });
-      return acc;
-    }, {}))
-  });
-  return { boxscore: { players: [teamBlock(homeTeam, byTeam.home), teamBlock(awayTeam, byTeam.away)] } };
+  const app = createApp({ apiKey: 'k', fetchFn: f, now: () => (overrides.now || JULY_2026), ...(overrides.opts || {}) });
+  return { app, f };
 }
 
-test('track-prop: validates required fields per sport', async () => {
-  const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
-  const base = { player: 'P One', side: 'Over', commenceTime: '2026-09-10T00:20:00Z' };
-  assert.equal((await request(app).post('/api/track-prop').send({ ...base, sport: 'baseball_mlb', market: 'batter_hits' })).status, 400); // no line
-  assert.equal((await request(app).post('/api/track-prop').send({ ...base, sport: 'baseball_mlb', market: 'not_a_market', line: 1.5 })).status, 400);
-  assert.equal((await request(app).post('/api/track-prop').send({ ...base, sport: 'americanfootball_nfl', market: 'player_pass_yds', line: 200.5 })).status, 400); // no homeTeam/awayTeam
-  assert.equal((await request(app).post('/api/track-prop').send({ ...base, sport: 'basketball_nba', market: 'player_points', line: 20.5, homeTeam:'A', awayTeam:'B' })).status, 400); // no NBA grading yet
-});
+const MATCHUP_QUERY = { home: 'Cincinnati Bengals', away: 'Pittsburgh Steelers' };
 
-test('track-prop + NFL grading: pass yards, receptions, and anytime TD all grade correctly against a real box-score shape', async () => {
-  const summary = espnNflSummary({
-    homeTeam: 'Seattle Seahawks', awayTeam: 'New England Patriots',
-    athletes: [
-      { team:'away', name:'Drake Maye', category:'passing', labels:['C/ATT','YDS','AVG','TD','INT','SACKS','QBR','RTG'], stats:['23/33','178','5.4','1','3','3-10','57.9','54.9'] },
-      { team:'away', name:'Mack Hollins', category:'receiving', labels:['REC','YDS','AVG','TD','LONG','TGTS'], stats:['4','51','12.8','0','19','5'] },
-      { team:'home', name:'Jaxon Smith-Njigba', category:'receiving', labels:['REC','YDS','AVG','TD','LONG','TGTS'], stats:['8','122','15.3','1','45','11'] }
-    ]
-  });
-  const espnScoreboard = { events: [{
-    id: 'espn1', date: '2026-09-10T00:20Z', status: { type: { state:'post', completed:true } },
-    competitions: [{ competitors: [
-      { homeAway:'home', team:{ displayName:'Seattle Seahawks' }, score:'23' },
-      { homeAway:'away', team:{ displayName:'New England Patriots' }, score:'20' }
-    ] }]
-  }] };
-  const f = routedFetch([
-    ['scoreboard', okResponse(espnScoreboard)],
-    ['summary?event=espn1', okResponse(summary)]
-  ]);
-  const app = createApp({ apiKey: 'k', fetchFn: f });
-
-  const track = (over) => request(app).post('/api/track-prop').send({
-    sport: 'americanfootball_nfl', matchup: 'New England Patriots @ Seattle Seahawks',
-    homeTeam: 'Seattle Seahawks', awayTeam: 'New England Patriots', commenceTime: '2026-09-10T00:20:00Z',
-    ...over
-  });
-  await track({ player: 'Drake Maye', market: 'player_pass_yds', line: 150.5, side: 'Over' }); // 178 -> hit
-  await track({ player: 'Drake Maye', market: 'player_pass_yds', line: 200.5, side: 'Over' }); // 178 -> miss
-  await track({ player: 'Mack Hollins', market: 'player_receptions', line: 3.5, side: 'Over' }); // 4 -> hit
-  await track({ player: 'Jaxon Smith-Njigba', market: 'player_anytime_td', side: 'Yes' }); // scored -> hit
-  await track({ player: 'Drake Maye', market: 'player_anytime_td', side: 'Yes' }); // QB, no rush/rec TD -> miss
-
-  await app.locals.gradePendingNflProps();
-  const res = await request(app).get('/api/record');
-  const byKey = (p, m) => res.body.recent.find(r => r.player === p && r.market === m);
-  assert.equal(byKey('Drake Maye', 'player_pass_yds').result, 'hit');
-  assert.equal(byKey('Mack Hollins', 'player_receptions').result, 'hit');
-  assert.equal(byKey('Jaxon Smith-Njigba', 'player_anytime_td').result, 'hit');
-  assert.equal(byKey('Drake Maye', 'player_anytime_td').result, 'miss');
-  assert.equal(res.body.summary.misses, 2); // the 200.5 pass-yds miss + Maye's anytime-TD miss
-  assert.equal(res.body.summary.hits, 3);
-});
-
-test('NFL prop grading: a player missing entirely from the box score voids instead of grading a false miss', async () => {
-  const summary = espnNflSummary({
-    homeTeam: 'Seattle Seahawks', awayTeam: 'New England Patriots',
-    athletes: [{ team:'away', name:'Drake Maye', category:'passing', labels:['C/ATT','YDS','AVG','TD','INT','SACKS','QBR','RTG'], stats:['23/33','178','5.4','1','3','3-10','57.9','54.9'] }]
-  });
-  const espnScoreboard = { events: [{
-    id: 'espn1', date: '2026-09-10T00:20Z', status: { type: { state:'post', completed:true } },
-    competitions: [{ competitors: [
-      { homeAway:'home', team:{ displayName:'Seattle Seahawks' }, score:'23' },
-      { homeAway:'away', team:{ displayName:'New England Patriots' }, score:'20' }
-    ] }]
-  }] };
-  const f = routedFetch([['scoreboard', okResponse(espnScoreboard)], ['summary?event=espn1', okResponse(summary)]]);
-  const app = createApp({ apiKey: 'k', fetchFn: f });
-  await request(app).post('/api/track-prop').send({
-    sport: 'americanfootball_nfl', player: 'Someone Inactive', market: 'player_rush_yds', line: 40.5, side: 'Over',
-    homeTeam: 'Seattle Seahawks', awayTeam: 'New England Patriots', commenceTime: '2026-09-10T00:20:00Z'
-  });
-  await app.locals.gradePendingNflProps();
-  const res = await request(app).get('/api/record');
-  assert.equal(res.body.summary.voids, 1);
-});
-
-test('track-prop MLB: resolves mlbId via the real lookup, then the existing MLB grading sweep picks it up and grades it', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lw-track-prop-'));
-  const f = routedFetch([
-    ['/api/v1/sports/1/players', okResponse(PLAYERS_BODY)],
-    ['/api/v1/people/', okResponse(DATED_GAMELOG_BODY)]
-  ]);
-  const app = createApp({ apiKey: 'k', fetchFn: f, dataDir: dir, now: () => Date.parse('2026-07-12T16:00:00Z') });
-  const track = await request(app).post('/api/track-prop').send({
-    sport: 'baseball_mlb', player: 'Test Pitcher', market: 'pitcher_strikeouts', line: 5.5, side: 'Over',
-    matchup: 'A @ B', commenceTime: '2026-07-10T18:00:00Z'
-  });
-  assert.equal(track.status, 200);
-  assert.equal(track.body.logged, true);
-
-  await app.locals.gradePendingPicks();
-  const res = await request(app).get('/api/record');
-  assert.equal(res.body.summary.graded, 1);
-  assert.equal(res.body.summary.hits, 1); // 8 Ks on 2026-07-10 > 5.5, same fixture the "grading sweep" test above uses
-});
-
-// ---------- /api/nfl/game-injuries: per-matchup injury report replacing Board's old 5-hour weather grid ----------
-function espnNflTeamsBody(){
-  return { sports: [{ leagues: [{ teams: [
-    { team: { id: '1', displayName: 'Cincinnati Bengals', abbreviation: 'CIN' } },
-    { team: { id: '2', displayName: 'Tampa Bay Buccaneers', abbreviation: 'TB' } }
-  ] }] }] };
-}
-function espnDepthchartBody(playerName, position, status){
-  return { depthchart: [{ name: 'Offense', positions: { qb: { position: { abbreviation: position },
-    athletes: [{ id: 'p1', displayName: playerName, injuries: [{ status }] }] } } }] };
-}
-
-test('game-injuries: rejects missing team names', async () => {
-  const app = createApp({ apiKey: 'k', fetchFn: fakeFetch(() => okResponse([])) });
-  assert.equal((await request(app).get('/api/nfl/game-injuries')).status, 400);
-  assert.equal((await request(app).get('/api/nfl/game-injuries').query({ home: 'Cincinnati Bengals' })).status, 400);
-});
-
-test('game-injuries: unknown team name -> 400', async () => {
-  const f = routedFetch([['teams?limit=34', okResponse(espnNflTeamsBody())]]);
-  const app = createApp({ apiKey: 'k', fetchFn: f });
-  const res = await request(app).get('/api/nfl/game-injuries').query({ home: 'Made Up Team', away: 'Tampa Bay Buccaneers' });
+test('matchups: missing params -> 400, nothing fetched', async () => {
+  const { app, f } = matchupApp();
+  const res = await request(app).get('/api/matchups/nfl').query({ home: 'Cincinnati Bengals' });
   assert.equal(res.status, 400);
+  assert.equal(f.calls.length, 0);
 });
 
-test('game-injuries: returns both teams\' injury lists, keyed by the exact names passed in', async () => {
-  const f = routedFetch([
-    ['teams?limit=34', okResponse(espnNflTeamsBody())],
-    ['/teams/1/depthcharts', okResponse(espnDepthchartBody('Home Guy', 'QB', 'Out'))],
-    ['/teams/2/depthcharts', okResponse(espnDepthchartBody('Away Guy', 'WR', 'Questionable'))]
-  ]);
-  const app = createApp({ apiKey: 'k', fetchFn: f });
-  const res = await request(app).get('/api/nfl/game-injuries').query({ home: 'Cincinnati Bengals', away: 'Tampa Bay Buccaneers' });
+test('matchups: unknown team name -> matched:false', async () => {
+  const { app } = matchupApp();
+  const res = await request(app).get('/api/matchups/nfl').query({ home: 'Cincinnati Bengals', away: 'London Monarchs' });
   assert.equal(res.status, 200);
-  assert.equal(res.body.home.name, 'Cincinnati Bengals');
-  assert.equal(res.body.home.injuries[0].name, 'Home Guy');
-  assert.equal(res.body.home.injuries[0].status, 'Out');
-  assert.equal(res.body.away.name, 'Tampa Bay Buccaneers');
-  assert.equal(res.body.away.injuries[0].name, 'Away Guy');
+  assert.equal(res.body.matched, false);
 });
 
-test('game-injuries: one team\'s depthchart failing still returns the other team\'s list', async () => {
-  const f = routedFetch([
-    ['teams?limit=34', okResponse(espnNflTeamsBody())],
-    ['/teams/1/depthcharts', errResponse(500)],
-    ['/teams/2/depthcharts', okResponse(espnDepthchartBody('Away Guy', 'WR', 'Questionable'))]
-  ]);
-  const app = createApp({ apiKey: 'k', fetchFn: f });
-  const res = await request(app).get('/api/nfl/game-injuries').query({ home: 'Cincinnati Bengals', away: 'Tampa Bay Buccaneers' });
+test('matchups: key players ranked by season stat totals with per-game averages', async () => {
+  const { app } = matchupApp();
+  const res = await request(app).get('/api/matchups/nfl').query(MATCHUP_QUERY);
   assert.equal(res.status, 200);
-  assert.deepEqual(res.body.home.injuries, []);
-  assert.equal(res.body.away.injuries[0].name, 'Away Guy');
+  assert.equal(res.body.matched, true);
+  assert.equal(res.body.season, 2025, 'must fall back to the completed season when the current one has no games played');
+
+  const home = res.body.home;
+  assert.equal(home.team, 'Cincinnati Bengals');
+  const names = home.players.map(p => p.name);
+  // QB1 by pass_yd, top-2 RBs by rush_yd, top-3 WR/TEs by rec_yd; kicker excluded
+  assert.deepEqual(names, ['Joe Burrow', 'Chase Brown', 'Second Back', 'Top Wideout', 'Deep Threat', 'Tight Endman']);
+
+  const qb = home.players[0];
+  assert.equal(qb.pos, 'QB');
+  assert.equal(qb.id, 'qb1');
+  assert.equal(qb.gp, 17);
+  assert.equal(qb.passYds, 264.7);  // 4500/17
+  assert.equal(qb.passTds, 2.0);    // 34/17
+
+  const rb = home.players[1];
+  assert.equal(rb.rushYds, 58.2);   // 990/17
+  assert.equal(rb.rushTds, 0.4);
+  assert.equal(rb.rec, 2.0);
+
+  const wr = home.players[3];
+  assert.equal(wr.rec, 7.3);        // 117/16
+  assert.equal(wr.recYds, 93.8);    // 1500/16
+  assert.equal(wr.recTds, 0.8);
+
+  assert.equal(res.body.away.players[0].name, 'Steel Passer');
 });
 
-// ---------- /api/mlb/park-dimensions ----------
-function mlbTeamsBody(){
-  return { teams: [
-    { id: 1, name: 'Compact Park Team', abbreviation: 'CPT', venue: { id: 100 } },
-    { id: 2, name: 'Roomy Park Team', abbreviation: 'RPT', venue: { id: 200 } },
-    { id: 3, name: 'Colorado Rockies', abbreviation: 'COL', venue: { id: 300 } }
-  ] };
-}
-function mlbVenuesBody(){
-  return { venues: [
-    { id: 100, name: 'Compact Field', fieldInfo: { leftLine: 300, leftCenter: 350, center: 380, rightCenter: 350, rightLine: 300, roofType: 'Open', capacity: 30000 } },
-    { id: 200, name: 'Roomy Field', fieldInfo: { leftLine: 340, leftCenter: 400, center: 430, rightCenter: 400, rightLine: 340, roofType: 'Open', capacity: 40000 } },
-    { id: 300, name: 'Coors Field', fieldInfo: { leftLine: 347, leftCenter: 420, center: 415, rightCenter: 424, rightLine: 350, roofType: 'Open', capacity: 50480 } }
-  ] };
-}
+test('matchups: defense blocks carry ESPN values and ranks', async () => {
+  const { app } = matchupApp();
+  const res = await request(app).get('/api/matchups/nfl').query(MATCHUP_QUERY);
+  assert.deepEqual(res.body.home.defense, {
+    passYdsAllowed: { value: 245.6, rank: 26 },
+    rushYdsAllowed: { value: 147.1, rank: 32 },
+    ptsAllowed: { value: 28.9, rank: 30 }
+  });
+  assert.equal(res.body.away.defense.ptsAllowed.rank, 6);
+});
 
-test('park-dimensions: ranks real fence distances (compact < roomy), Coors gets the altitude note', async () => {
-  const f = routedFetch([
-    ['teams?sportId=1', okResponse(mlbTeamsBody())],
-    ['venues?venueIds=', okResponse(mlbVenuesBody())]
-  ]);
-  const app = createApp({ apiKey: 'k', fetchFn: f });
-  const res = await request(app).get('/api/mlb/park-dimensions');
+test('matchups: ESPN failure -> defense null, players still returned', async () => {
+  const { app } = matchupApp({ routes: [['site.api.espn.com', errResponse(500)]] });
+  const res = await request(app).get('/api/matchups/nfl').query(MATCHUP_QUERY);
   assert.equal(res.status, 200);
-  const compact = res.body['Compact Park Team'];
-  const roomy = res.body['Roomy Park Team'];
-  const coors = res.body['Colorado Rockies'];
-  // sorted ascending by avg distance: Compact(336) < Roomy(382) < Coors(391.2)
-  assert.ok(compact.avgDistance < roomy.avgDistance);
-  assert.ok(roomy.avgDistance < coors.avgDistance);
-  assert.equal(compact.tier, 'Compact');
-  assert.equal(coors.tier, 'Spacious'); // roomiest of the 3
-  assert.equal(compact.rank, 1);
-  assert.equal(res.body['Roomy Park Team'].outOf, 3);
-  assert.ok(coors.altitudeNote && coors.altitudeNote.includes('altitude'));
-  assert.equal(compact.altitudeNote, null);
+  assert.equal(res.body.matched, true);
+  assert.equal(res.body.home.defense, null);
+  assert.ok(res.body.home.players.length > 0);
 });
 
-test('park-dimensions: cached — a second request does not refetch', async () => {
-  const f = routedFetch([
-    ['teams?sportId=1', okResponse(mlbTeamsBody())],
-    ['venues?venueIds=', okResponse(mlbVenuesBody())]
-  ]);
-  const app = createApp({ apiKey: 'k', fetchFn: f });
-  await request(app).get('/api/mlb/park-dimensions');
+test('matchups: Sleeper stats failure -> statsUnavailable body, not a 500', async () => {
+  const { app } = matchupApp({ routes: [['api.sleeper.app/v1/stats', errResponse(500)]] });
+  const res = await request(app).get('/api/matchups/nfl').query(MATCHUP_QUERY);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.matched, true);
+  assert.equal(res.body.statsUnavailable, true);
+});
+
+test('matchups: repeat request within TTL costs no new upstream calls', async () => {
+  const { app, f } = matchupApp();
+  await request(app).get('/api/matchups/nfl').query(MATCHUP_QUERY);
   const callsAfterFirst = f.calls.length;
-  await request(app).get('/api/mlb/park-dimensions');
-  assert.equal(f.calls.length, callsAfterFirst);
+  await request(app).get('/api/matchups/nfl').query(MATCHUP_QUERY);
+  assert.equal(f.calls.length, callsAfterFirst, 'all Sleeper/ESPN data must be served from cache on a repeat');
 });
